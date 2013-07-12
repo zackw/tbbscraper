@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -e
+
+C=""
+C="$C --architectures amd64"
+C="$C --distribution sid"
+C="$C --security false --backports false --updates false"
+
+#C="$C --apt-recommends false"
+C="$C --apt-indices false"
+C="$C --memtest none"
+
+set -x
+
+lb config noauto $C "$@"
