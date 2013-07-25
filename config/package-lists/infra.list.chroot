@@ -1,0 +1,11 @@
+linux-image-amd64
+haveged
+openssh-client
+openssh-server
+
+xserver-xorg
+matchbox-window-manager
+lxterminal
+gxmessage
+fonts-liberation
+fonts-droid

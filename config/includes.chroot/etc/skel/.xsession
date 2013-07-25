@@ -1,6 +1,7 @@
 #! /bin/sh
 
-/usr/bin/matchbox-window-manager &
-/usr/bin/iceweasel
+matchbox-window-manager &
+sleep 1
+lxterminal
 
 sudo poweroff
