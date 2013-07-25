@@ -102,7 +102,20 @@ class PackageConstructor(object):
             raise RuntimeError
 
 def BuildTBB():
-    pass
+    PKGDIR="tor-browser-3.0a2"
+
+    # Clean the package directory before extracting anything.
+    subprocess.check_call(["git", "clean", "-qdxf"], cwd=PKGDIR)
+
+    # The upstream tarball has the wrong top-level directory name.
+    # Fortunately, GNU tar lets us correct this.
+    subprocess.check_call(["tar", "xa", "--strip=1",
+                           "-f", "../tor-browser-3.0a2.tar.xz"],
+                          cwd=PKGDIR)
+
+    # All adjustments are handled via "format 3.0 (quilt)" patches.
+    subprocess.check_call(["dpkg-buildpackage", "-b", "-uc"], cwd=PKGDIR)
+    os.unlink("tor-browser_3.0~a2-1_amd64.changes")
 
 def BuildPythonSelenium():
     PKGDIR="python-selenium-2.33.0"
@@ -133,16 +146,16 @@ def BuildSeleniumServer():
     os.unlink("selenium-server_2.33.0-1_amd64.changes")
 
 packages = [PackageConstructor(**spec) for spec in [
-    # { "source_url" :
-    #       "https://archive.torproject.org/tor-package-archive/torbrowser/3.0a2/"
-    #           "tor-browser-linux64-3.0-alpha-2_en-US.tar.xz",
-    #   "download_name" : "tor-browser-bundle-3.0a2.tar.xz",
-    #   "download_size" : 22835272,
-    #   "download_sha" :
-    #       "922f9662f029b99739cd2c7a8ceabf156305a93f748278f9d23b9471c5b1b619",
-    #   "package_name" : "tor-browser-bundle_3.0~a2-1_amd64.deb",
-    #   "package_builder" : BuildTBB
-    # },
+    { "source_url" :
+          "https://archive.torproject.org/tor-package-archive/torbrowser/3.0a2/"
+              "tor-browser-linux64-3.0-alpha-2_en-US.tar.xz",
+      "download_name" : "tor-browser-3.0a2.tar.xz",
+      "download_size" : 22835272,
+      "download_sha" :
+          "922f9662f029b99739cd2c7a8ceabf156305a93f748278f9d23b9471c5b1b619",
+      "package_name" : "tor-browser_3.0~a2-1_amd64.deb",
+      "package_builder" : BuildTBB
+    },
 
     { "source_url" :
           "https://pypi.python.org/packages/source/s/selenium/"
