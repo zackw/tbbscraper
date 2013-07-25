@@ -1,0 +1,14 @@
+Source: selenium-server
+Section: web
+Priority: optional
+Maintainer: Zack Weinberg <zackw@panix.com>
+Build-Depends: debhelper (>= 9)
+Standards-Version: 3.9.4.0
+
+Package: selenium-server
+Architecture: all
+Homepage: http://docs.seleniumhq.org/
+Depends: default-jre-headless, ${misc:Depends}
+Description: Selenium web automation - server daemon
+ yada yada yada
+
