@@ -4,11 +4,12 @@
 *.orig
 *.rej
 
-/pkg/selenium-server-2.33.0/selenium-server.jar
+/pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
 /pkg/selenium-server-2.33.0/debian/selenium-server/
 /pkg/selenium-server-2.33.0/debian/selenium-server.debhelper.log
 /pkg/selenium-server-2.33.0/debian/selenium-server.substvars
+/pkg/selenium-server-2.33.0/selenium-server.jar
 /pkg/selenium-server_2.33.0-1_all.deb
 
 /pkg/python-selenium-2.33.0.tar.gz

@@ -3,21 +3,24 @@
 import errno
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 
 class PackageConstructor(object):
     def __init__(self, source_url, download_name, download_size, download_sha,
-                 package_name, package_builder):
-        self.source_url      = source_url
-        self.download_name   = download_name
-        self.download_size   = download_size
-        self.download_sha    = download_sha.decode("hex")
-        self.package_name    = package_name
-        self.package_builder = package_builder
+                 package_debfile, package_changefile, package_builddir,
+                 package_extractor):
+        self.source_url         = source_url
+        self.download_name      = download_name
+        self.download_size      = download_size
+        self.download_sha       = download_sha.decode("hex")
+        self.package_debfile    = package_debfile
+        self.package_changefile = package_changefile
+        self.package_builddir   = package_builddir
+        self.extract_package    = package_extractor
 
         self.download_mtime  = None
-        self.package_mtime   = None
 
     def check_file(self):
         # Returns a 3-tuple:
@@ -67,7 +70,7 @@ class PackageConstructor(object):
         # file transfer than to do it ourselves with urllib(2).
         sys.stderr.write("downloading %s...\n" % self.download_name)
         subprocess.check_call(["curl", "-o", self.download_name, "-C", "-",
-                               self.url])
+                               self.source_url])
 
         (exists, good, present_size) = self.check_file()
         if not good:
@@ -83,67 +86,65 @@ class PackageConstructor(object):
 
     def check_package(self):
         try:
-            self.package_mtime = os.stat(self.package_name).st_mtime
-            return self.package_mtime >= self.download_mtime
+            package_mtime = os.stat(self.package_debfile).st_mtime
         except EnvironmentError, e:
             if e.errno == errno.ENOENT:
                 return False
             raise
 
+        if package_mtime < self.download_mtime:
+            return False
+
+        packaging = subprocess.check_output(["git", "ls-files", "-cdmo",
+                                             "--exclude-standard",
+                                             self.package_builddir + "/"])
+        for pkfile in packaging.rstrip().split("\n"):
+            pkmtime = os.stat(pkfile).st_mtime
+            if package_mtime < pkmtime:
+                return False
+
+        return True
+
     def build_package(self):
         if self.check_package():
             sys.stderr.write("%s: package is up to date\n"
-                             % self.package_name)
+                             % self.package_debfile)
             return
-        sys.stderr.write("building %s...\n" % self.package_name)
-        self.package_builder()
+        sys.stderr.write("building %s...\n" % self.package_debfile)
+
+        subprocess.check_call(["git", "clean", "-qdxf"],
+                              cwd=self.package_builddir)
+
+        self.extract_package(self.package_builddir,
+                             self.download_name)
+
+        subprocess.check_call(["dpkg-buildpackage", "-b", "-uc"],
+                              cwd=self.package_builddir)
+
+        os.unlink(self.package_changefile)
         if not self.check_package():
             sys.stderr.write("%s: package build failed\n")
             raise RuntimeError
 
-def BuildTBB():
-    PKGDIR="tor-browser-3.0a2"
+def extract_tbb(pkgdir, tarball):
+    # Extract the upstream tarball directly into the build directory.
+    subprocess.check_call(["tar", "xa", "--strip=1", "-f", "../" + tarball],
+                          cwd=pkgdir)
 
-    # Clean the package directory before extracting anything.
-    subprocess.check_call(["git", "clean", "-qdxf"], cwd=PKGDIR)
-
-    # The upstream tarball has the wrong top-level directory name.
-    # Fortunately, GNU tar lets us correct this.
-    subprocess.check_call(["tar", "xa", "--strip=1",
-                           "-f", "../tor-browser-3.0a2.tar.xz"],
-                          cwd=PKGDIR)
-
-    # All adjustments are handled via "format 3.0 (quilt)" patches.
-    subprocess.check_call(["dpkg-buildpackage", "-b", "-uc"], cwd=PKGDIR)
-    os.unlink("tor-browser_3.0~a2-1_amd64.changes")
-
-def BuildPythonSelenium():
-    PKGDIR="python-selenium-2.33.0"
-
-    # Clean the package directory before extracting anything.
-    subprocess.check_call(["git", "clean", "-qdxf"], cwd=PKGDIR)
-
-    # The upstream tarball has the wrong top-level directory name.
-    # Fortunately, GNU tar lets us correct this.
-    subprocess.check_call(["tar", "xa", "--strip=1",
-                           "-f", "../python-selenium-2.33.0.tar.gz"],
-                          cwd=PKGDIR)
+def extract_python_selenium(pkgdir, tarball):
+    # Extract the upstream tarball directly into the build directory.
+    subprocess.check_call(["tar", "xa", "--strip=1", "-f", "../" + tarball],
+                          cwd=pkgdir)
 
     # Remove an unwanted binary file.  (This is impractical from a
     # quilt patch.)
-    os.unlink(PKGDIR+"/py/selenium/webdriver/firefox/x86/x_ignore_nofocus.so")
-    os.rmdir (PKGDIR+"/py/selenium/webdriver/firefox/x86/")
+    os.unlink(pkgdir+"/py/selenium/webdriver/firefox/x86/x_ignore_nofocus.so")
+    os.rmdir (pkgdir+"/py/selenium/webdriver/firefox/x86/")
 
-    # All other adjustments are handled via "format 3.0 (quilt)" patches.
-    subprocess.check_call(["dpkg-buildpackage", "-b", "-uc"], cwd=PKGDIR)
-    os.unlink("python-selenium_2.33.0-1_amd64.changes")
-
-def BuildSeleniumServer():
-    # The download phase dropped the .jar inside the package directory,
-    # so very little else needs doing.
-    subprocess.check_call(["dpkg-buildpackage", "-b", "-uc"],
-                          cwd="selenium-server-2.33.0")
-    os.unlink("selenium-server_2.33.0-1_amd64.changes")
+def extract_selenium_server(pkgdir, tarball):
+    # The upstream is a single jar file.  Copy it to the name expected by
+    # the build scripts.
+    shutil.copy(tarball, pkgdir + "/selenium-server.jar")
 
 packages = [PackageConstructor(**spec) for spec in [
     { "source_url" :
@@ -153,8 +154,10 @@ packages = [PackageConstructor(**spec) for spec in [
       "download_size" : 22835272,
       "download_sha" :
           "922f9662f029b99739cd2c7a8ceabf156305a93f748278f9d23b9471c5b1b619",
-      "package_name" : "tor-browser_3.0~a2-1_amd64.deb",
-      "package_builder" : BuildTBB
+      "package_debfile"    : "tor-browser_3.0~a2-1_amd64.deb",
+      "package_changefile" : "tor-browser_3.0~a2-1_amd64.changes",
+      "package_builddir"   : "tor-browser-3.0a2",
+      "package_extractor"  : extract_tbb
     },
 
     { "source_url" :
@@ -164,19 +167,23 @@ packages = [PackageConstructor(**spec) for spec in [
       "download_size" : 2536129,
       "download_sha" :
           "6508690bad70881eb851c3921b7cb51faa0e3409e605b437058e600677ede89b",
-      "package_name" : "python-selenium_2.33.0-1_amd64.deb",
-      "package_builder" : BuildPythonSelenium
+      "package_debfile"    : "python-selenium_2.33.0-1_amd64.deb",
+      "package_changefile" : "python-selenium_2.33.0-1_amd64.changes",
+      "package_builddir"   : "python-selenium-2.33.0",
+      "package_extractor"  : extract_python_selenium
     },
 
     { "source_url" :
           "http://selenium.googlecode.com/files/"
               "selenium-server-standalone-2.33.0.jar",
-      "download_name" : "selenium-server-2.33.0/selenium-server.jar",
+      "download_name" : "selenium-server-2.33.0.jar",
       "download_size" : 34297072,
       "download_sha" :
           "68ba647e91d144d5b1bb2e0479774ebca5d4fc201566760735280c46e70a951e",
-      "package_name" : "selenium-server_2.33.0-1_all.deb",
-      "package_builder" : BuildSeleniumServer
+      "package_debfile"    : "selenium-server_2.33.0-1_all.deb",
+      "package_changefile" : "selenium-server_2.33.0-1_amd64.changes",
+      "package_builddir"   : "selenium-server-2.33.0",
+      "package_extractor"  : extract_selenium_server
     },
 ]]
 
