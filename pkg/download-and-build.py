@@ -105,7 +105,25 @@ def BuildTBB():
     pass
 
 def BuildPythonSelenium():
-    pass
+    PKGDIR="python-selenium-2.33.0"
+
+    # Clean the package directory before extracting anything.
+    subprocess.check_call(["git", "clean", "-qdxf"], cwd=PKGDIR)
+
+    # The upstream tarball has the wrong top-level directory name.
+    # Fortunately, GNU tar lets us correct this.
+    subprocess.check_call(["tar", "xa", "--strip=1",
+                           "-f", "../python-selenium-2.33.0.tar.gz"],
+                          cwd=PKGDIR)
+
+    # Remove an unwanted binary file.  (This is impractical from a
+    # quilt patch.)
+    os.unlink(PKGDIR+"/py/selenium/webdriver/firefox/x86/x_ignore_nofocus.so")
+    os.rmdir (PKGDIR+"/py/selenium/webdriver/firefox/x86/")
+
+    # All other adjustments are handled via "format 3.0 (quilt)" patches.
+    subprocess.check_call(["dpkg-buildpackage", "-b", "-uc"], cwd=PKGDIR)
+    os.unlink("python-selenium_2.33.0-1_amd64.changes")
 
 def BuildSeleniumServer():
     # The download phase dropped the .jar inside the package directory,
@@ -122,20 +140,20 @@ packages = [PackageConstructor(**spec) for spec in [
     #   "download_size" : 22835272,
     #   "download_sha" :
     #       "922f9662f029b99739cd2c7a8ceabf156305a93f748278f9d23b9471c5b1b619",
-    #   "package_name" : "tor-browser-bundle_3.0a2_amd64.deb",
+    #   "package_name" : "tor-browser-bundle_3.0~a2-1_amd64.deb",
     #   "package_builder" : BuildTBB
     # },
 
-    # { "source_url" :
-    #       "https://pypi.python.org/packages/source/s/selenium/"
-    #           "selenium-2.33.0.tar.gz",
-    #   "download_name" : "python-selenium-2.33.0.tar.gz",
-    #   "download_size" : 2536129,
-    #   "download_sha" :
-    #       "6508690bad70881eb851c3921b7cb51faa0e3409e605b437058e600677ede89b",
-    #   "package_name" : "python-selenium_2.33.0_amd64.deb",
-    #   "package_builder" : BuildPythonSelenium
-    # },
+    { "source_url" :
+          "https://pypi.python.org/packages/source/s/selenium/"
+              "selenium-2.33.0.tar.gz",
+      "download_name" : "python-selenium-2.33.0.tar.gz",
+      "download_size" : 2536129,
+      "download_sha" :
+          "6508690bad70881eb851c3921b7cb51faa0e3409e605b437058e600677ede89b",
+      "package_name" : "python-selenium_2.33.0-1_amd64.deb",
+      "package_builder" : BuildPythonSelenium
+    },
 
     { "source_url" :
           "http://selenium.googlecode.com/files/"

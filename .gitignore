@@ -1,5 +1,6 @@
 *~
 \#*#
+.#*
 *.orig
 *.rej
 
@@ -11,6 +12,20 @@
 /pkg/selenium-server_2.33.0-1_all.deb
 
 /pkg/python-selenium-2.33.0.tar.gz
+/pkg/python-selenium-2.33.0/debian/files
+/pkg/python-selenium-2.33.0/debian/python-selenium/
+/pkg/python-selenium-2.33.0/debian/python-selenium.debhelper.log
+/pkg/python-selenium-2.33.0/debian/python-selenium.postinst.debhelper
+/pkg/python-selenium-2.33.0/debian/python-selenium.prerm.debhelper
+/pkg/python-selenium-2.33.0/debian/python-selenium.substvars
+/pkg/python-selenium-2.33.0/build/
+/pkg/python-selenium-2.33.0/MANIFEST.in
+/pkg/python-selenium-2.33.0/PKG-INFO
+/pkg/python-selenium-2.33.0/py/
+/pkg/python-selenium-2.33.0/selenium.egg-info/
+/pkg/python-selenium-2.33.0/setup.cfg
+/pkg/python-selenium-2.33.0/setup.py
+/pkg/python-selenium_2.33.0-1_amd64.deb
 
 /pkg/tor-browser-3.0a2.tar.xz
 
