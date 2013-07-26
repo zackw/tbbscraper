@@ -1,0 +1,38 @@
+#! /bin/sh
+
+set -e
+
+# Prompt up front for the sudo password, then maintain the credential for
+# the runtime of the script.
+sudo -v
+while :; do sleep 30; kill -0 "$$" || exit; sudo -v; done 2> /dev/null &
+
+# Sanitize the environment.
+export LC_ALL=C.UTF-8
+
+for e in $(/usr/bin/printenv | /usr/bin/cut -d= -f1)
+do
+    case $e in
+        ( USER | LOGNAME | HOME | PWD ) ;;
+        ( * ) unset $e ;;
+    esac
+done
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TERM=dumb
+
+printenv >&2
+
+# envariable config for lb
+#export MKSQUASHFS_OPTIONS="-comp gzip"
+#export http_proxy="http://127.0.0.1:8000/"
+
+# real work starts here
+set -x
+
+cd pkg
+./download-and-build.py
+cd ../lb
+sudo lb clean --all
+lb config
+sudo lb build

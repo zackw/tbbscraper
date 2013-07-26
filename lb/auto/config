@@ -3,6 +3,7 @@
 set -e
 
 C=""
+C="$C --apt-http-proxy http://127.0.0.1:8000/"
 C="$C --architectures amd64"
 C="$C --distribution sid"
 C="$C --security false --backports false --updates false"
