@@ -13,4 +13,6 @@ C="$C --memtest none"
 
 set -x
 
+cp ../pkg/*.deb config/packages.chroot/
+
 lb config noauto $C "$@"

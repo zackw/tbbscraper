@@ -4,6 +4,7 @@ openssh-client
 openssh-server
 
 xserver-xorg
+xinit
 matchbox-window-manager
 lxterminal
 gxmessage

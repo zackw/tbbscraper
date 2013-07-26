@@ -1,0 +1,5 @@
+# This directory is populated by auto/config.
+# Ignore everything in this directory
+*
+# Except this file
+!.gitignore
