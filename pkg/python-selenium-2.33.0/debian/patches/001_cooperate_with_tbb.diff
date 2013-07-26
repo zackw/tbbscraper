@@ -1,0 +1,206 @@
+# Trying to make selenium play nice with TBB.
+# Doesn't quite work yet.
+
+--- a/py/selenium/webdriver/firefox/firefox_binary.py	2013-04-10 09:08:05.000000000 -0400
++++ b/py/selenium/webdriver/firefox/firefox_binary.py	2013-07-26 18:37:08.630074528 -0400
+@@ -20,7 +20,7 @@
+ from selenium.common.exceptions import WebDriverException
+ from selenium.webdriver.common import utils
+ import time
+-
++import sys
+ 
+ class FirefoxBinary(object):
+ 
+@@ -69,30 +69,29 @@
+             for cli in self.command_line:
+                 command.append(cli)
+ 
+-        Popen(command, stdout=PIPE, stderr=STDOUT,
+-              env=self._firefox_env).communicate()
++        #Popen(command, stdout=PIPE, stderr=STDOUT,
++        #      env=self._firefox_env).communicate()
+         command[1] = '-foreground'
+         self.process = Popen(
+-            command, stdout=PIPE, stderr=STDOUT,
++            command, #stdout=PIPE, stderr=STDOUT,
+             env=self._firefox_env)
+ 
+-    def _get_firefox_output(self):
+-      return self.process.communicate()[0]
++    #def _get_firefox_output(self):
++    #  return self.process.communicate()[0]
+ 
+     def _wait_until_connectable(self):
+         """Blocks until the extension is connectable in the firefox."""
+         count = 0
++        sys.stderr.write("Waiting for control connection (port %d)\n"
++                         % self.profile.port)
+         while not utils.is_connectable(self.profile.port):
+             if self.process.poll() is not None:
+                 # Browser has exited
+                 raise WebDriverException("The browser appears to have exited "
+-                      "before we could connect. The output was: %s" %
+-                      self._get_firefox_output())
+-            if count == 30:
++                      "before we could connect.")
++            if count == 60:
+                 self.kill()
+-                raise WebDriverException("Can't load the profile. Profile "
+-                      "Dir: %s Firefox output: %s" % (
+-                          self.profile.path, self._get_firefox_output()))
++                raise WebDriverException("Timeout waiting for control connection.")
+             count += 1
+             time.sleep(1)
+         return True
+--- a/py/selenium/webdriver/firefox/firefox_profile.py	2013-05-20 07:50:48.000000000 -0400
++++ b/py/selenium/webdriver/firefox/firefox_profile.py	2013-07-26 18:41:03.112890939 -0400
+@@ -12,6 +12,13 @@
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
++
++# HEAVILY MODIFIED, WILL NOT WORK OUTSIDE TBBDRIVER: In order to
++# interoperate properly with TBB, we must (a) not copy the profile we
++# are given, (b) add necessary preferences to extension-overrides.js
++# instead of user.js, and (c) leave alone a number of the preferences
++# that Selenium would normally adjust.
++
+ from __future__ import with_statement
+ 
+ import base64
+@@ -49,29 +56,29 @@
+         "browser.link.open_external": "2",
+         "browser.link.open_newwindow": "2",
+         "browser.offline": "false",
+-        "browser.safebrowsing.enabled": "false",
++#       "browser.safebrowsing.enabled": "false",
+         "browser.search.update": "false",
+-        "extensions.blocklist.enabled": "false",
++#       "extensions.blocklist.enabled": "false",
+         "browser.sessionstore.resume_from_crash": "false",
+         "browser.shell.checkDefaultBrowser": "false",
+         "browser.tabs.warnOnClose": "false",
+         "browser.tabs.warnOnOpen": "false",
+-        "browser.startup.page": "0",
+-        "browser.safebrowsing.malware.enabled": "false",
+-        "startup.homepage_welcome_url": "\"about:blank\"",
++#       "browser.startup.page": "0",
++#       "browser.safebrowsing.malware.enabled": "false",
++#       "startup.homepage_welcome_url": "\"about:blank\"",
+         "devtools.errorconsole.enabled": "true",
+-        "dom.disable_open_during_load": "false",
+-        "extensions.autoDisableScopes" : 10,
+-        "extensions.logging.enabled": "true",
++#       "dom.disable_open_during_load": "false",
++#       "extensions.autoDisableScopes" : 10,
++#       "extensions.logging.enabled": "true",
+         "extensions.update.enabled": "false",
+         "extensions.update.notifyUser": "false",
+         "network.manage-offline-status": "false",
+-        "network.http.max-connections-per-server": "10",
+-        "network.http.phishy-userpass-length": "255",
+-        "offline-apps.allow_by_default": "true",
+-        "prompts.tab_modal.enabled": "false",
+-        "security.fileuri.origin_policy": "3",
+-        "security.fileuri.strict_origin_policy": "false",
++#       "network.http.max-connections-per-server": "10",
++#       "network.http.phishy-userpass-length": "255",
++#       "offline-apps.allow_by_default": "true",
++#       "prompts.tab_modal.enabled": "false",
++#       "security.fileuri.origin_policy": "3",
++#       "security.fileuri.strict_origin_policy": "false",
+         "security.warn_entering_secure": "false",
+         "security.warn_entering_secure.show_once": "false",
+         "security.warn_entering_weak": "false",
+@@ -94,31 +101,21 @@
+         "dom.max_script_run_time": "30",
+         }
+ 
+-    def __init__(self,profile_directory=None):
++    def __init__(self, profile_directory):
+         """
+         Initialises a new instance of a Firefox Profile
+ 
+         :args:
+          - profile_directory: Directory of profile that you want to use.
+-           This defaults to None and will create a new
+-           directory when object is created.
++           WILL BE USED DIRECTLY, NOT COPIED.
+         """
+         self.default_preferences = copy.deepcopy(
+             FirefoxProfile.DEFAULT_PREFERENCES)
+         self.profile_dir = profile_directory
+-        self.tempfolder = None
+-        if self.profile_dir is None:
+-            self.profile_dir = self._create_tempfolder()
+-        else:
+-            self.tempfolder = tempfile.mkdtemp()
+-            newprof = os.path.join(self.tempfolder,
+-                "webdriver-py-profilecopy")
+-            shutil.copytree(self.profile_dir, newprof,
+-                ignore=shutil.ignore_patterns("parent.lock", "lock", ".parentlock"))
+-            self.profile_dir = newprof
+-            self._read_existing_userjs()
+         self.extensionsDir = os.path.join(self.profile_dir, "extensions")
+-        self.userPrefs = os.path.join(self.profile_dir, "user.js")
++        self.prefs = os.path.join(self.profile_dir, "preferences",
++                                  "extension-overrides.js")
++        self._read_existing_prefs()
+ 
+     #Public Methods
+     def set_preference(self, key, value):
+@@ -143,7 +140,7 @@
+         self._install_extension(extension)
+ 
+     def update_preferences(self):
+-        self._write_user_prefs(self.default_preferences)
++        self._write_prefs(self.default_preferences)
+ 
+     #Properties
+ 
+@@ -262,31 +259,21 @@
+         if len(host_details) > 1:
+             self.set_preference("network.proxy.%s_port" % key, int(host_details[2]))
+ 
+-    def _create_tempfolder(self):
+-        """
+-        Creates a temp folder to store User.js and the extension
+-        """
+-        return tempfile.mkdtemp()
+-
+-    def _write_user_prefs(self, user_prefs):
++    def _write_prefs(self, prefs):
+         """
+-        writes the current user prefs dictionary to disk
++        writes the current prefs dictionary to disk
+         """
+-        with open(self.userPrefs, "w") as f:
+-            for key, value in user_prefs.items():
+-                f.write('user_pref("%s", %s);\n' % (key, value))
+-
+-    def _read_existing_userjs(self):
+-        userjs_path = os.path.join(self.profile_dir, 'user.js')
+-        PREF_RE = re.compile(r'user_pref\("(.*)",\s(.*)\)')
+-        try:
+-            with open(userjs_path) as f:
+-                for usr in f:
+-                    matches = re.search(PREF_RE, usr)
+-                    self.default_preferences[matches.group(1)] = matches.group(2)
+-        except:
+-            # The profile given hasn't had any changes made, i.e no users.js
+-            pass
++        with open(self.prefs, "w") as f:
++            for key, value in prefs.items():
++                f.write('pref("%s", %s);\n' % (key, value))
++
++    def _read_existing_prefs(self):
++        PREF_RE = re.compile(r'^pref\("(.*)",\s(.*)\);$')
++        with open(self.prefs) as f:
++            for pref in f:
++                m = re.search(PREF_RE, pref)
++                if m:
++                    self.default_preferences[m.group(1)] = m.group(2)
+ 
+     def _install_extension(self, addon, unpack=True):
+         """
