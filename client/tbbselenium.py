@@ -58,7 +58,13 @@ class TbbDriver(object):
                 else:
                     shutil.copyfile(src, dst)
 
-            os.mkdir(os.path.join(self.work_dir, "Tor", "data"))
+            # The Tor/data directory needs to be mode 0700, and everything
+            # in it needs to be mode 0600, or else Tor won't trust it.
+            datadir = os.path.join(self.work_dir, "Tor", "data")
+            os.chmod(datadir, 0700)
+            for f in glob.iglob(os.path.join(datadir, "*")):
+                os.chmod(f, 0600)
+
             patch_file(os.path.join(self.work_dir, "Tor", "torrc"),
                        self.work_dir)
             patch_file(os.path.join(self.work_dir,
@@ -79,22 +85,18 @@ class TbbDriver(object):
             self.driver = Firefox(firefox_profile = profile,
                                   firefox_binary  = binary)
 
-            # We may have to wait *quite some time* for the browser + Tor
-            # client to spool up.
-            to_torcheck = WebDriverWait(driver, 60).until(
+            # Control only reaches this point when the browser is
+            # fully spooled up.  Make sure we are actually using Tor.
+            # FIXME: I can't figure out how to do "wait until onload
+            # fires, then see which image we have".
+
+            self.driver.get("https://check.torproject.org/")
+            WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located(
-                    By.xpath("//a[@href='https://check.torproject.org/']")))
+                    (By.XPATH,
+                     "//img[@src='/images/tor-on.png']")))
 
-            to_torcheck.click()
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located(
-                    By.xpath("//text()[contains(., 'This page is also available in the following languages:')]")))
-
-            if driver.find_element_by_xpath("//img[@src='/images/tor-on.png']"):
-                # Success!
-                return driver
-
-            raise RuntimeError("Tor Browser Bundle did not come up correctly.")
+            return self.driver
 
         except:
             # Undo any partial construction that may have happened.
@@ -111,11 +113,11 @@ class TbbDriver(object):
             self.server.wait()
             self.server = None
         if self.work_dir is not None:
-            #shutil.rmtree(self.work_dir, ignore_errors=True)
+            shutil.rmtree(self.work_dir, ignore_errors=True)
             self.work_dir = None
 
 if __name__ == '__main__':
     import time
     with TbbDriver() as driver:
         driver.get("https://duckduckgo.com/?q=muskrat+muskrat+muskrat")
-        time.sleep(60)
+        time.sleep(10)

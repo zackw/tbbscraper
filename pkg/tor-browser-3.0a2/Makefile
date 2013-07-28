@@ -7,7 +7,7 @@ libdir  = $(prefix)/lib/tor-browser
 docdir  = $(prefix)/share/doc/tor-browser
 
 all:
-	# Nothing to do.
+	./prime-tor-directory-cache
 
 install:
 	$(INSTALL) -d $(DESTDIR)$(bindir)

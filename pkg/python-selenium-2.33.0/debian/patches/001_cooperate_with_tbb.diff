@@ -1,8 +1,5 @@
-# Trying to make selenium play nice with TBB.
-# Doesn't quite work yet.
-
---- a/py/selenium/webdriver/firefox/firefox_binary.py	2013-04-10 09:08:05.000000000 -0400
-+++ b/py/selenium/webdriver/firefox/firefox_binary.py	2013-07-26 18:37:08.630074528 -0400
+--- x/py/selenium/webdriver/firefox/firefox_binary.py
++++ x/py/selenium/webdriver/firefox/firefox_binary.py
 @@ -20,7 +20,7 @@
  from selenium.common.exceptions import WebDriverException
  from selenium.webdriver.common import utils
@@ -44,7 +41,7 @@
 -                      self._get_firefox_output())
 -            if count == 30:
 +                      "before we could connect.")
-+            if count == 60:
++            if count == 600:
                  self.kill()
 -                raise WebDriverException("Can't load the profile. Profile "
 -                      "Dir: %s Firefox output: %s" % (
@@ -53,9 +50,9 @@
              count += 1
              time.sleep(1)
          return True
---- a/py/selenium/webdriver/firefox/firefox_profile.py	2013-05-20 07:50:48.000000000 -0400
-+++ b/py/selenium/webdriver/firefox/firefox_profile.py	2013-07-26 18:41:03.112890939 -0400
-@@ -12,6 +12,13 @@
+--- x/py/selenium/webdriver/firefox/firefox_profile.py
++++ x/py/selenium/webdriver/firefox/firefox_profile.py
+@@ -12,10 +12,18 @@
  # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  # See the License for the specific language governing permissions and
  # limitations under the License.
@@ -69,7 +66,12 @@
  from __future__ import with_statement
  
  import base64
-@@ -49,29 +56,29 @@
+ import copy
++import errno
+ import os
+ import re
+ import shutil
+@@ -49,29 +57,29 @@
          "browser.link.open_external": "2",
          "browser.link.open_newwindow": "2",
          "browser.offline": "false",
@@ -98,13 +100,12 @@
          "extensions.update.enabled": "false",
          "extensions.update.notifyUser": "false",
          "network.manage-offline-status": "false",
--        "network.http.max-connections-per-server": "10",
+         "network.http.max-connections-per-server": "10",
 -        "network.http.phishy-userpass-length": "255",
 -        "offline-apps.allow_by_default": "true",
 -        "prompts.tab_modal.enabled": "false",
 -        "security.fileuri.origin_policy": "3",
 -        "security.fileuri.strict_origin_policy": "false",
-+#       "network.http.max-connections-per-server": "10",
 +#       "network.http.phishy-userpass-length": "255",
 +#       "offline-apps.allow_by_default": "true",
 +#       "prompts.tab_modal.enabled": "false",
@@ -113,7 +114,17 @@
          "security.warn_entering_secure": "false",
          "security.warn_entering_secure.show_once": "false",
          "security.warn_entering_weak": "false",
-@@ -94,31 +101,21 @@
+@@ -88,37 +96,30 @@
+         "toolkit.telemetry.rejected": "true",
+         "javascript.options.showInConsole": "true",
+         "browser.dom.window.dump.enabled": "true",
+-        "webdriver_accept_untrusted_certs": "true",
++#        "webdriver_accept_untrusted_certs": "true",
++#        "webdriver_assume_untrusted_issuer": "true",
++        "webdriver_accept_untrusted_certs": "false",
++        "webdriver_assume_untrusted_issuer": "false",
+         "webdriver_enable_native_events": "true",
+-        "webdriver_assume_untrusted_issuer": "true",
          "dom.max_script_run_time": "30",
          }
  
@@ -142,15 +153,16 @@
 -                ignore=shutil.ignore_patterns("parent.lock", "lock", ".parentlock"))
 -            self.profile_dir = newprof
 -            self._read_existing_userjs()
-         self.extensionsDir = os.path.join(self.profile_dir, "extensions")
--        self.userPrefs = os.path.join(self.profile_dir, "user.js")
-+        self.prefs = os.path.join(self.profile_dir, "preferences",
-+                                  "extension-overrides.js")
+-        self.extensionsDir = os.path.join(self.profile_dir, "extensions")
+         self.userPrefs = os.path.join(self.profile_dir, "user.js")
++        self.extPrefs = os.path.join(self.profile_dir, "preferences",
++                                     "extension-overrides.js")
++        self.extensionsDir = os.path.join(self.profile_dir, "extensions")
 +        self._read_existing_prefs()
  
      #Public Methods
      def set_preference(self, key, value):
-@@ -143,7 +140,7 @@
+@@ -143,7 +144,7 @@
          self._install_extension(extension)
  
      def update_preferences(self):
@@ -159,7 +171,7 @@
  
      #Properties
  
-@@ -262,31 +259,21 @@
+@@ -262,31 +263,26 @@
          if len(host_details) > 1:
              self.set_preference("network.proxy.%s_port" % key, int(host_details[2]))
  
@@ -175,10 +187,11 @@
 -        writes the current user prefs dictionary to disk
 +        writes the current prefs dictionary to disk
          """
--        with open(self.userPrefs, "w") as f:
+         with open(self.userPrefs, "w") as f:
 -            for key, value in user_prefs.items():
--                f.write('user_pref("%s", %s);\n' % (key, value))
--
++            for key, value in prefs.items():
+                 f.write('user_pref("%s", %s);\n' % (key, value))
+ 
 -    def _read_existing_userjs(self):
 -        userjs_path = os.path.join(self.profile_dir, 'user.js')
 -        PREF_RE = re.compile(r'user_pref\("(.*)",\s(.*)\)')
@@ -190,17 +203,40 @@
 -        except:
 -            # The profile given hasn't had any changes made, i.e no users.js
 -            pass
-+        with open(self.prefs, "w") as f:
-+            for key, value in prefs.items():
-+                f.write('pref("%s", %s);\n' % (key, value))
-+
 +    def _read_existing_prefs(self):
-+        PREF_RE = re.compile(r'^pref\("(.*)",\s(.*)\);$')
-+        with open(self.prefs) as f:
-+            for pref in f:
-+                m = re.search(PREF_RE, pref)
-+                if m:
-+                    self.default_preferences[m.group(1)] = m.group(2)
++        PREF_RE = re.compile(r'^(?:user_)?pref\("(.*)",\s(.*)\);$')
++        for prefs in self.extPrefs, self.userPrefs:
++            try:
++                with open(prefs) as f:
++                    for pref in f:
++                        m = re.search(PREF_RE, pref)
++                        if m:
++                            self.default_preferences[m.group(1)] = m.group(2)
++            except EnvironmentError, e:
++                if e.errno != errno.ENOENT:
++                    raise
  
      def _install_extension(self, addon, unpack=True):
          """
+--- x/py/selenium/webdriver/firefox/webdriver.py
++++ x/py/selenium/webdriver/firefox/webdriver.py
+@@ -75,12 +75,13 @@ class WebDriver(RemoteWebDriver):
+             # the socket.
+             pass
+         self.binary.kill()
+-        try:
+-            shutil.rmtree(self.profile.path)
+-            if self.profile.tempfolder is not None:
+-                shutil.rmtree(self.profile.tempfolder)
+-        except Exception as e:
+-            print(str(e))
++        # We do not own the profile directory and have no business deleting it.
++        #try:
++        #    shutil.rmtree(self.profile.path)
++        #    if self.profile.tempfolder is not None:
++        #        shutil.rmtree(self.profile.tempfolder)
++        #except Exception as e:
++        #    print(str(e))
+ 
+     @property
+     def firefox_profile(self):

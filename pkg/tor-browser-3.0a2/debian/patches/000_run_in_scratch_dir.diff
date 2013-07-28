@@ -191,7 +191,7 @@
  fi
  
  # If the user hasn't requested 'debug mode', close whichever of stdout
-@@ -144,78 +82,42 @@
+@@ -144,78 +82,38 @@
    fi
  fi
  
@@ -263,10 +263,6 @@
 +trap 'rm -rf "'"$workdir"'"' 0
 +if cp -r /usr/lib/tor-browser/Data/* "$workdir"; then :; else
 +    complain "Could not copy profile information into working directory."
-+    exit 1
-+fi
-+if mkdir "$workdir"/Tor/data; then :; else
-+    complain "Could not set up working directory."
 +    exit 1
 +fi
 +
