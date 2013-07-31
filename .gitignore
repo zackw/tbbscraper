@@ -4,6 +4,9 @@
 *.orig
 *.rej
 
+/controller_identity
+/controller_identity.pub
+
 /pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
 /pkg/selenium-server-2.33.0/debian/selenium-server/

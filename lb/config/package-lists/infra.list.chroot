@@ -2,6 +2,8 @@ linux-image-amd64
 haveged
 openssh-client
 openssh-server
+python-execnet
+open-vm-tools
 
 xserver-xorg
 xinit
@@ -10,3 +12,4 @@ lxterminal
 gxmessage
 fonts-liberation
 fonts-droid
+open-vm-tools-desktop

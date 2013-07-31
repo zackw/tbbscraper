@@ -30,7 +30,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-def patch_file(fname, workdir):
+def patch_file(fname, workdir, append_text=""):
     (fd, tmpname) = tempfile.mkstemp(prefix="pat_",
                                      dir=os.path.dirname(fname),
                                      text=True)
@@ -38,16 +38,22 @@ def patch_file(fname, workdir):
     inf = open(fname, "rU")
     for line in inf:
         ouf.write(line.replace("@WORKDIR@", workdir))
+    if append_text:
+        ouf.write(append_text)
     inf.close()
     ouf.close()
     os.rename(tmpname, fname)
 
 class TbbDriver(object):
-    def __init__(self, bundle_dir="/usr/lib/tor-browser"):
+    def __init__(self, entry_ip, entry_port, entry_node, exclude_nodes,
+                 bundle_dir="/usr/lib/tor-browser"):
+        self.entry_ip = entry_ip
+        self.entry_port = entry_port
+        self.entry_node = entry_node
+        self.exclude_nodes = exclude_nodes
         self.bundle_dir = bundle_dir
         self.work_dir = None
         self.driver = None
-        self.server = None
 
     def __enter__(self):
         try:
@@ -67,17 +73,33 @@ class TbbDriver(object):
                 os.chmod(f, 0600)
 
             patch_file(os.path.join(self.work_dir, "Tor", "torrc"),
-                       self.work_dir)
+                       self.work_dir, """\
+#ExcludeNodes {cf.exclude_nodes}
+Bridge {cf.entry_ip}:{cf.entry_port}
+UseBridges 1
+UseMicroDescriptors 0
+Log debug stderr
+""".format(cf=self))
             patch_file(os.path.join(self.work_dir,
                                     "profile", "preferences",
                                     "extension-overrides.js"),
                        self.work_dir)
 
-            #self.server = subprocess.Popen(["selenium-server"])
-
             os.environ["LD_LIBRARY_PATH"] = \
                 os.path.join(self.bundle_dir, "App", "Firefox") + ":" + \
                 os.path.join(self.bundle_dir, "Lib")
+
+            if "DISPLAY" not in os.environ:
+                os.environ["DISPLAY"] = ":0"
+                if "XAUTHORITY" not in os.environ:
+                    os.environ["XAUTHORITY"] = os.path.join(os.environ["HOME"],
+                                                            ".Xauthority")
+                xerrors = os.open(os.path.join(os.environ["HOME"],
+                                               ".xsession-errors"),
+                                  os.O_WRONLY|os.O_CREAT|os.O_APPEND, 0666)
+                os.dup2(xerrors, 1)
+                os.dup2(xerrors, 2)
+                os.close(xerrors)
 
             profile = FirefoxProfile(os.path.join(
                     self.work_dir, "profile"))
@@ -109,10 +131,6 @@ class TbbDriver(object):
         if self.driver is not None:
             self.driver.quit()
             self.driver = None
-        if self.server is not None:
-            self.server.terminate()
-            self.server.wait()
-            self.server = None
         if self.work_dir is not None:
             shutil.rmtree(self.work_dir, ignore_errors=True)
             self.work_dir = None
@@ -132,8 +150,10 @@ elif __name__ == '__channelexec__':
         # The first thing sent over the master channel is information
         # about how we should run Tor, plus a subsidiary channel for
         # reporting back timestamped URLs.
-        (entry_ip, entry_port, url_channel) = channel.receive()
-        with TbbDriver() as driver:
+        (entry_ip, entry_port, entry_node, entry_family, url_channel) = \
+            channel.receive()
+        with TbbDriver(entry_ip, entry_port, entry_node, entry_family) \
+                as driver:
             wait = WebDriverWait(driver, 10)
             for block in channel:
                 if len(block) == 0: break
