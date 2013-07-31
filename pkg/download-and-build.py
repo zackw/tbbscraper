@@ -141,11 +141,6 @@ def extract_python_selenium(pkgdir, tarball):
     os.unlink(pkgdir+"/py/selenium/webdriver/firefox/x86/x_ignore_nofocus.so")
     os.rmdir (pkgdir+"/py/selenium/webdriver/firefox/x86/")
 
-def extract_selenium_server(pkgdir, tarball):
-    # The upstream is a single jar file.  Copy it to the name expected by
-    # the build scripts.
-    shutil.copy(tarball, pkgdir + "/selenium-server.jar")
-
 packages = [PackageConstructor(**spec) for spec in [
     { "source_url" :
           "https://archive.torproject.org/tor-package-archive/torbrowser/3.0a2/"
@@ -172,19 +167,6 @@ packages = [PackageConstructor(**spec) for spec in [
       "package_builddir"   : "python-selenium-2.33.0",
       "package_extractor"  : extract_python_selenium
     },
-
-#    { "source_url" :
-#          "http://selenium.googlecode.com/files/"
-#              "selenium-server-standalone-2.33.0.jar",
-#      "download_name" : "selenium-server-2.33.0.jar",
-#      "download_size" : 34297072,
-#      "download_sha" :
-#          "68ba647e91d144d5b1bb2e0479774ebca5d4fc201566760735280c46e70a951e",
-#      "package_debfile"    : "selenium-server_2.33.0-1_all.deb",
-#      "package_changefile" : "selenium-server_2.33.0-1_amd64.changes",
-#      "package_builddir"   : "selenium-server-2.33.0",
-#      "package_extractor"  : extract_selenium_server
-#    },
 ]]
 
 for pkg in packages:
