@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 from selenium.webdriver import Firefox
 from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
@@ -121,3 +122,29 @@ if __name__ == '__main__':
     with TbbDriver() as driver:
         driver.get("https://duckduckgo.com/?q=muskrat+muskrat+muskrat")
         time.sleep(10)
+
+# When invoked by controller.py over execnet, __name__ is set this way.
+elif __name__ == '__channelexec__':
+    def readystate_complete(d):
+        return d.execute_script("return document.readyState") == "complete"
+
+    def worker_bee(channel):
+        # The first thing sent over the master channel is information
+        # about how we should run Tor, plus a subsidiary channel for
+        # reporting back timestamped URLs.
+        (entry_ip, entry_port, url_channel) = channel.receive()
+        with TbbDriver() as driver:
+            wait = WebDriverWait(driver, 10)
+            for block in channel:
+                if len(block) == 0: break
+                for url in block:
+                    # Python is probably using gettimeofday(), so round to
+                    # microseconds
+                    url_channel.send("{:.6f}|{}".format(time.time(),url))
+                    time.sleep(0.1)
+                    driver.get(url)
+                    wait.until(readystate_complete)
+                    time.sleep(0.1)
+        url_channel.close()
+
+    worker_bee(channel)
