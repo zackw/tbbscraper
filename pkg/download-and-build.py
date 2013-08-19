@@ -74,7 +74,7 @@ class PackageConstructor(object):
 
         (exists, good, present_size) = self.check_file()
         if not good:
-            if present_size != st.st_size:
+            if present_size != self.download_size:
                 sys.stderr.write(
                     "%s: download failure: wanted %d bytes, got %d\n"
                     % (self.download_name, self.download_size, present_size))
@@ -123,7 +123,8 @@ class PackageConstructor(object):
 
         os.unlink(self.package_changefile)
         if not self.check_package():
-            sys.stderr.write("%s: package build failed\n")
+            sys.stderr.write("%s: package build failed\n"
+                             % self.package_debfile)
             raise RuntimeError
 
 def extract_tbb(pkgdir, tarball):
@@ -143,15 +144,15 @@ def extract_python_selenium(pkgdir, tarball):
 
 packages = [PackageConstructor(**spec) for spec in [
     { "source_url" :
-          "https://archive.torproject.org/tor-package-archive/torbrowser/3.0a2/"
-              "tor-browser-linux64-3.0-alpha-2_en-US.tar.xz",
-      "download_name" : "tor-browser-3.0a2.tar.xz",
-      "download_size" : 22835272,
+          "https://archive.torproject.org/tor-package-archive/torbrowser/3.0a3/"
+              "tor-browser-linux64-3.0-alpha-3_en-US.tar.xz",
+      "download_name" : "tor-browser-3.0a3.tar.xz",
+      "download_size" : 22789716,
       "download_sha" :
-          "922f9662f029b99739cd2c7a8ceabf156305a93f748278f9d23b9471c5b1b619",
-      "package_debfile"    : "tor-browser_3.0~a2-1_amd64.deb",
-      "package_changefile" : "tor-browser_3.0~a2-1_amd64.changes",
-      "package_builddir"   : "tor-browser-3.0a2",
+          "dca0707416412f3d43a99cb5ea20bb81b51caac2d0c28aa7bfa45cad4153fb55",
+      "package_debfile"    : "tor-browser_3.0~a3-1_amd64.deb",
+      "package_changefile" : "tor-browser_3.0~a3-1_amd64.changes",
+      "package_builddir"   : "tor-browser-3.0a3",
       "package_extractor"  : extract_tbb
     },
 
