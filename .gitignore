@@ -4,8 +4,21 @@
 *.orig
 *.rej
 
+/client-ips
+/controller.ini
 /controller_identity
 /controller_identity.pub
+/controller_sshconfig
+
+/client/controller.ini
+/client/controller_identity
+/client/controller_sshconfig
+/client/tbbscraper_tor.*
+/client/*.pyc
+/client/*.pkts
+/client/*.urls
+
+/pkg/open-vm-*
 
 /pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
@@ -60,3 +73,4 @@
 /lb/config/chroot
 /lb/config/common
 /lb/config/source
+/lb/config/includes.chroot/etc/skel/.ssh/
