@@ -3,7 +3,8 @@ haveged
 openssh-client
 openssh-server
 python-execnet
-open-vm-tools
+#open-vm-tools
+ntp
 
 xserver-xorg
 xinit
@@ -12,4 +13,4 @@ lxterminal
 gxmessage
 fonts-liberation
 fonts-droid
-open-vm-tools-desktop
+#open-vm-tools-desktop

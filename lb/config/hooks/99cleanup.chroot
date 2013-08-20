@@ -4,7 +4,7 @@
 
 # Unusually, we want to ignore exit status for all commands in this script.
 
-UNWANTED_PACKAGES="apt-utils aptitude man-db manpages info wget"
+UNWANTED_PACKAGES="apt-utils aptitude man-db manpages info wget linux-image-3.10-2-rt-amd64"
 
 apt-get remove --purge --yes $UNWANTED_PACKAGES
 apt-get autoremove --purge --yes
