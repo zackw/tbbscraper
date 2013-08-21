@@ -7,6 +7,7 @@
 # each worker bee with which to annotate the logged traffic.
 
 import execnet
+import itertools
 import os
 import signal
 import subprocess
@@ -79,16 +80,16 @@ class TorRelay(object):
 BandwidthRate  {cf.bandwidth}
 BandwidthBurst {cf.bandwidth}
 DataDirectory  tbbscraper_tor.data
-Log            debug stdout
+ContactInfo    if this appears somewhere public something is horribly wrong
+Log            notice stdout
 HardwareAccel  1
 Address        {cf.my_ip}
 ExitPolicy     reject *:*
-#MyFamily       {cf.my_family}
 Nickname       {cf.my_nickname}
 PublishServerDescriptor 0
+AssumeReachable 1
 ShutdownWaitLength 10
 SOCKSPort 0
-DirPort 8999
 BridgeRelay 1
 BridgeRecordUsageByCountry 0
 DirReqStatistics 0
@@ -131,6 +132,7 @@ class Config(object):
                     v = v.lstrip()
                     setattr(self, k, v)
 
+        self.batch_size = int(self.batch_size)
         self.client_ips = self.client_ips.split()
         self.low_tor_port = int(self.low_tor_port)
         self.high_tor_port = self.low_tor_port + len(self.client_ips) - 1
@@ -139,24 +141,27 @@ class Config(object):
                                              range(self.low_tor_port,
                                                    self.high_tor_port + 1)) }
 
+def chunk_seq(iterable, size):
+    it = iter(iterable)
+    while True:
+        item = list(itertools.islice(it, size))
+        if not item: break
+        yield item
+
 cfg = Config("controller.ini")
+with open(cfg.batch_list, "rU") as f:
+    urls = [l.strip() for l in f]
 with TorRelay(cfg):
     time.sleep(5)
     clients = [Client(ip, cfg.my_ip, port, cfg.my_nickname, cfg.my_family)
                for ip, port in cfg.clients.items()]
 
-    clients[0].worker_chan.send([
-        "http://facebook.com/",
-        "http://google.com/",
-#        "http://youtube.com/",
-#        "http://yahoo.com/",
-#        "http://baidu.com/",
-#        "http://amazon.com/",
-#        "http://qq.com/",
-#        "http://live.com/",
-#        "http://taobao.com/",
-#        "http://wikipedia.org/",
-        "http://freefall.purrsia.com/"
-    ])
-    clients[0].worker_chan.send([])
-    clients[0].worker_chan.waitclose()
+    nclients = len(clients)
+    i = 0
+    for block in chunk_seq(urls, cfg.batch_size):
+        clients[i % nclients].worker_chan.send(block)
+        i += 1
+
+    for cl in clients:
+        cl.worker_chan.send([])
+        cl.worker_chan.waitclose()

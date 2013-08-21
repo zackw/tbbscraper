@@ -74,11 +74,9 @@ class TbbDriver(object):
 
             patch_file(os.path.join(self.work_dir, "Tor", "torrc"),
                        self.work_dir, """\
-#ExcludeNodes {cf.exclude_nodes}
+ExcludeNodes {cf.exclude_nodes}
 Bridge {cf.entry_ip}:{cf.entry_port}
 UseBridges 1
-UseMicroDescriptors 0
-Log debug stderr
 """.format(cf=self))
             patch_file(os.path.join(self.work_dir,
                                     "profile", "preferences",
