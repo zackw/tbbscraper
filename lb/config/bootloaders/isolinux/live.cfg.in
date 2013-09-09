@@ -1,5 +1,0 @@
-label live-@FLAVOUR@
-	linux @LINUX@
-	initrd @INITRD@
-	append @APPEND_LIVE@ noeject
-default live-@FLAVOUR@
