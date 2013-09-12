@@ -1,26 +1,26 @@
 #! /usr/bin/python
 
-# This does much the same stuff that the stock start-tor-browser shell
-# script does, but also spins up a Selenium controller for the
-# browser.  Intended usage is
-#
-#  with TbbDriver() as driver:
-#      # If control enters this block, a Tor Browser Bundle instance
-#      # was successfully started and navigated to
-#      # https://check.torproject.org/, and that page indicated that
-#      # we are in fact using Tor; 'driver' is the Selenium driver
-#      # object.
-#
-# The elaborate "get an error message to the user by any means necessary"
-# mechanism has been removed, since this is for scripting use.
+# This is the program that will run on each worker-bee host.  It
+# reaches out to the controller / entry node for its configuration,
+# then spins up a TBB process under Selenium control, and then
+# proceeds to load URLs as directed by the controller.  Each time a
+# load completes, the controller is notified of the complete set of
+# links (A tags) out from the page.  Deciding what to do with that is
+# entirely up to the controller.
 
 import glob
 import os
+import cPickle as pickle
+import pickletools
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import urlparse
+
+import zmq
+import zmq.ssh
 
 from selenium.webdriver import Firefox
 from selenium.webdriver.firefox.firefox_profile import FirefoxProfile
@@ -29,6 +29,21 @@ from selenium.webdriver.firefox.firefox_binary import FirefoxBinary
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+from selenium.common.exceptions import WebDriverException
+
+def is_http(url):
+    us = urlparse.urlsplit(url)
+    return us.scheme == "http" or us.scheme == "https" or us.scheme == ""
+
+def pickled(cmd, *args):
+    # The optimize() is here because pickle is tuned for backreferences at
+    # the expense of wire output length when there are no backreferences.
+    return pickletools.optimize(pickle.dumps((cmd, args),
+                                             pickle.HIGHEST_PROTOCOL))
+
+def unpickled(pickl):
+    return pickle.loads(pickl)
 
 def patch_file(fname, workdir, append_text=""):
     (fd, tmpname) = tempfile.mkstemp(prefix="pat_",
@@ -45,6 +60,14 @@ def patch_file(fname, workdir, append_text=""):
     os.rename(tmpname, fname)
 
 class TbbDriver(object):
+    """This class is geared to be used in a with-statement.
+       with TbbDriver(...) as driver:
+           # If control enters this block, a Tor Browser Bundle instance
+           # was successfully started and navigated to
+           # https://check.torproject.org/, and that page indicated that
+           # we are in fact using Tor.  'driver' is the Selenium driver
+           # object.
+    """
     def __init__(self, entry_ip, entry_port, entry_node, exclude_nodes,
                  bundle_dir="/usr/lib/tor-browser"):
         self.entry_ip = entry_ip
@@ -54,6 +77,8 @@ class TbbDriver(object):
         self.bundle_dir = bundle_dir
         self.work_dir = None
         self.driver = None
+        if not os.path.isdir(os.path.join(bundle_dir, "Data")):
+            raise RuntimeError("no TBB found at " + bundle_dir)
 
     def __enter__(self):
         try:
@@ -133,36 +158,132 @@ UseBridges 1
             shutil.rmtree(self.work_dir, ignore_errors=True)
             self.work_dir = None
 
+
+class WorkerConnection(object):
+    """This class is also geared to be used in a with-statement.
+       with WorkerConnection(...) as conn:
+           # if control reaches this point, we have a successful
+           # connection to the controller host, and 'conn' will
+           # reveal details about how Tor is to be started, then
+           # provide the message queue.
+    """
+    def __init__(self, address, tunnel=None):
+        self.tunnel = tunnel
+        self.address = address
+        self.req = None
+        self.context = None
+
+    def __enter__(self):
+        try:
+            self.context = zmq.Context()
+            self.req = self.context.socket(zmq.REQ)
+            self.req.setsockopt(zmq.LINGER, 0)
+            if self.tunnel:
+                zmq.ssh.tunnel_connection(self.req, self.address, self.tunnel)
+            else:
+                self.req.connect(self.address)
+
+            self.req.send(pickled("HELO"))
+            (cmd, args) = unpickled(self.req.recv())
+            if cmd != "HELO":
+                raise RuntimeError("protocol error: expected HELO, got %s%s"
+                                   % (repr(cmd), repr(args)))
+            if len(args) != 4:
+                raise RuntimeError("protocol error: expected 4 args to HELO"
+                                   " (got %s)" % repr(args))
+            (self.entry_ip, self.entry_port, self.entry_node,
+             self.entry_family) = args
+            return self
+
+        except:
+            # Undo any partial construction that may have happened.
+            self.__exit__()
+            raise
+
+    def __exit__(self, *dontcare):
+        if self.req is not None:
+            self.req.close()
+        if self.context is not None:
+            self.context.destroy()
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        while True:
+            self.req.send(pickled("NEXT"))
+            (cmd, args) = unpickled(self.req.recv())
+            if cmd == "DONE":
+                if len(args) > 0:
+                    raise RuntimeError("protocol error: DONE takes no args"
+                                       " (got {!r})".format(args))
+                raise StopIteration
+            elif cmd == "LOAD":
+                if len(args) != 2:
+                    raise RuntimeError("protocol error: LOAD takes two args"
+                                       " (got {!r})".format(args))
+                return args
+            elif cmd == "WAIT":
+                if len(args) != 1:
+                    raise RuntimeError("protocol error: WAIT takes one arg"
+                                       " (got {!r})".format(args))
+                time.sleep(args[0])
+                continue
+            else:
+                raise RuntimeError("protocol error: unrecognized command {}{!r}"
+                                   .format(cmd, args))
+
+    def report_urls(self, depth, urls):
+        self.req.send(pickled("URLS", depth+1, urls))
+        (cmd, args) = unpickled(self.req.recv())
+        if cmd == "OK" and len(args) == 0:
+            return
+        raise RuntimeError("protocol error: expected OK, got %s%s"
+                           % (repr(cmd), repr(args)))
+
 if __name__ == '__main__':
-    import time
-    with TbbDriver() as driver:
-        driver.get("https://duckduckgo.com/?q=muskrat+muskrat+muskrat")
-        time.sleep(10)
+    def worker_bee(argv):
+        with WorkerConnection(*argv) as conn:
+            with TbbDriver(conn.entry_ip,
+                           conn.entry_port,
+                           conn.entry_node,
+                           conn.entry_family) as driver:
+                link_elts = {}
+                driver.implicitly_wait(10)
+                driver.set_page_load_timeout(10)
+                for (depth, url) in conn:
+                    try:
+                        # If this is a URL corresponding to a link on
+                        # the current page, first try to load it by
+                        # clicking the link.
+                        if False: #url in link_elts:
+                            try:
+                                link_elts[url].click()
+                            except WebDriverException:
+                                driver.get(url)
+                        else:
+                            driver.get(url)
 
-# When invoked by controller.py over execnet, __name__ is set this way.
-elif __name__ == '__channelexec__':
-    def readystate_complete(d):
-        return d.execute_script("return document.readyState") == "complete"
+                        link_elts.clear()
+                        for elt in driver.find_elements_by_xpath("//a[@href]"):
+                            try:
+                                href = elt.get_attribute("href")
+                                canon = urlparse.urljoin(url, href)
+                                if canon != url and is_http(canon):
+                                    link_elts[canon] = elt
+                            except WebDriverException:
+                                pass
 
-    def worker_bee(channel):
-        # The first thing sent over the master channel is information
-        # about how we should run Tor, plus a subsidiary channel for
-        # reporting back timestamped URLs.
-        (entry_ip, entry_port, entry_node, entry_family, url_channel) = \
-            channel.receive()
-        with TbbDriver(entry_ip, entry_port, entry_node, entry_family) \
-                as driver:
-            wait = WebDriverWait(driver, 10)
-            for block in channel:
-                if len(block) == 0: break
-                for url in block:
-                    # Python is probably using gettimeofday(), so round to
-                    # microseconds
-                    url_channel.send("{:.6f}|{}".format(time.time(),url))
+                        sys.stderr.write("{}: depth {}, {} outbound links\n"
+                                         .format(url, depth, len(link_elts)))
+                        conn.report_urls(depth, link_elts.keys())
+
+                    except WebDriverException:
+                        sys.stderr.write("{}: depth {}, "
+                                         "link extraction failure\n"
+                                         .format(url, depth))
+                        conn.report_urls(depth, [])
+
                     time.sleep(0.1)
-                    driver.get(url)
-                    wait.until(readystate_complete)
-                    time.sleep(0.1)
-        url_channel.close()
 
-    worker_bee(channel)
+    worker_bee(sys.argv[1:])
