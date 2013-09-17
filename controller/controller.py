@@ -12,12 +12,11 @@ import os
 import cPickle as pickle
 import pickletools
 import random
-import shutil
 import signal
+import stat
 import string
 import subprocess
 import sys
-import tempfile
 import time
 
 import zmq
@@ -36,14 +35,15 @@ def pickled(cmd, *args):
 def unpickled(pickl):
     return pickle.loads(pickl)
 
-class tagger(object):
-    def __init__(self, symbols=string.ascii_uppercase):
-        self.n = 0
-        self.symbols = symbols
-    def __call__(self):
-        (quo, rem) = divmod(self.n, len(self.symbols))
-        self.n += 1
-        return self.symbols[rem] * (quo+1)
+def ensure_directory(path, mode=511): # 511 == 0777
+    try:
+        os.makedirs(path, mode)
+        # Make sure the last path component has exactly the desired mode.
+        os.chmod(path, mode)
+    except OSError, e:
+        if e.errno != errno.EEXIST:
+            raise
+        os.chmod(path, mode)
 
 def print_init_msg(line):
     sys.stderr.write("| " + line.strip() + "\n")
@@ -59,8 +59,9 @@ class TorBridge(object):
 
     def __enter__(self):
         try:
-            self.datadir = tempfile.mkdtemp(prefix="bridge-data-",
-                                            dir=os.getcwd())
+            self.datadir = os.path.realpath(self.cfg.tor_data_dir)
+            ensure_directory(self.datadir,
+                             stat.S_IRUSR|stat.S_IWUSR|stat.S_IXUSR)
             self.ctl_path = os.path.join(self.datadir, 'control')
             self.log_path = os.path.join(self.datadir, 'tor.log')
             self.process = stem.process.launch_tor_with_config(config={
@@ -109,9 +110,6 @@ class TorBridge(object):
         elif self.process is not None:
             self.process.send_signal(signal.SIGINT)
             self.process.wait()
-
-        if self.datadir is not None:
-            shutil.rmtree(self.datadir)
 
     def add_client_port(self):
         # Note that the "base port" is never actually used by a client.
@@ -173,7 +171,8 @@ class Client(object):
         self.bridge       = bridge
         self.port         = bridge.add_client_port()
         self.shark        = subprocess.Popen(
-            ["tshark", "-q", "-Xlua_script:fingerprint_extract.lua",
+            [#"dumpcap", "-w", self.pkt_log_name, "-f",
+             "tshark", "-q", "-l", "-Xlua_script:fingerprint_extract.lua",
              "ip host {} and tcp port {}".format(bridge.cfg.my_ip,
                                                  self.port)],
             stdin=devnull,
@@ -189,6 +188,7 @@ class Client(object):
         if self.bridge:
             self.bridge.del_client_port(self.port)
             self.bridge = None
+            self.port = None
 
         if self.shark is not None:
             try:
@@ -197,40 +197,47 @@ class Client(object):
                 if e.errno != errno.ESRCH:
                     raise
             self.shark.wait()
+            self.shark = None
 
         if self.pkt_log_fp is not None:
             self.pkt_log_fp.close()
+            self.pkt_log_fp = None
         if self.url_log_fp is not None:
             self.url_log_fp.close()
+            self.url_log_fp = None
 
         if self.global_queue:
             if self.local_queue:
                 self.global_queue.extendleft(self.local_queue)
-                self.global_queue = None
+                self.local_queue.clear()
             if self.current_url is not None:
                 self.global_queue.appendleft(self.current_url)
                 self.current_url = None
 
-    def process(self, cmd, args):
-        # Only accept messages while there is an active bridge address
-        # for this client.
-        if self.bridge:
-            self.last_event = time.time()
-            if cmd == "NEXT" and len(args) == 0:
-                return self.NEXT()
-            if cmd == "URLS" and len(args) == 2:
-                return self.URLS(*args)
-            if cmd == "HELO" and len(args) == 0:
-                return self.HELO()
-            # else fall thru to protocol errors
+        return pickled("DONE")
 
-        sys.stderr.write("%s: protocol error: unrecognized or invalid "
+    def process(self, cmd, args):
+        self.last_event = time.time()
+
+        if cmd == "HELO" and len(args) == 0:
+            return self.HELO()
+        if cmd == "NEXT" and len(args) == 0:
+            return self.NEXT()
+        if cmd == "URLS" and len(args) == 2:
+            return self.URLS(*args)
+
+        sys.stderr.write("\n%s: protocol error: unrecognized or invalid "
                          "client request: %s%s\n"
                          % (self.tag, repr(cmd), repr(args)))
-        self.teardown()
-        return pickled("DONE") # kill off this client
+        return self.teardown()
 
     def HELO(self):
+        if self.was_setup or self.bridge is not None:
+            sys.stderr.write("\n%s: protocol error: HELO out of sequence\n"
+                             % self.tag)
+            return self.teardown()
+
+        self.setup(bridge, cfg.urls)
         return pickled("HELO",
                        self.bridge.cfg.my_ip,
                        str(self.port),
@@ -238,21 +245,46 @@ class Client(object):
                        self.bridge.cfg.my_family)
 
     def NEXT(self):
+        if not self.was_setup:
+            sys.stderr.write("\n%s: protocol error: NEXT before HELO\n"
+                             % self.tag)
+            return self.teardown()
+        if self.current_url is not None:
+            sys.stderr.write("\n%s: protocol error: expected URLS\n"
+                             % self.tag)
+            return self.teardown()
+        if self.bridge is None:
+            return self.teardown()
+
         if self.local_queue:
             self.current_url = self.local_queue.pop()
         elif self.global_queue:
             self.current_url = self.global_queue.pop()
         else:
-            self.current_url = None
-            self.teardown()
-            return pickled("DONE")
+            return self.teardown()
+
         self.url_log_fp.write("{:.6f} start {}\n".format(self.last_event,
                                                          self.current_url))
+        self.url_log_fp.flush()
         return pickled("LOAD", *self.current_url)
 
     def URLS(self, depth, urls):
+        if not self.was_setup:
+            sys.stderr.write("\n%s: protocol error: URLS before HELO\n"
+                             % self.tag)
+            return self.teardown()
+        if self.current_url is None:
+            sys.stderr.write("\n%s: protocol error: expected NEXT\n"
+                             % self.tag)
+            return self.teardown()
+        if self.bridge is None:
+            return self.teardown()
+
         self.url_log_fp.write("{:.6f} stop  {}\n".format(self.last_event,
                                                          self.current_url))
+        self.url_log_fp.flush()
+        self.current_url = None
+
         self.local_queue.extendleft((depth, url)
                                     for url in self.choose_links(depth, urls))
         return pickled("OK")
@@ -289,8 +321,6 @@ def controller_loop(cfg, bridge):
                 client = clients[address]
                 sys.stderr.write(" ")
                 sys.stderr.write(client.tag)
-                if not client.was_setup:
-                    client.setup(bridge, cfg.urls)
                 reply = client.process(cmd, args)
                 sock.send_multipart([address, "", reply])
             else:

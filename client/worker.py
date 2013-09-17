@@ -172,6 +172,7 @@ class WorkerConnection(object):
         self.address = address
         self.req = None
         self.context = None
+        self.done = False
 
     def __enter__(self):
         try:
@@ -186,6 +187,10 @@ class WorkerConnection(object):
             self.req.send(pickled("HELO"))
             (cmd, args) = unpickled(self.req.recv())
             if cmd != "HELO":
+                if cmd == "DONE" and len(args) == 0:
+                    self.done = True
+                    return self
+
                 raise RuntimeError("protocol error: expected HELO, got %s%s"
                                    % (repr(cmd), repr(args)))
             if len(args) != 4:
@@ -211,12 +216,16 @@ class WorkerConnection(object):
 
     def next(self):
         while True:
+            if self.done:
+                raise StopIteration
+
             self.req.send(pickled("NEXT"))
             (cmd, args) = unpickled(self.req.recv())
             if cmd == "DONE":
                 if len(args) > 0:
                     raise RuntimeError("protocol error: DONE takes no args"
                                        " (got {!r})".format(args))
+                self.done = True
                 raise StopIteration
             elif cmd == "LOAD":
                 if len(args) != 2:
@@ -238,24 +247,30 @@ class WorkerConnection(object):
         (cmd, args) = unpickled(self.req.recv())
         if cmd == "OK" and len(args) == 0:
             return
-        raise RuntimeError("protocol error: expected OK, got %s%s"
+        if cmd == "DONE" and len(args) == 0:
+            self.done = True
+            return
+        raise RuntimeError("protocol error: expected OK or DONE, got %s%s"
                            % (repr(cmd), repr(args)))
 
 if __name__ == '__main__':
     def worker_bee(argv):
         with WorkerConnection(*argv) as conn:
+            if conn.done: return
             with TbbDriver(conn.entry_ip,
                            conn.entry_port,
                            conn.entry_node,
                            conn.entry_family) as driver:
                 link_elts = {}
-                driver.implicitly_wait(10)
-                driver.set_page_load_timeout(10)
+                driver.implicitly_wait(60)
+                driver.set_page_load_timeout(60)
                 for (depth, url) in conn:
                     try:
                         # If this is a URL corresponding to a link on
                         # the current page, first try to load it by
                         # clicking the link.
+                        #XXX temporarily disabled till we figure out how to
+                        # deal with sketchy sites that open windows on click.
                         if False: #url in link_elts:
                             try:
                                 link_elts[url].click()
@@ -268,7 +283,15 @@ if __name__ == '__main__':
                         for elt in driver.find_elements_by_xpath("//a[@href]"):
                             try:
                                 href = elt.get_attribute("href")
-                                canon = urlparse.urljoin(url, href)
+                                # We don't want to load non-HTTP URLs,
+                                # links back to the current page, or
+                                # links differing from the current
+                                # page only in a fragment identifier.
+                                # The controller will handle the
+                                # general case of not repeating page
+                                # loads within a site.
+                                canon = urlparse.urldefrag(
+                                    urlparse.urljoin(url, href))[0]
                                 if canon != url and is_http(canon):
                                     link_elts[canon] = elt
                             except WebDriverException:
@@ -278,12 +301,13 @@ if __name__ == '__main__':
                                          .format(url, depth, len(link_elts)))
                         conn.report_urls(depth, link_elts.keys())
 
-                    except WebDriverException:
+                    except WebDriverException, e:
                         sys.stderr.write("{}: depth {}, "
-                                         "link extraction failure\n"
-                                         .format(url, depth))
+                                         "link extraction failure ({})\n"
+                                         .format(url, depth, e.msg))
                         conn.report_urls(depth, [])
 
                     time.sleep(0.1)
 
     worker_bee(sys.argv[1:])
+    sys.stdout.write("\nDONE\n")
