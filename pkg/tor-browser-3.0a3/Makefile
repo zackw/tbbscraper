@@ -18,6 +18,8 @@ install:
 	cp -r --preserve=mode Lib  $(DESTDIR)$(libdir)/Lib
 	cp -r --preserve=mode Data $(DESTDIR)$(libdir)/Data
 	rm -rf $(DESTDIR)$(libdir)/Lib/libz/
+	rm -f $(DESTDIR)$(libdir)/Lib/libcrypto.so*
+	rm -f $(DESTDIR)$(libdir)/Lib/libssl.so*
 	chmod -R go+rX $(DESTDIR)$(libdir)
 
 	$(INSTALL) -d $(DESTDIR)$(docdir)

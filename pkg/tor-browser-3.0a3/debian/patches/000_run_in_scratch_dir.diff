@@ -180,6 +180,15 @@ Index: tor-browser-3.0a3/start-tor-browser
  }
  
  if [ "`id -u`" -eq 0 ]; then
+@@ -65,7 +65,7 @@ if [ "`id -u`" -eq 0 ]; then
+ fi
+ 
+ SYSARCHITECTURE=$(getconf LONG_BIT)
+-TORARCHITECTURE=$(expr "$(file App/tor)" : '.*ELF \([[:digit:]]*\)')
++TORARCHITECTURE=$(expr "$(file /usr/lib/tor-browser/App/tor)" : '.*ELF \([[:digit:]]*\)')
+ 
+ if [ $SYSARCHITECTURE -ne $TORARCHITECTURE ]; then
+    complain "Wrong architecture? 32-bit vs. 64-bit."
 @@ -124,106 +72,38 @@
     exit 1
  fi
