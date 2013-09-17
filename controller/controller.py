@@ -18,11 +18,13 @@ import string
 import subprocess
 import sys
 import time
+import urlparse
 
-import zmq
+import publicsuffix
 import stem
 import stem.control
 import stem.process
+import zmq
 
 devnull = os.open(os.devnull, os.O_RDWR)
 
@@ -150,18 +152,15 @@ class Client(object):
         self.shark        = None
         self.pkt_log_fp   = None
         self.url_log_fp   = None
-        self.local_queue  = None
-        self.global_queue = None
+        self.queue        = None
         self.current_url  = None
 
         (quo, rem) = divmod(Client._COUNT, len(Client._SYMBOLS))
         Client._COUNT += 1
         self.tag = Client._SYMBOLS[rem] * (quo+1)
 
-    def setup(self, bridge, url_queue):
-        self.global_queue = url_queue
-        self.local_queue  = collections.deque()
-        self.current_url  = None
+    def setup(self, bridge, queue):
+        self.queue = queue
 
         self.pkt_log_name  = "worker-" + self.tag + ".pkts"
         self.url_log_name  = "worker-" + self.tag + ".urls"
@@ -206,13 +205,11 @@ class Client(object):
             self.url_log_fp.close()
             self.url_log_fp = None
 
-        if self.global_queue:
-            if self.local_queue:
-                self.global_queue.extendleft(self.local_queue)
-                self.local_queue.clear()
+        if self.queue is not None:
             if self.current_url is not None:
-                self.global_queue.appendleft(self.current_url)
+                self.queue.append(self.current_url, putting_back=True)
                 self.current_url = None
+            self.queue = None
 
         return pickled("DONE")
 
@@ -221,8 +218,8 @@ class Client(object):
 
         if cmd == "HELO" and len(args) == 0:
             return self.HELO()
-        if cmd == "NEXT" and len(args) == 0:
-            return self.NEXT()
+        if cmd == "NEXT" and len(args) == 1:
+            return self.NEXT(*args)
         if cmd == "URLS" and len(args) == 2:
             return self.URLS(*args)
 
@@ -244,7 +241,7 @@ class Client(object):
                        self.bridge.cfg.my_nickname,
                        self.bridge.cfg.my_family)
 
-    def NEXT(self):
+    def NEXT(self, current):
         if not self.was_setup:
             sys.stderr.write("\n%s: protocol error: NEXT before HELO\n"
                              % self.tag)
@@ -255,14 +252,11 @@ class Client(object):
             return self.teardown()
         if self.bridge is None:
             return self.teardown()
-
-        if self.local_queue:
-            self.current_url = self.local_queue.pop()
-        elif self.global_queue:
-            self.current_url = self.global_queue.pop()
-        else:
+        if not self.queue:
+            # unlike all the above, this happens on normal termination
             return self.teardown()
 
+        self.current_url = self.queue.nextafter(current)
         self.url_log_fp.write("{:.6f} start {}\n".format(self.last_event,
                                                          self.current_url))
         self.url_log_fp.flush()
@@ -285,25 +279,82 @@ class Client(object):
         self.url_log_fp.flush()
         self.current_url = None
 
-        self.local_queue.extendleft((depth, url)
-                                    for url in self.choose_links(depth, urls))
+        self.queue.extend((depth, url) for url in urls)
         return pickled("OK")
 
-    def choose_links(self, depth, urls):
-        # Extension point - subclass Client and implement your preferred
-        # algorithm for picking outbound links to traverse.
-        return []
+class SitePartitionedURLQueue(object):
+    def __init__(self, maxdepth, initial):
+        self.site_extractor = publicsuffix.PublicSuffixList()
+        self.queues   = collections.defaultdict(collections.deque)
+        self.seen_url = set()
+        self.maxdepth = maxdepth
+        self.extend(initial)
 
-class RandomLinkFollowingClient(Client):
-    def choose_links(self, depth, urls):
-        sys.stderr.write(" (d={} n={} ".format(depth, len(urls)))
-        if depth >= 2 or len(urls) == 0:
-            sys.stderr.write("[])")
-            return []
-        rv = random.sample(urls, 1)
-        sys.stderr.write(repr(rv))
-        sys.stderr.write(")")
-        return rv
+    def __nonzero__(self):
+        return any(self.queues.itervalues())
+
+    def internal_append(self, url, depth, putting_back):
+        self.seen_url.add(url)
+        site = self.site_extractor.get_public_suffix(
+            urlparse.urlparse(url).hostname)
+        q = self.queues[site]
+        if putting_back:
+            q.appendleft((depth, url))
+        else:
+            q.append((depth, url))
+
+    def append(self, x, putting_back=False):
+        if isinstance(x, str):
+            x = x.decode('utf-8')
+        if isinstance(x, unicode):
+            depth = 0
+            url = x
+        else:
+            depth, url = x
+        if not putting_back:
+            if url in self.seen_url: return
+            if depth > maxdepth: return
+
+    def extend(self, iterable, putting_back=False):
+        if putting_back:
+            for x in iterable: self.append(x, True)
+        else:
+            # Extending is stochastic.  We take all depth-0
+            # urls (that haven't already been seen),
+            # 2**(maxdepth-(depth-1)) urls per site
+            # for 1 <= depth <= maxdepth, and none deeper.
+            bydepth = [ [] for _ in xrange(0, self.maxdepth+1) ]
+            for x in iterable:
+                if isinstance(x, str):
+                    x = x.decode('utf-8')
+                if isinstance(x, unicode):
+                    depth = 0
+                    url = x
+                else:
+                    depth, url = x
+                if depth <= self.maxdepth and url not in self.seen_url:
+                    bydepth[depth].append(url)
+
+            for url in bydepth[0]:
+                self.internal_append(url, 0, False)
+
+            for depth in xrange(1, self.maxdepth+1):
+                n = 2**(self.maxdepth-(depth-1))
+                for url in random.sample(bydepth[depth],
+                                         min(n, len(bydepth[depth]))):
+                    self.internal_append(url, depth, False)
+
+    def nextafter(self, url):
+        # Prefer a page load from the current site if possible;
+        # otherwise pick a nonempty site at random.
+        if url is not None:
+            site = self.site_extractor.get_public_suffix(
+                urlparse.urlparse(url).hostname)
+            if self.queues[site]:
+                return self.queues[site].pop()
+
+        live_queues = [q for q in self.queues.values() if q]
+        return random.choice(live_queues).pop()
 
 def controller_loop(cfg, bridge):
     ctx  = zmq.Context()
@@ -311,7 +362,7 @@ def controller_loop(cfg, bridge):
     sock.setsockopt(zmq.LINGER, 0)
     sock.bind(cfg.controller_address)
 
-    clients = collections.defaultdict(cfg.client_cls)
+    clients = collections.defaultdict(Client)
 
     try:
         while cfg.urls or any(c.bridge for c in clients.values()):
@@ -364,14 +415,12 @@ class Config(object):
 
         self.low_tor_port = int(self.low_tor_port)
         self.high_tor_port = int(self.high_tor_port)
+        self.maxdepth = int(self.maxdepth)
 
-        self.client_cls = globals()[self.client_cls]
         urls = [(0, l.strip()) for l in open(self.url_list, "rU")]
         if hasattr(self, 'url_sample_size'):
             urls = random.sample(urls, int(self.url_sample_size))
-        else:
-            random.shuffle(urls)
-        self.urls = collections.deque(urls)
+        self.urls = SitePartitionedURLQueue(self.maxdepth, urls)
 
 if __name__ == '__main__':
     cfg = Config(sys.argv[1])

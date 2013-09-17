@@ -173,6 +173,7 @@ class WorkerConnection(object):
         self.req = None
         self.context = None
         self.done = False
+        self.current_url = None
 
     def __enter__(self):
         try:
@@ -219,18 +220,20 @@ class WorkerConnection(object):
             if self.done:
                 raise StopIteration
 
-            self.req.send(pickled("NEXT"))
+            self.req.send(pickled("NEXT", self.current_url))
             (cmd, args) = unpickled(self.req.recv())
             if cmd == "DONE":
                 if len(args) > 0:
                     raise RuntimeError("protocol error: DONE takes no args"
                                        " (got {!r})".format(args))
                 self.done = True
+                self.current_url = None
                 raise StopIteration
             elif cmd == "LOAD":
                 if len(args) != 2:
                     raise RuntimeError("protocol error: LOAD takes two args"
                                        " (got {!r})".format(args))
+                self.current_url = args[1]
                 return args
             elif cmd == "WAIT":
                 if len(args) != 1:
