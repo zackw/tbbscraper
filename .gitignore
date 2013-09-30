@@ -43,15 +43,15 @@
 /pkg/python-selenium-2.33.0/setup.py
 /pkg/python-selenium_2.33.0-1_amd64.deb
 
-/pkg/tor-browser-3.0a3.tar.xz
-/pkg/tor-browser-3.0a3/debian/files
-/pkg/tor-browser-3.0a3/debian/tor-browser/
-/pkg/tor-browser-3.0a3/debian/tor-browser.debhelper.log
-/pkg/tor-browser-3.0a3/debian/tor-browser.substvars
-/pkg/tor-browser-3.0a3/App/
-/pkg/tor-browser-3.0a3/Data/
-/pkg/tor-browser-3.0a3/Docs/
-/pkg/tor-browser-3.0a3/Lib/
-/pkg/tor-browser-3.0a3/sources/
-/pkg/tor-browser-3.0a3/start-tor-browser
-/pkg/tor-browser_3.0~a3-1_amd64.deb
+/pkg/tor-browser-3.0a4.tar.xz
+/pkg/tor-browser-3.0a4/debian/files
+/pkg/tor-browser-3.0a4/debian/tor-browser/
+/pkg/tor-browser-3.0a4/debian/tor-browser.debhelper.log
+/pkg/tor-browser-3.0a4/debian/tor-browser.substvars
+/pkg/tor-browser-3.0a4/App/
+/pkg/tor-browser-3.0a4/Data/
+/pkg/tor-browser-3.0a4/Docs/
+/pkg/tor-browser-3.0a4/Lib/
+/pkg/tor-browser-3.0a4/sources/
+/pkg/tor-browser-3.0a4/start-tor-browser
+/pkg/tor-browser_3.0~a4-1_amd64.deb

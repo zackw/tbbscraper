@@ -144,15 +144,15 @@ def extract_python_selenium(pkgdir, tarball):
 
 packages = [PackageConstructor(**spec) for spec in [
     { "source_url" :
-          "https://archive.torproject.org/tor-package-archive/torbrowser/3.0a3/"
-              "tor-browser-linux64-3.0-alpha-3_en-US.tar.xz",
-      "download_name" : "tor-browser-3.0a3.tar.xz",
-      "download_size" : 22789716,
+          "https://archive.torproject.org/tor-package-archive/torbrowser/3.0a4/"
+              "tor-browser-linux64-3.0-alpha-4_en-US.tar.xz",
+      "download_name" : "tor-browser-3.0a4.tar.xz",
+      "download_size" : 23163644,
       "download_sha" :
-          "dca0707416412f3d43a99cb5ea20bb81b51caac2d0c28aa7bfa45cad4153fb55",
-      "package_debfile"    : "tor-browser_3.0~a3-1_amd64.deb",
-      "package_changefile" : "tor-browser_3.0~a3-1_amd64.changes",
-      "package_builddir"   : "tor-browser-3.0a3",
+          "4c06c9987bfc336483086c63e5b2b569c7bf2aaf98a7c007983c6626891a31c9",
+      "package_debfile"    : "tor-browser_3.0~a4-1_amd64.deb",
+      "package_changefile" : "tor-browser_3.0~a4-1_amd64.changes",
+      "package_builddir"   : "tor-browser-3.0a4",
       "package_extractor"  : extract_tbb
     },
 
