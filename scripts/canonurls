@@ -30,12 +30,13 @@ class HTTPRequest(object):
     Data container for HTTP request (used for cookie processing).
     """
 
-    def __init__(self, url, headers={}):
+    def __init__(self, url, headers={}, method='GET'):
         self._url = urlparse.urlsplit(urlparse.urldefrag(url)[0])
         self._headers = {
           "User-Agent":
             "Mozilla/5.0 (Macintosh; rv:24.0) Gecko/20100101 Firefox/24.0"
         }
+        self._method = method
 
         for key, value in headers.items():
             self.add_header(key, value)
@@ -71,16 +72,16 @@ class HTTPRequest(object):
 
     def fire(self):
         if self._url.scheme == 'http':
-            conn = httplib.HTTPConnection(self._url.netloc)
+            conn = httplib.HTTPConnection(self._url.netloc, timeout=30)
         elif self._url.scheme == 'https':
-            conn = httplib.HTTPSConnection(self._url.netloc)
+            conn = httplib.HTTPSConnection(self._url.netloc, timeout=30)
         else:
             raise IOError("unsupported URL '%s'" % self.get_full_url())
         path = self._url.path
         if self._url.query != "":
             path = path + '?' + self._url.query
 
-        conn.request("GET", path, headers=self._headers)
+        conn.request(self._method, path, headers=self._headers)
         resp = conn.getresponse()
         # patch httplib response to look like urllib2 response,
         # for the sake of cookie processing
@@ -199,6 +200,13 @@ def postcanonize(url):
         path = '/'
     return urlparse.urlunparse((scheme, netloc, path, params, query, fragment))
 
+def is_siteroot(url):
+    parsed = urlparse.urlparse(url)
+    return ((parsed.path == '' or parsed.path == '/')
+            and parsed.params == ''
+            and parsed.query == ''
+            and parsed.fragment == '')
+
 def chase_redirects(orig_url):
     global mypid
     if mypid is None: mypid = os.getpid()
@@ -216,6 +224,7 @@ def chase_redirects(orig_url):
             seen.add(url)
             cookies.add_cookie_header(req)
             resp = req.fire()
+            resp.read()
 
             if 200 <= resp.status < 300:
                 # done, yay
@@ -245,7 +254,7 @@ def chase_redirects(orig_url):
                 log_redirect_loop(orig_url, newurl, resp)
                 return (orig_url, None)
 
-            if options.sites_only:
+            if options.sites_only and is_siteroot(url):
                 # If this redirect added nontrivial path, query, or
                 # fragment components to the URL, stop and return the
                 # URL _before_ the redirect.  For instance, this
