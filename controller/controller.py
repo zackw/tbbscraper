@@ -8,6 +8,7 @@
 
 import collections
 import errno
+import logging
 import os
 import cPickle as pickle
 import pickletools
@@ -17,6 +18,7 @@ import stat
 import string
 import subprocess
 import sys
+import threading
 import time
 import urlparse
 
@@ -24,6 +26,7 @@ import publicsuffix
 import stem
 import stem.control
 import stem.process
+import stem.util.log
 import zmq
 
 devnull = os.open(os.devnull, os.O_RDWR)
@@ -50,6 +53,32 @@ def ensure_directory(path, mode=511): # 511 == 0777
 def print_init_msg(line):
     sys.stderr.write("| " + line.strip() + "\n")
 
+stem_log = None
+def log_stem_trace(name):
+    handler = logging.FileHandler(name)
+    handler.setFormatter(logging.Formatter(
+        fmt = '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt = '%m/%d/%Y %H:%M:%S',
+    ))
+    log = stem.util.log.get_logger()
+    log.setLevel(stem.util.log.INFO)
+    log.addHandler(handler)
+    return log
+
+class PipeDrainer(threading.Thread):
+    """Read and discard all data from a pipe.  Exits when the pipe is closed."""
+    def __init__(self, fp):
+	threading.Thread.__init__(self)
+        self.fp = fp 
+
+    def run(self):
+        try:
+            while len(self.fp.read(8192)) > 0:
+                pass
+        except:
+            pass
+        self.fp.close()
+
 class TorBridge(object):
     def __init__(self, cfg):
         self.cfg = cfg
@@ -58,6 +87,9 @@ class TorBridge(object):
         self.ctl = None
         self.process = None
         self.datadir = None
+        self.stem_log = None
+        self.stdout_drainer = None
+        self.stderr_drainer = None
 
     def __enter__(self):
         try:
@@ -65,7 +97,9 @@ class TorBridge(object):
             ensure_directory(self.datadir,
                              stat.S_IRUSR|stat.S_IWUSR|stat.S_IXUSR)
             self.ctl_path = os.path.join(self.datadir, 'control')
-            self.log_path = os.path.join(self.datadir, 'tor.log')
+            self.tor_log_path = os.path.join(self.datadir, 'tor.log')
+            self.stem_log_path = os.path.join(self.datadir, 'stem.log')
+            self.stem_log = log_stem_trace(self.stem_log_path)
             self.process = stem.process.launch_tor_with_config(config={
                     'Address'              : self.cfg.my_ip,
                     'Nickname'             : self.cfg.my_nickname,
@@ -83,7 +117,7 @@ class TorBridge(object):
                     'ControlSocket'        : self.ctl_path,
                     'CookieAuthentication' : '1',
                     'Log'                  : ['notice stdout',
-                                              'notice file '+self.log_path],
+                                              'notice file '+self.tor_log_path],
 
                     'HardwareAccel'               : '1',
                     'ExitPolicy'                  : 'reject *:*',
@@ -95,6 +129,12 @@ class TorBridge(object):
                     'ExtraInfoStatistics'         : '0',
                     'ExtendAllowPrivateAddresses' : '1'
                 }, take_ownership=True, init_msg_handler=print_init_msg)
+
+            self.stdout_drainer = PipeDrainer(self.process.stdout)
+            self.stdout_drainer.start()
+            self.stderr_drainer = PipeDrainer(self.process.stderr)
+            self.stderr_drainer.start()
+
             self.ctl = stem.control.Controller.from_socket_file(self.ctl_path)
             self.ctl.authenticate()
             return self
@@ -105,6 +145,7 @@ class TorBridge(object):
             raise
 
     def __exit__(self, *dontcare):
+        self.stem_log.debug("TorBridge.__exit__")
         if self.ctl is not None:
             self.ctl.signal(stem.Signal.SHUTDOWN)
             self.ctl.close()
@@ -112,10 +153,15 @@ class TorBridge(object):
         elif self.process is not None:
             self.process.send_signal(signal.SIGINT)
             self.process.wait()
+        if self.stderr_drainer is not None:
+            self.stderr_drainer.join()
+        if self.stdout_drainer is not None:
+            self.stdout_drainer.join()
 
     def add_client_port(self):
         # Note that the "base port" is never actually used by a client.
         # (However, the Tor process may use it internally.)
+        self.stem_log.debug("TorBridge.add_client_port...")
         portlist = self.ctl.get_conf("ORPort", multiple=True)
         ports_in_use = frozenset(int(port.partition(' ')[0])
                                  for port in portlist)
@@ -124,21 +170,25 @@ class TorBridge(object):
                 break
         else:
             return None
+        self.stem_log.debug("TorBridge.add_client_port: selected port " + str(port))
         portlist.append(str(port) + " IPv4Only")
         self.ctl.set_conf("ORPort", portlist)
+        self.stem_log.debug("TorBridge.add_client_port: ok")
         return port
 
     def del_client_port(self, port):
         sport = str(port)
         sports = sport + " "
+        self.stem_log.debug("TorBridge.del_client_port: " + sport)
         portlist = [p for p in self.ctl.get_conf("ORPort", multiple=True)
                     if (p != sport and not p.startswith(sports))]
         self.ctl.set_conf("ORPort", portlist)
+        self.stem_log.debug("TorBridge.del_client_port: ok")
 
 class Client(object):
 
     _COUNT = 0
-    _SYMBOLS = string.ascii_uppercase
+    _SYMBOLS = string.ascii_letters
 
     def __init__(self):
         # This takes no arguments because it is called from
@@ -150,7 +200,7 @@ class Client(object):
         self.last_event   = time.time()
         self.bridge       = None
         self.shark        = None
-        self.pkt_log_fp   = None
+        #self.pkt_log_fp   = None
         self.url_log_fp   = None
         self.queue        = None
         self.current_url  = None
@@ -162,24 +212,24 @@ class Client(object):
     def setup(self, bridge, queue):
         self.queue = queue
 
-        self.pkt_log_name  = "worker-" + self.tag + ".pkts"
+        #self.pkt_log_name  = "worker-" + self.tag + ".pkts"
         self.url_log_name  = "worker-" + self.tag + ".urls"
-        self.pkt_log_fp    = open(self.pkt_log_name, "a")
+        #self.pkt_log_fp    = open(self.pkt_log_name, "a")
         self.url_log_fp    = open(self.url_log_name, "a")
 
         self.bridge       = bridge
         self.port         = bridge.add_client_port()
-        self.shark        = subprocess.Popen(
-            [#"dumpcap", "-w", self.pkt_log_name, "-f",
-             "tshark", "-q", "-l", "-Xlua_script:fingerprint_extract.lua",
-             "ip host {} and tcp port {}".format(bridge.cfg.my_ip,
-                                                 self.port)],
-            stdin=devnull,
-            stdout=self.pkt_log_fp,
-            stderr=devnull,
-            close_fds=True)
-        self.pkt_log_fp.close()
-        self.pkt_log_fp = None
+        # self.shark        = subprocess.Popen(
+        #     [#"dumpcap", "-w", self.pkt_log_name, "-f",
+        #      "tshark", "-q", "-l", "-Xlua_script:fingerprint_extract.lua",
+        #      "ip host {} and tcp port {}".format(bridge.cfg.my_ip,
+        #                                          self.port)],
+        #     stdin=devnull,
+        #     stdout=self.pkt_log_fp,
+        #     stderr=devnull,
+        #     close_fds=True)
+        #self.pkt_log_fp.close()
+        #self.pkt_log_fp = None
         self.was_setup = True
 
     def teardown(self):
@@ -198,9 +248,9 @@ class Client(object):
             self.shark.wait()
             self.shark = None
 
-        if self.pkt_log_fp is not None:
-            self.pkt_log_fp.close()
-            self.pkt_log_fp = None
+        # if self.pkt_log_fp is not None:
+        #     self.pkt_log_fp.close()
+        #     self.pkt_log_fp = None
         if self.url_log_fp is not None:
             self.url_log_fp.close()
             self.url_log_fp = None
@@ -213,6 +263,12 @@ class Client(object):
 
         return pickled("DONE")
 
+    def protocol_error(self, msg, *inserts):
+        full_msg = "protocol error: " + msg.format(*inserts)
+        sys.stderr.write("\n" + tag + ": " + full_msg + "\n")
+        self.url_log_fp.write("{:.6f} {}\n".format(self.last_event, full_msg))
+        return self.teardown()
+
     def process(self, cmd, args):
         self.last_event = time.time()
 
@@ -223,18 +279,16 @@ class Client(object):
         if cmd == "URLS" and len(args) == 2:
             return self.URLS(*args)
 
-        sys.stderr.write("\n%s: protocol error: unrecognized or invalid "
-                         "client request: %s%s\n"
-                         % (self.tag, repr(cmd), repr(args)))
-        return self.teardown()
+        return self.protocol_error("unrecognized or invalid client request: "
+                                   "{!r}{!r}", cmd, args)
 
     def HELO(self):
         if self.was_setup or self.bridge is not None:
-            sys.stderr.write("\n%s: protocol error: HELO out of sequence\n"
-                             % self.tag)
-            return self.teardown()
+            return self.protocol_error("HELO out of sequence")
 
         self.setup(bridge, cfg.urls)
+        self.url_log_fp.write("{:.6f} worker {} using port {}\n"
+                              .format(self.last_event, self.tag, self.port))
         return pickled("HELO",
                        self.bridge.cfg.my_ip,
                        str(self.port),
@@ -243,17 +297,17 @@ class Client(object):
 
     def NEXT(self, current):
         if not self.was_setup:
-            sys.stderr.write("\n%s: protocol error: NEXT before HELO\n"
-                             % self.tag)
-            return self.teardown()
+            return self.protocol_error("NEXT before HELO")
         if self.current_url is not None:
-            sys.stderr.write("\n%s: protocol error: expected URLS\n"
-                             % self.tag)
-            return self.teardown()
+            return self.protocol_error("expected URLS")
         if self.bridge is None:
-            return self.teardown()
+            return self.protocol_error("NEXT after DONE")
+
         if not self.queue:
-            # unlike all the above, this happens on normal termination
+            # unlike all the above, this is not an error.
+            # we've reached the end of the job.
+            self.url_log_fp.write("{:.6f} worker {} done\n"
+                                  .format(self.last_event, self.tag))
             return self.teardown()
 
         self.current_url = self.queue.nextafter(current)
@@ -264,15 +318,11 @@ class Client(object):
 
     def URLS(self, depth, urls):
         if not self.was_setup:
-            sys.stderr.write("\n%s: protocol error: URLS before HELO\n"
-                             % self.tag)
-            return self.teardown()
+            return self.protocol_error("URLS before HELO")
         if self.current_url is None:
-            sys.stderr.write("\n%s: protocol error: expected NEXT\n"
-                             % self.tag)
-            return self.teardown()
+            return self.protocol_error("URLS without NEXT")
         if self.bridge is None:
-            return self.teardown()
+            return self.protocol_error("URLS after DONE")
 
         self.url_log_fp.write("{:.6f} stop  {}\n".format(self.last_event,
                                                          self.current_url))
@@ -282,12 +332,19 @@ class Client(object):
         self.queue.extend((depth, url) for url in urls)
         return pickled("OK")
 
+def gen_n_at_depth(maxdepth):
+    tfib = [1,2,3,5,8,13,21,34,55,89,144]
+    rv = tfib[:(maxdepth+1)]
+    rv.reverse()
+    return rv
+
 class SitePartitionedURLQueue(object):
     def __init__(self, maxdepth, initial):
         self.site_extractor = publicsuffix.PublicSuffixList()
         self.queues   = collections.defaultdict(collections.deque)
         self.seen_url = set()
         self.maxdepth = maxdepth
+        self.n_at_depth = gen_n_at_depth(maxdepth)
         self.extend(initial)
 
     def __nonzero__(self):
@@ -321,8 +378,8 @@ class SitePartitionedURLQueue(object):
         else:
             # Extending is stochastic.  We take all depth-0
             # urls (that haven't already been seen),
-            # 2**(maxdepth-(depth-1)) urls per site
-            # for 1 <= depth <= maxdepth, and none deeper.
+            # self.n_at_depth[depth-1] urls per site for
+            # 1 <= depth <= maxdepth, and none deeper.
             bydepth = [ [] for _ in xrange(0, self.maxdepth+1) ]
             for x in iterable:
                 if isinstance(x, str):
@@ -339,7 +396,7 @@ class SitePartitionedURLQueue(object):
                 self.internal_append(url, 0, False)
 
             for depth in xrange(1, self.maxdepth+1):
-                n = 2**(self.maxdepth-(depth-1))
+                n = self.n_at_depth[depth-1]
                 for url in random.sample(bydepth[depth],
                                          min(n, len(bydepth[depth]))):
                     self.internal_append(url, depth, False)
