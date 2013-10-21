@@ -50,6 +50,22 @@ def ensure_directory(path, mode=511): # 511 == 0777
             raise
         os.chmod(path, mode)
 
+int2base_digs = string.digits + string.lowercase
+
+def int2base(x, base):
+  if x < 0: sign = -1
+  elif x==0: return '0'
+  else: sign = 1
+  x *= sign
+  digits = []
+  while x:
+    digits.append(int2base_digs[x % base])
+    x /= base
+  if sign < 0:
+    digits.append('-')
+  digits.reverse()
+  return ''.join(digits)
+
 def print_init_msg(line):
     sys.stderr.write("| " + line.strip() + "\n")
 
@@ -188,7 +204,6 @@ class TorBridge(object):
 class Client(object):
 
     _COUNT = 0
-    _SYMBOLS = string.ascii_letters
 
     def __init__(self):
         # This takes no arguments because it is called from
@@ -205,9 +220,8 @@ class Client(object):
         self.queue        = None
         self.current_url  = None
 
-        (quo, rem) = divmod(Client._COUNT, len(Client._SYMBOLS))
+        self.tag = int2base(Client._COUNT, 32)
         Client._COUNT += 1
-        self.tag = Client._SYMBOLS[rem] * (quo+1)
 
     def setup(self, bridge, queue):
         self.queue = queue
@@ -361,13 +375,13 @@ class SitePartitionedURLQueue(object):
             q.append((depth, url))
 
     def append(self, x, putting_back=False):
-        if isinstance(x, str):
-            x = x.decode('utf-8')
-        if isinstance(x, unicode):
+        if isinstance(x, tuple):
+            depth, url = x
+        else:
             depth = 0
             url = x
-        else:
-            depth, url = x
+        if isinstance(url, unicode):
+            url = url.encode('utf-8')
         if not putting_back:
             if url in self.seen_url: return
             if depth > maxdepth: return
@@ -382,13 +396,13 @@ class SitePartitionedURLQueue(object):
             # 1 <= depth <= maxdepth, and none deeper.
             bydepth = [ [] for _ in xrange(0, self.maxdepth+1) ]
             for x in iterable:
-                if isinstance(x, str):
-                    x = x.decode('utf-8')
-                if isinstance(x, unicode):
+                if isinstance(x, tuple):
+                    depth, url = x
+                else:
                     depth = 0
                     url = x
-                else:
-                    depth, url = x
+                if isinstance(url, unicode):
+                    url = url.encode('utf-8')
                 if depth <= self.maxdepth and url not in self.seen_url:
                     bydepth[depth].append(url)
 
@@ -410,8 +424,11 @@ class SitePartitionedURLQueue(object):
             if self.queues[site]:
                 return self.queues[site].pop()
 
-        live_queues = [q for q in self.queues.values() if q]
-        return random.choice(live_queues).pop()
+        for q in self.queues.itervalues():
+            if q:
+                return q.pop()
+
+        return None
 
 def controller_loop(cfg, bridge):
     ctx  = zmq.Context()
