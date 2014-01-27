@@ -1,4 +1,19 @@
+-- This is a subroutine of fingerprint_extract.py, invoked as a tshark
+-- custom filter (tshark -q -Xlua_script:fingerprint_extract_tshark_sub.lua).
+-- It does first-stage processing on the raw packet dump files, weeding out
+-- uninteresting streams and decoding the remainder.  Due to the clunkiness
+-- of this environment, we do as little work here as practical.
+--
+-- When this script is invoked, the environment variable SERVER_IP
+-- must be set to the IP address of the server being monitored.
+
 do
+   local server_ip = os.getenv("SERVER_IP")
+   if server_ip == nil then
+      report_failure("SERVER_IP not set")
+      os.exit(2)
+   end
+
    local function map(func, array)
       local new_array = {}
       for i,v in ipairs(array) do
@@ -70,7 +85,7 @@ do
    local server_count = 0
    local function new_server(addr)
       local x = math.floor(server_count / 26) + 1
-      local y = math.mod(server_count, 26) + 1
+      local y = server_count % 26 + 1
 
       local label = string.rep(string.sub("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                                           y, y), x)
@@ -79,15 +94,47 @@ do
       return label
    end
 
+   local streams = {}
+   local function packet_of_interest(stream, srcip, dstip, srcport, dstport)
+      local port, direction
+
+      if stream == nil then
+         return false, srcport, "nostream"
+      end
+
+      if srcip == server_ip then
+         port = srcport
+         direction = "down"
+      elseif dstip == server_ip then
+         port = dstport
+         direction = "up"
+      else
+         -- stray packet (should be impossible)
+         port = dstport
+         direction = "stray"
+      end
+
+      tag = streams[stream]
+      if tag == nil then
+         if direction == "up" then
+            -- new connection to server; we care about this stream
+            streams[stream] = true
+            tag = true
+         else
+            -- outbound connection from server; ignore this stream
+            streams[stream] = false
+            tag = false
+         end
+      end
+      return tag, port, direction
+   end
+
    local fieldnames = {
       "tcp.len",
-      "udp.length",
       "ip.src",
       "ip.dst",
       "tcp.srcport",
       "tcp.dstport",
-      "udp.srcport",
-      "udp.dstport",
       "tcp.flags",
       "tcp.stream",
       "tcp.analysis.retransmission",
@@ -103,8 +150,7 @@ do
       local number      = tonumber(pinfo.number)
       local time        = tonumber(pinfo.abs_ts)
       local packet_len  = tonumber(pinfo.len)
-      local stream      = 0
-      local proto       = "udp"
+      local stream      = nil
       local flags       = ""
       local dupe        = false
       local payload_len = 0
@@ -119,27 +165,23 @@ do
       local sslreclens  = {}
 
       local fieldlist = { all_field_infos() }
-      for ix, finfo in ipairs(fieldlist) do
+      for _, finfo in pairs(fieldlist) do
          if finfo.name == "ip.src" then
             srcip = tostring(finfo.value)
 
          elseif finfo.name == "ip.dst" then
             dstip = tostring(finfo.value)
 
-         elseif (finfo.name == "tcp.srcport" or
-                 finfo.name == "udp.srcport") then
+         elseif (finfo.name == "tcp.srcport") then
             srcport = tonumber(finfo.value)
 
-         elseif (finfo.name == "tcp.dstport" or
-                 finfo.name == "udp.dstport") then
+         elseif (finfo.name == "tcp.dstport") then
             dstport = tonumber(finfo.value)
 
-         elseif (finfo.name == "tcp.len" or
-                 finfo.name == "udp.length") then
+         elseif (finfo.name == "tcp.len") then
             payload_len = tonumber(finfo.value)
 
          elseif finfo.name == "tcp.stream" then
-            proto = "tcp"
             stream = tonumber(finfo.value) + 1
 
          elseif finfo.name == "tcp.flags" then
@@ -161,16 +203,9 @@ do
          end
       end
 
-      host = servers[srcip..":"..srcport]
-      if host ~= nil then
-         direction = "down"
-         port = srcport
-      else
-         host = servers[dstip..":"..dstport]
-         if host == nil then host = new_server(dstip..":"..dstport) end
-         direction = "up"
-         port = dstport
-      end
+      of_interest, port, direction = packet_of_interest(stream, srcip, dstip,
+                                                        srcport, dstport)
+      if not of_interest then return end
 
       if dupe then
          if flags == ""
@@ -178,22 +213,18 @@ do
          else flags = flags .. ".dup"
          end
       end
-
       sslrecords = table.concat(sslrecords, ".")
       sslreclens = table.concat(sslreclens, ".")
-      io.write(string.format("%d:%d:%.6f:%s:%s:%s:%d:%s:%s:%d:%d:%s\n",
+      io.write(string.format("%d:%.7f:%d:%d:%s:%s:%s:%d:%d:%s\n",
                              number,
-                             stream,
                              time,
-                             proto,
-                             direction,
-                             host,
+                             stream,
                              port,
+                             direction,
                              flags,
                              sslrecords,
                              packet_len,
                              payload_len,
                              sslreclens))
-      io.flush()
    end
 end
