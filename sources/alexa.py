@@ -16,6 +16,8 @@ import urllib2
 import urlparse
 import zipfile
 
+from . import urldb
+
 def parse_args():
     ap = argparse.ArgumentParser(description="Download the current Alexa "
                                  "top-1-million-sites list and add it to the "
@@ -33,30 +35,8 @@ def parse_args():
     ap.add_argument("--cache", "-c", metavar="DIR",
                 help="Directory in which to cache downloaded site lists.",
                 default="alexa")
-    ap.add_argument("--schema", "-S", metavar="FILE",
-                help="Schema to initialize the database with, if it doesn't "
-                     "already exist.",
-                default="urldb_schema.sql")
 
     return ap.parse_args()
-
-def ensure_database(args):
-    with open(args.schema, "rU") as sf: schema = sf.read()
-    exp_schema_version = int(re.search("^PRAGMA user_version = (\d+);$",
-                                       schema,
-                                       re.MULTILINE).group(1))
-    db = sqlite3.connect(args.database)
-    schema_version = int(db.execute("PRAGMA user_version;").fetchone()[0])
-    if schema_version == 0:
-        db.executescript(schema)
-        db.commit()
-        schema_version = int(db.execute("PRAGMA user_version;").fetchone()[0])
-
-    if schema_version != exp_schema_version:
-        raise RuntimeError("schema version mismatch: exp %d got %d"
-                           % (exp_schema_version, schema_version))
-
-    return db
 
 def download_sitelist(args, datestamp):
     # We hardwire the knowledge that Alexa only updates this once a day.
@@ -171,7 +151,7 @@ def process_sitelist(db, sitelist_name, datestamp):
 def main():
     args      = parse_args()
     datestamp = time.strftime("%Y%m%d", time.gmtime())
-    db        = ensure_database(args)
+    db        = urldb.ensure_database(args)
     sitelist  = download_sitelist(args, datestamp)
     process_sitelist(db, sitelist, datestamp)
 
