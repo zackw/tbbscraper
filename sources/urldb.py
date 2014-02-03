@@ -6,7 +6,15 @@ application_id = "urls"
 
 # Increment this number every time the overall schema changes!
 # Origins are responsible for tracking their additional tables' schemas.
-current_schema_version = 1
+current_schema_version = 2
+
+# Some pragmata are not persistent, so they must be repeated for every
+# database connection.
+connection_pragmata = r"""
+PRAGMA encoding = "UTF-8";
+PRAGMA foreign_keys = ON;
+PRAGMA locking_mode = NORMAL;
+"""
 
 # Overall schema for the URL database, used by the various URL sources and
 # transformers in this directory.
@@ -15,10 +23,7 @@ current_schema_version = 1
 # "Source" is a SQL keyword, so we refer instead to "origins" throughout
 # this schema.
 schema = r"""
-PRAGMA encoding = "UTF-8";
-PRAGMA foreign_keys = ON;
 PRAGMA legacy_file_format = OFF;
-PRAGMA locking_mode = NORMAL;
 PRAGMA application_id = {application_id};
 PRAGMA user_version = {current_schema_version};
 
@@ -38,35 +43,62 @@ PRAGMA journal_mode = WAL;
 -- without a leading "www."', 'try converting http: to https: and vice
 -- versa', and 'attempt to see through geographic or language
 -- variants of a site').
+--
+-- id:    automatically assigned serial number for this origin.
+-- label: human-readable label.
 CREATE TABLE origins (
-  id         INTEGER PRIMARY KEY, -- ID number for this origin.
-  label      TEXT NOT NULL        -- Human-readable label for this origin.
+  id         INTEGER PRIMARY KEY,
+  label      TEXT NOT NULL UNIQUE
+);
+
+-- This table holds the actual text of every URL.
+-- Other tables refer to URLs by id number in this table.
+CREATE TABLE url_strings (
+  id         INTEGER PRIMARY KEY,
+  url        TEXT NOT NULL UNIQUE
 );
 
 -- Table tracking URLs with their origins.
+-- origin:    index into the "origins" table
+-- origin_id: origin-specific identifier; may index an ancillary
+--            metadata table created by the origin
+-- url:       URL as retrieved from the origin; indexes url_strings
 CREATE TABLE urls (
-  origin     INTEGER NOT NULL, -- The origin of the URL;
-                               -- indexes the 'origins' table.
-  origin_id  INTEGER NOT NULL, -- Origin-specific identifier for the URL;
-                               -- indexes that origin's metadata table, if any.
-  url        TEXT NOT NULL,    -- URL as retrieved from the origin
-                               -- The same URL may have been retrieved
-                               -- from many origins, so this is not UNIQUE.
-  UNIQUE (origin, origin_id),
-  FOREIGN KEY (origin) REFERENCES origins(id)
+  origin     INTEGER NOT NULL REFERENCES origins(id),
+  origin_id  INTEGER NOT NULL,
+  url        INTEGER NOT NULL REFERENCES url_strings(id),
+  UNIQUE (origin, origin_id)
 );
-CREATE INDEX urls__url ON urls(url);
 
 -- Canonicalization of URLs is a separate pass and has different uniqueness
--- requirements, so it gets its own table.
+-- requirements, so it gets its own tables.
+-- (Maybe this should move into canonize.py?)
+
+-- Status lines received during canonicalization.
+-- These are not necessarily *HTTP* statuses: for instance,
+-- DNS lookup failure gets recorded here too.
+CREATE TABLE canon_statuses (
+  id         INTEGER PRIMARY KEY,
+  status     TEXT NOT NULL UNIQUE
+);
+
+-- URLs and their canonical forms (i.e. after chasing all redirects).
+-- If both 'canon' and 'status' are NULL, the URL has not yet been
+-- canonized.  If 'canon' is NOT NULL, 'status' should be also.
+-- If 'canon' is NULL but 'status' isn't, canonization failed
+-- (this happens often - dead sites, redirect loops, etc)
 CREATE TABLE canon_urls (
-  url        TEXT NOT NULL PRIMARY KEY,  -- Original URL.
-  canon      TEXT,                       -- Canonicalized URL.
-  status     INTEGER NOT NULL DEFAULT(0) -- Zero if not yet canonicalized,
-                                         -- otherwise an HTTP status code
-                                         -- or -1 for DNS lookup failure.
-) WITHOUT ROWID;
-CREATE INDEX canon_urls__canon ON canon_urls(canon);
+  url        INTEGER PRIMARY KEY REFERENCES url_strings(id),
+  canon      INTEGER REFERENCES url_strings(id),
+  status     INTEGER REFERENCES canon_statuses(id)
+);
+
+-- Anomalous HTTP responses are logged in this table.
+CREATE TABLE anomalies (
+  url        INTEGER PRIMARY KEY REFERENCES url_strings(id),
+  status     INTEGER NOT NULL REFERENCES canon_statuses(id),
+  response   TEXT NOT NULL
+);
 """
 
 def ensure_database(args):
@@ -98,4 +130,5 @@ def ensure_database(args):
         raise RuntimeError("schema version mismatch: exp %d got %d"
                            % (current_schema_version, schema_version))
 
+    db.executescript(connection_pragmata)
     return db

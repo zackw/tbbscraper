@@ -12,6 +12,7 @@ import multiprocessing
 import optparse
 import os
 import signal
+import socket
 import sqlite3
 import string
 import sys
@@ -78,9 +79,9 @@ class HTTPRequest(object):
 
     def fire(self):
         if self._url.scheme == 'http':
-            conn = httplib.HTTPConnection(self._url.netloc, timeout=30)
+            conn = httplib.HTTPConnection(self._url.netloc, timeout=10)
         elif self._url.scheme == 'https':
-            conn = httplib.HTTPSConnection(self._url.netloc, timeout=30)
+            conn = httplib.HTTPSConnection(self._url.netloc, timeout=10)
         else:
             raise IOError("unsupported URL '%s'" % self.get_full_url())
         path = self._url.path
@@ -160,20 +161,26 @@ def log_declined_redirect(orig_url, canon, redir, resp):
     sys.stderr.flush()
 
 def log_env_error(orig_url, exc):
+    if not options.verbose: return
     if exc.filename:
         sys.stderr.write("{:05}: {} => {}: {}\n"
                          .format(mypid, orig_url, exc.filename, exc.strerror))
-    else:
+    elif exc.strerror:
         sys.stderr.write("{:05}: {} => {}\n"
                          .format(mypid, orig_url, exc.strerror))
+    else:
+        sys.stderr.write("{:05}: {} => {}\n"
+                         .format(mypid, orig_url, str(exc)))
     sys.stderr.flush()
 
 def log_http_error(orig_url, exc):
+    if not options.verbose: return
     sys.stderr.write("{:05}: {} => HTTP error ({}): {}\n"
                      .format(mypid, orig_url, exc.__class__.__name__, str(exc)))
     sys.stderr.flush()
 
 def log_gen_error(orig_url, exc):
+    if not options.verbose: return
     sys.stderr.write("{:05}: {} => {}\n"
                      .format(mypid, orig_url, str(exc)))
     sys.stderr.flush()
@@ -208,20 +215,26 @@ def postcanonize(url):
     # %-quote non-ASCII characters (and only those characters).
     return urllib.quote(norm, safe=string.punctuation)
 
-def is_siteroot(url):
-    parsed = urlparse.urlparse(url)
-    return ((parsed.path == '' or parsed.path == '/')
-            and parsed.params == ''
-            and parsed.query == ''
-            and parsed.fragment == '')
+# Subroutine of chase_redirects: report an anomalous response to the
+# database-monger process.
+def anomalous_response(orig_id, resp, body):
 
-def chase_redirects(orig_url):
+    # Response headers:
+    headers = "\n".join("{}: {}".format(*kv)
+                        for kv in sorted(resp.getheaders()))
+
+    # The headers do not include the status line.
+    status = fmt_status(resp)
+    full_status = "HTTP/{} ".format(resp.version/10.) + status
+
+    return (orig_id,
+            None,
+            status,
+            full_status + "\n" + headers + "\n\n" + body)
+
+def chase_redirects(args):
     global mypid
-    if mypid is None: mypid = os.getpid()
-
-    # the main process will issue a clean teardown on SIGINT
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-
+    orig_id, orig_url = args
     seen = set()
     cookies = cookielib.CookieJar()
     orig_url = orig_url.strip()
@@ -235,26 +248,35 @@ def chase_redirects(orig_url):
             seen.add(url)
             cookies.add_cookie_header(req)
             resp = req.fire()
-            resp.read()
+            body = resp.read()
 
-            if 200 <= resp.status < 300:
-                # done, yay
+            # Only code 200 counts as success.
+            if resp.status == 200:
+                url = postcanonize(url)
                 log_success(orig_url, url, resp)
-                return (orig_url, url, resp.status)
+                return (orig_id, url, "200 OK", None)
 
-            if resp.status not in (301, 302, 303, 307):
-                # treat any 1xx and 3xx codes that we don't understand as
-                # hard errors, as well as 4xx/5xx
+            # Codes 400, 401, 403, 404, and 410 are "normal" failures;
+            # they do not get recorded as anomalous.
+            if resp.status in (400, 401, 403, 404, 410):
                 log_fail(orig_url, resp)
-                return (orig_url, None, resp.status)
+                return (orig_id, None, fmt_status(resp), None)
+
+            # Codes 301, 302, 303, 307, 308 are understood as
+            # redirection directives.  All other codes are treated as
+            # anomalous failures.
+            if resp.status not in (301, 302, 303, 307, 308):
+                log_fail(orig_url, resp)
+                return anomalous_response(orig_id, resp, body)
 
             # Redirected, so where to?
             location = resp.getheader("Location")
             if location is None:
                 location = resp.getheader("Uri")
             if location is None:
+                # A redirection with no Location or Uri header is anomalous.
                 log_bad_redirect(orig_url, resp)
-                return (orig_url, None, resp.status)
+                return anomalous_response(orig_id, resp, body)
 
             # pick up any cookies attached to the redirection
             cookies.extract_cookies(resp, req)
@@ -262,38 +284,38 @@ def chase_redirects(orig_url):
             # update the url
             newurl = urlparse.urljoin(url, location)
             if newurl in seen:
+                # Redirect loops are also anomalous.
                 log_redirect_loop(orig_url, newurl, resp)
-                return (orig_url, None, resp.status)
-
-            if options.sites_only and is_siteroot(url):
-                # If this redirect added nontrivial path, query, or
-                # fragment components to the URL, stop and return the
-                # URL _before_ the redirect.  For instance, this
-                # causes us to canonicalize blogger.com to
-                # http://www.blogger.com/ instead of
-                # https://accounts.google.com/ServiceLogin?service=blogger&...
-                components = urlparse.urlsplit(newurl)
-                if ((components.path and components.path != '/')
-                    or components.query or components.fragment):
-                    log_declined_redirect(orig_url, url, newurl, resp)
-                    return (orig_url, url, resp.status)
+                return anomalous_response(orig_id, resp, body)
 
             log_good_redirect(orig_url, newurl, resp, cookies)
             url = newurl
             # and loop
 
     # Do not allow any exceptions to escape, or the entire job will crash.
+    # Exceptions do _not_ count as anomalous; they generally occur before
+    # the response is even received and there's nothing more to record.
     except httplib.HTTPException, e:
         log_http_error(orig_url, e)
-        return (orig_url, None, 599)
+        return (orig_id, None,
+                "HTTP error ({}): {}".format(e.__class__.__name__,
+                                             str(e)), None)
+
+    # socket.timeout is an EnvironmentError, but its .strerror is None!
+    except socket.timeout, e:
+        log_gen_error(orig_url, e)
+        return (orig_id, None, str(e), None)
 
     except EnvironmentError, e:
         log_env_error(orig_url, e)
-        return (orig_url, None, 598)
+        if e.filename: msg = "{}: {}".format(e.filename, e.strerror)
+        elif e.strerror: msg = e.strerror
+        else: msg = str(e)
+        return (orig_id, None, msg, None)
 
     except Exception, e:
         log_gen_error(orig_url, e)
-        return (orig_url, None, 597)
+        return (orig_id, None, str(e), None)
 
 # Bizarrely, sqlite3.Cursor is not an iterator nor does it have a method
 # to return an iterator over the current query result.
@@ -309,59 +331,115 @@ def sigint_handler(signo, frame):
     global interrupted
     interrupted = True
 
+def worker_init():
+    global mypid
+    mypid = os.getpid()
+    # the main process will issue a clean teardown on SIGINT
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
 def sanitize_urls(db_filename):
     global interrupted
 
-    with sqlite3.connect(db_filename) as db:
-        cursor = db.cursor()
-        # We have to fetch everything before starting the pool,
-        # because sqlite3 doesn't play nice with multiprocessing. This
-        # also avoids any question of whether writing to canon_urls
-        # with a SELECT open on it will screw anything up.  But it is
-        # a little worrisome as to memory consumption.
-        cursor.execute(
-            "SELECT DISTINCT url FROM urls"
-            "    WHERE url NOT IN (SELECT DISTINCT url FROM canon_urls)")
-        urls_to_process = [row[0] for row in fetch_iter(cursor)]
+    # FIXME: Use urldb.py.
+    db = sqlite3.connect(db_filename)
+    cr = db.cursor()
+    cr.executescript(r"""
+PRAGMA encoding = "UTF-8";
+PRAGMA foreign_keys = ON;
+PRAGMA locking_mode = NORMAL;
+""")
 
-        workers = multiprocessing.Pool(options.parallel)
-        pid = os.getpid()
-        i = 0
+    # Cache the URL and status tables in memory.
+    cr.execute("SELECT id, url FROM url_strings;")
+    url_strings = { row[1]: row[0]
+                    for row in fetch_iter(cr) }
+    cr.execute("SELECT id, status FROM canon_statuses;")
+    canon_statuses = { row[1]: row[0]
+                       for row in fetch_iter(cr) }
+    status_ok = canon_statuses["200 OK"]
 
-        for (original, redir, status) in \
+    # Add rows to the canon_urls table for new entries in the urls table.
+    cr.execute("INSERT INTO canon_urls"
+               "  SELECT DISTINCT url, NULL, NULL FROM urls"
+               "    WHERE url NOT IN (SELECT url FROM canon_urls);")
+
+    # Load the list of URLs-to-do.
+    # This must be done in advance so that multiprocessing doesn't try to
+    # call the cursor on the wrong thread.
+    cr.execute("SELECT u.url, v.url"
+               "  FROM canon_urls as u"
+               "  LEFT JOIN url_strings as v on u.url = v.id"
+               "  WHERE u.canon IS NULL AND u.status IS NULL;")
+    urls_to_process = [(row[0], row[1])
+                        for row in fetch_iter(cr)]
+
+    # We are now ready to spin up the worker pool.
+    workers = multiprocessing.Pool(options.parallel, worker_init)
+    pid = os.getpid()
+    signal.signal(signal.SIGINT, sigint_handler)
+
+    processed = 0
+    total = len(urls_to_process)
+    width = len(str(total))
+    try:
+        if not options.verbose:
+            sys.stderr.write("\rprocessed {1:>{0}} of {2:>{0}}..."
+                             .format(width, processed, total))
+        cr.execute("BEGIN EXCLUSIVE;")
+        for (orig_id, canon_url, status, anomaly) in \
                 workers.imap_unordered(chase_redirects,
                                        urls_to_process,
                                        50):
-
-            if redir is None:
-                canon = ""
-            else:
-                canon = postcanonize(redir)
-            if options.verbose:
-                sys.stderr.write("{:05}: {} => {} .\n"
-                                 .format(pid, original, canon))
-
-            try:
-                cursor.execute(
-                    "INSERT INTO canon_urls VALUES(?, ?, ?)",
-                    (original, canon, status))
-            except:
-                sys.stderr.write("# offending URL: {} => {}\n"
-                                 .format(original, canon))
-                raise
-
-            i += 1
-            if i % 1000 == 0 or interrupted:
-                db.commit()
+            processed += 1
+            if processed % 100 == 0:
                 if not options.verbose:
-                    sys.stderr.write("{:05}: completed {}/{} urls\n"
-                                     .format(pid, i, len(urls_to_process)))
-                if interrupted:
-                    break
+                    sys.stderr.write("\rprocessed {1:>{0}} of {2:>{0}}..."
+                                     .format(width, processed, total))
+                db.commit()
+                cr.execute("BEGIN EXCLUSIVE;")
 
+            status_id = canon_statuses.get(status)
+            if status_id is None:
+                cr.execute("INSERT INTO canon_statuses VALUES(NULL, ?)",
+                           (status,))
+                status_id = cr.lastrowid
+                canon_statuses[status] = status_id
+
+            if anomaly is not None:
+                cr.execute("INSERT INTO anomalies VALUES(?, ?, ?)",
+                           (url_id, status_id, anomaly))
+
+            if canon_url is None:
+                canon_id = None
+            else:
+                canon_id = url_strings.get(canon_url)
+                if canon_id is None:
+                    cr.execute("INSERT INTO url_strings VALUES(NULL, ?)",
+                               (canon_url,))
+                    canon_id = cr.lastrowid
+                    url_strings[canon_url] = canon_id
+
+            cr.execute("UPDATE canon_urls SET canon = ?, status = ?"
+                       "  WHERE url = ?",
+                       (canon_id, status_id, orig_id))
+
+            if interrupted:
+                break
+
+        if not options.verbose:
+            sys.stderr.write("\rprocessed {1:>{0}} of {2:>{0}}...\n"
+                             .format(width, processed, total))
         db.commit()
         workers.close()
         workers.join()
+
+    except:
+        if not options.verbose:
+            sys.stderr.write("\n")
+        db.rollback()
+        workers.close()
+        workers.join()
+        raise
 
 if __name__ == '__main__':
 
@@ -374,9 +452,6 @@ if __name__ == '__main__':
     op.add_option("-p", "--parallel",
                   action="store", dest="parallel", type="int", default=10,
                   help="number of simultaneous HTTP requests to issue")
-    op.add_option("-S", "--sites-only",
-                  action="store_true", dest="sites_only", default=False,
-                  help="Don't follow redirects away from a site root")
 
     (options, args) = op.parse_args()
     sanitize_urls(args[0])
