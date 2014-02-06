@@ -1,321 +1,781 @@
-#! /usr/bin/python
-# canonize - canonicalize and clean a list of URLs.  -*- encoding: utf-8 -*-
+#! /usr/bin/python3
+
+# canonize - canonicalize and clean a list of URLs.
 # Copyright © 2010, 2013, 2014 Zack Weinberg
 # Portions © 2009 Serge Broslavsky
 #
-# Copying and distribution of this program, with or without modification,
-# are permitted in any medium without royalty provided the copyright
-# notice and this notice are preserved.  This program is offered as-is,
-# without any warranty.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+# There is NO WARRANTY.
 
-import multiprocessing
-import optparse
+
+import curses
+import fcntl
+import locale
 import os
+import queue
+import select
 import signal
+import struct
+import sys
+import termios
+import threading
+import traceback
+
+import http.client
+import optparse # FIXME: argparse
+import operator
+import requests
 import socket
 import sqlite3
-import string
-import sys
+import time
+import urllib.parse
+import urllib3.exceptions
 
-import cookielib
-import httplib
-import urllib
-import urlparse
+class Monitor:
+    """Monitor is responsible for all terminal I/O, including signal
+       management.  Monitor uses threads internally and must be
+       initialized before any other threads, as it manipulates the
+       global signal mask and handlers.
 
-# We have to do the HTTP queries by hand because of urllib bugs and
-# sites that misbehave if they see its default user-agent.  This means
-# we have to create a shim between httplib and cookielib, because
-# cookielib assumes you're using urllib.  Thanks to Serge Broslavsky
-# for this shim class:
-# http://stackoverflow.com/questions/1016765/how-to-use-cookielib-with-httplib-in-python
+       Like curses.wrapper, Monitor's constructor takes an argument
+       which is a callable responsible for all your program logic.
+       It will be called ON A NEW THREAD, passing the Monitor object
+       itself, its own Thread object, and any additional arguments you
+       provide.  On the initial thread, control does not leave
+       Monitor.__init__ until program shutdown.  The optional "banner"
+       argument to Monitor.__init__ allows you to set additional text
+       in the top bar that tells the user how to stop the run.
 
-class HTTPRequest(object):
-    """
-    Data container for HTTP request (used for cookie processing).
-    """
+       Monitor methods whose names begin with a single underscore MUST
+       NOT be called from outside the Monitor object, or catastrophic
+       thread-related failure may occur."""
 
-    def __init__(self, url, headers={}, method='GET'):
-        self._url = urlparse.urlsplit(urlparse.urldefrag(url)[0])
-        # Mimic the headers that would be produced by a real browser.
-        self._headers = {
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; rv:24.0) Gecko/20100101 Firefox/24.0",
-          "Accept":
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-        self._method = method
+    # Internal code numbers used for the output thread's work queue.
+    # Lower numbers are higher message priorities (i.e. will be
+    # delivered first).
+    _DONE    = 4
+    _STATUS  = 3
+    _REDRAW  = 2
+    _SUSPEND = 1
+    _EXIT    = 0
 
-        for key, value in headers.items():
-            self.add_header(key, value)
+    # Stub signal handler.  All the signals are actually fielded via
+    # the wakeup_fd mechanism.
+    @staticmethod
+    def dummy_signal_handler(*args, **kwargs):
+        pass
 
-    def has_header(self, name):
-        return name in self._headers
+    # See _input_thread_fn for how each signal is treated.
+    _SIGNALS = (signal.SIGALRM,
+                signal.SIGHUP,
+                signal.SIGINT,
+                signal.SIGPIPE,
+                signal.SIGPWR,
+                signal.SIGQUIT,
+                signal.SIGTERM,
+                signal.SIGTSTP,
+                signal.SIGTTIN,
+                signal.SIGTTOU,
+                signal.SIGUSR1,
+                signal.SIGUSR2,
+                signal.SIGVTALRM,
+                signal.SIGXCPU,
+                signal.SIGXFSZ,
+                signal.SIGWINCH)
 
-    def add_header(self, key, val):
-        self._headers[key.capitalize()] = val
+    # Called in a couple of different places.
+    def _initscr_plus(self):
+        self._scr = curses.initscr()
+        self._max_y, self._max_x = self._scr.getmaxyx()
+        curses.noecho()
+        curses.nonl()
+        curses.cbreak()
+        curses.typeahead(-1)
+        curses.curs_set(0)
+        # in case curses has other ideas
+        fcntl.fcntl(0, fcntl.F_SETFL, os.O_NONBLOCK)
 
-    def add_unredirected_header(self, key, val):
-        self._headers[key.capitalize()] = val
+    def __init__(self, main, *args, banner="", **kwargs):
+        try:
+            locale.setlocale(locale.LC_ALL, '')
+            self._encoding = locale.getpreferredencoding()
 
-    def is_unverifiable(self):
-        return True
+            # Establish signal handling before doing anything else.
+            for sig in self._SIGNALS:
+                signal.signal(sig, self.dummy_signal_handler)
+                signal.siginterrupt(sig, False)
 
-    def get_type(self):
-        return self._url.scheme
+            self._pid = os.getpid()
+            try:
+                self._sigpipe = os.pipe2(os.O_NONBLOCK|os.O_CLOEXEC)
+            except AttributeError:
+                self._sigpipe = os.pipe()
+                fcntl.fcntl(self._sigpipe[0], fcntl.F_SETFL, os.O_NONBLOCK)
+                fcntl.fcntl(self._sigpipe[1], fcntl.F_SETFL, os.O_NONBLOCK)
+                fcntl.fcntl(self._sigpipe[0], fcntl.F_SETFD, fcntl.FD_CLOEXEC)
+                fcntl.fcntl(self._sigpipe[1], fcntl.F_SETFD, fcntl.FD_CLOEXEC)
+            self._old_wakeup = signal.set_wakeup_fd(self._sigpipe[1])
 
-    def get_full_url(self):
-        return self._url.geturl()
+            self._tasks = queue.PriorityQueue()
+            self._stop_event = threading.Event()
+            self._pause_event = threading.Event()
+            # pause_event and stop_event are active low
+            self._stop_event.set()
+            self._pause_event.set()
 
-    def get_header(self, header_name, default=None):
-        return self._headers.get(header_name.capitalize(), default)
+            self._output_thread = threading.current_thread()
+            self._input_thread  = threading.Thread(
+                target=self._input_thread_fn, daemon=True)
+            self._mwork_thread  = threading.Thread(
+                target=self._work_thread_fn, args=(main, args, kwargs))
 
-    def get_host(self):
-        return self._url.netloc
+            self._counters_lock = threading.Lock()
+            self._n_work_threads = 0
+            self._active_work_threads = 0
+            self._worker_exceptions = {}
 
-    get_origin_req_host = get_host
+            # Terminal-related state.
+            self._banner = banner
+            self._addmsg = "Press ESC to stop."
+            self._lines  = []
+            self._line_attrs = []
+            self._line_indexes = {}
+            self._line_indexes_used = set()
 
-    def get_headers(self):
-        return self._headers
+            self._initscr_plus()
 
-    def fire(self):
-        if self._url.scheme == 'http':
-            conn = httplib.HTTPConnection(self._url.netloc, timeout=10)
-        elif self._url.scheme == 'https':
-            conn = httplib.HTTPSConnection(self._url.netloc, timeout=10)
+            # Release the hounds.
+            self._input_thread.start()
+            self._mwork_thread.start()
+            self._output_thread_fn()
+
+        # Control returns to this point only when we are tearing stuff
+        # down.  Our internal threads can't practically be terminated,
+        # but they are daemonized, and the others should have already
+        # terminated.
+        finally:
+            curses.endwin()
+            signal.set_wakeup_fd(self._old_wakeup)
+            os.close(self._sigpipe[0])
+            os.close(self._sigpipe[1])
+
+            if self._worker_exceptions:
+                for tid in sorted(self._worker_exceptions.keys()):
+                    sys.stderr.write("Exception in thread {}:\n"
+                                     .format(tid))
+                    traceback.print_exception(*self._worker_exceptions[tid])
+                    sys.stderr.write("\n")
+                if sys.exc_info() == (None, None, None):
+                    raise SystemExit(1)
+
+
+    # Public API.
+    def report_status(self, status):
+        """Each worker thread should call this method at intervals to
+           report its status.  The status may be any text you like."""
+        self._tasks.put((self._STATUS,
+                         self._line_indexes[threading.get_ident()],
+                         status))
+
+    def add_work_thread(self, worker_fn, *args, **kwargs):
+        """The initial worker thread (the one that executes the
+           callable passed to the constructor) may spin up additional
+           workers by calling this function.  worker_fn is the callable
+           to execute in the new thread; like the callable passed to the
+           constructor, it receives two arguments, the Monitor and its own
+           Thread object, plus any additional args passed to this function."""
+        threading.Thread(target=self._work_thread_fn,
+                         args=(worker_fn, args, kwargs)).start()
+
+    def maybe_pause_or_stop(self):
+        """Worker threads must call this method in between jobs; if
+           the overall process is about to be suspended, it will block,
+           and if the overall process is about to be terminated, it will
+           exit the thread."""
+
+        if not self._stop_event.is_set():
+            # Raising SystemExit on a thread only terminates that
+            # thread.  The worker wrapper routine will take care of
+            # signaling an exit when all threads are done.
+            self.report_status("\x00")
+            raise SystemExit
+
+        # Pausing doesn't map nicely onto any available primitive.
+        # The desired logic is: at time 0, a controller thread raises
+        # the "please pause soon" flag and blocks itself; when all the
+        # worker threads have blocked, the controller becomes
+        # unblocked; at some later time the controller releases the
+        # workers.  The best available way to do this seems to be two
+        # events and a counter.
+        if not self._pause_event.is_set():
+            with self._counters_lock:
+                self._active_work_threads -= 1
+                if not self._active_work_threads:
+                    self._tasks.put((self._DONE, True))
+            self.report_status("\x00")
+            self._pause_event.wait()
+            with self._counters_lock:
+                self._active_work_threads += 1
+
+    # Internal methods.
+    def _input_thread_fn(self):
+
+        def iter_avail_bytes(fd):
+            try:
+                while True:
+                    yield os.read(fd, 1)
+            except BlockingIOError:
+                return
+
+        def handle_input_char(ch):
+            if ch == b'' or ch == b'\x1b' or ch == b'q' or ch == b'Q':
+                self._tasks.put((self._EXIT, 0))
+            elif ch == b'\f':
+                self._tasks.put((self._REDRAW,))
+
+        def handle_signal_char(ch):
+            sig = struct.unpack("B", ch)[0]
+            if sig == signal.SIGWINCH:
+                self._tasks.put((self._REDRAW,))
+            elif (sig == signal.SIGTSTP or sig == signal.SIGTTIN or
+                  sig == signal.SIGTTOU):
+                self._tasks.put((self._SUSPEND, sig))
+            else:
+                self._tasks.put((self._EXIT, sig))
+
+        handlers = { 0                : handle_input_char,
+                     self._sigpipe[0] : handle_signal_char }
+
+        poll = select.poll()
+        poll.register(0, select.POLLIN)
+        poll.register(self._sigpipe[0], select.POLLIN)
+
+        while True:
+            try:
+                ready = poll.poll()
+                for fd, _ in ready:
+                    handler = handlers[fd]
+                    for ch in iter_avail_bytes(fd):
+                        handler(ch)
+            except OSError:
+                # We get -EBADF with some regularity during shutdown.
+                break
+
+    def _work_thread_fn(self, worker_fn, args, kwargs):
+        thread = threading.current_thread()
+        with self._counters_lock:
+            self._n_work_threads += 1
+            self._active_work_threads += 1
+            i = 0
+            while True:
+                if i not in self._line_indexes_used:
+                    self._line_indexes[thread.ident] = i
+                    self._line_indexes_used.add(i)
+                    break
+                i += 1
+
+        try:
+            worker_fn(self, thread, *args, **kwargs)
+
+        except Exception as e:
+            self._worker_exceptions[thread.name] = sys.exc_info()
+            msg = "*** Uncaught exception: " + \
+                traceback.format_exception_only(type(e), e)[0][:-1]
+            self.report_status(msg)
+
+        finally:
+            with self._counters_lock:
+                i = self._line_indexes[thread.ident]
+                del self._line_indexes[thread.ident]
+                self._line_indexes_used.remove(i)
+                self._n_work_threads -= 1
+                self._active_work_threads -= 1
+
+                if self._n_work_threads == 0:
+                    self._tasks.put((self._DONE, False))
+
+    # Subroutines of the main output loop.
+
+    def _compute_banner_internal(self):
+        """Compute the full text of the banner.  The banner is trimmed
+           at the right if it + the exit message are too wide for the
+           window, otherwise it is centered."""
+
+        banner = self._banner
+        w = self._max_x
+
+        if banner == "":
+            msg = self._addmsg
         else:
-            raise IOError("unsupported URL '%s'" % self.get_full_url())
-        path = self._url.path
-        if self._url.query != "":
-            path = path + '?' + self._url.query
+            msg = ". " + self._addmsg
 
-        conn.request(self._method, path, headers=self._headers)
-        resp = conn.getresponse()
-        # patch httplib response to look like urllib2 response,
-        # for the sake of cookie processing
-        resp.info = lambda: resp.msg
-        return resp
+        n = len(msg)
+        if n > w:
+            return msg[n-w:]
+
+        if banner != "":
+            n = len(banner) + len(msg)
+            if n > w:
+                shortfall = n - w
+                if len(banner) <= 2:
+                    return banner[:-shortfall] + msg
+                elif w - len(msg) <= 2:
+                    return "."*(w - len(msg)) + msg
+                else:
+                    shortfall += 2
+                    return banner[:-shortfall] + ".." + msg
+
+            msg = banner + msg
+
+        space = w - n
+        if space == 0:
+            return msg
+
+        if space % 2 == 0:
+            pad = " " * (space // 2)
+            full_msg = pad + msg + pad
+        else:
+            pad1 = " " * (space // 2)
+            pad2 = pad1 + " "
+            full_msg = pad1 + msg + pad2
+
+        return full_msg
+
+    def _compute_banner(self):
+        return self._compute_banner_internal().encode(self._encoding)
+
+    def _do_status(self, idx, text):
+        while idx >= len(self._lines):
+            self._lines.append("")
+            self._line_attrs.append(curses.A_NORMAL)
+
+        if text == "\x00":
+            self._line_attrs[idx] = curses.A_NORMAL
+        else:
+            self._lines[idx] = text.encode(self._encoding)
+
+        y = (self._max_y - 1) - idx
+        if y < 1: return # the top line is reserved for the banner
+        self._scr.addnstr(y, 0,
+                          self._lines[idx], self._max_x-1,
+                          self._line_attrs[idx])
+        self._scr.clrtoeol()
+        self._scr.refresh()
+
+    def _do_redraw(self):
+        # Unconditionally query the OS for the size of the window whenever
+        # we need to do a complete redraw.
+        height, width = struct.unpack("hhhh",
+                                      fcntl.ioctl(0, termios.TIOCGWINSZ,
+                                                  b"\000"*8))[0:2]
+        self._max_y = height
+        self._max_x = width
+        curses.resizeterm(height, width)
+
+        self._scr.clear()
+        self._scr.addstr(0, 0, self._compute_banner(), curses.A_REVERSE)
+        for y in range(1, self._max_y):
+            idx = (self._max_y - 1) - y
+            if idx < len(self._lines):
+                self._scr.addnstr(y, 0, self._lines[idx], self._max_x-1,
+                                  self._line_attrs[idx])
+        self._scr.refresh()
+
+    def _flag_all_lines(self):
+        for i in range(len(self._line_attrs)):
+            self._line_attrs[i] = curses.A_BOLD
+        self._do_redraw()
+
+    def _do_suspend(self, signo, old_addmsg):
+        def drain_input(fd):
+            try:
+                while len(os.read(fd, 1024)) > 0:
+                    pass
+            except BlockingIOError:
+                return
+
+        curses.endwin()
+        signal.signal(signo, signal.SIG_DFL)
+        os.kill(self._pid, signo)
+
+        signal.signal(signo, self.dummy_signal_handler)
+        signal.siginterrupt(signo, False)
+        self._initscr_plus()
+        drain_input(0)
+        drain_input(self._sigpipe[0])
+
+        self._pause_event.set()
+        self._addmsg = old_addmsg
+        self._do_redraw()
+
+    def _do_exit(self, signo):
+        if signo == 0 or signo == signal.SIGINT:
+            return
+
+        curses.endwin()
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, [exit_signal])
+        signal.signal(exit_signal, signal.SIG_DFL)
+        os.kill(self._pid, exit_signal)
+
+    def _output_thread_fn(self):
+        self._scr.clear()
+        self._scr.addstr(0, 0, self._compute_banner(), curses.A_REVERSE)
+        self._scr.refresh()
+        old_addmsg = None
+        exit_signal = 0
+
+        while True:
+            try:
+                task = self._tasks.get()
+                if task[0] == self._STATUS:
+                    self._do_status(task[1], task[2])
+
+                elif task[0] == self._REDRAW:
+                    self._do_redraw()
+
+                elif task[0] == self._SUSPEND:
+                    exit_signal = task[1]
+                    self._pause_event.clear()
+
+                    # a _DONE message will be posted to the queue as soon
+                    # as all worker threads respond to the pause event
+                    old_addmsg = self._addmsg
+                    self._addmsg = "Pausing."
+                    self._flag_all_lines()
+
+                elif task[0] == self._EXIT:
+                    exit_signal = task[1]
+                    self._stop_event.clear()
+                    # a _DONE message will be posted to the queue as soon
+                    # as all worker threads respond to the stop event
+                    if exit_signal:
+                        self._addmsg = ("Shutting down (signal {})."
+                                        .format(exit_signal))
+                    else:
+                        self._addmsg = "Shutting down."
+                    self._flag_all_lines()
+
+                elif task[0] == self._DONE:
+                    if task[1]:
+                        self._do_suspend(exit_signal, old_addmsg)
+                        exit_signal = 0
+                        old_addmsg = None
+                    else:
+                        self._do_exit(exit_signal)
+                        return
+
+                else:
+                    raise RuntimeError("invalid task: " + repr(task))
+
+            # Normally, no exceptions whatsoever may escape this function.
+            # Allow them to do so if we are already trying to stop, or we
+            # might get stuck forever.
+            except BaseException as e:
+                if not self._stop_event.is_set():
+                    raise
+
+                self._stop_event.clear()
+                self._addmsg = ("*** {}:{} *** Crashing."
+                                .format(type(e).__name__, str(e)))
+                self._do_redraw()
 
 #
-# Logging.  Note that sys.stderr is shared among all worker processes
-# so we must take care to always print complete lines in a single
-# write() call.  The obsessive flushing may or may not be necessary
-# depending on exactly which Python version you have.
+# Logging.
 #
-
-options = None
-mypid   = None
 
 def fmt_status(resp):
-    return str(resp.status) + " " + str(resp.reason)
+    return str(resp.status_code) + " " + str(resp.reason)
 
 def fmt_cookies(jar):
-    if not options.verbose: return ""
     if not jar: return ""
     return " [" + " ".join(cookie.name + "=" + cookie.value
                            for cookie in jar) + "]"
 
-def log_start(orig_url):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} ...\n".format(mypid, orig_url))
-    sys.stderr.flush()
+def fmt_exception(exc):
+    # Timeout exceptions are often much too verbose.
+    if isinstance(exc, (requests.exceptions.Timeout,
+                        socket.timeout)):
+        return "timed out"
 
-def log_success(orig_url, canon, resp):
-    if not options.verbose: return
-    if resp.status != 200:
-        sys.stderr.write("{:05}: {} => {} ({})\n"
-                         .format(mypid, orig_url, canon, fmt_status(resp)))
+    # There are two different getaddrinfo() error codes that
+    # mean essentially "host not found", and we don't care
+    # about the difference.
+    if (isinstance(exc, socket.gaierror) and
+        exc.errno in (socket.EAI_NONAME, socket.EAI_NODATA)):
+        return "unknown host"
+
+    if hasattr(exc, 'strerror') and exc.strerror:
+        msg = exc.strerror
+        if hasattr(exc, 'filename') and exc.filename:
+            msg = exc.filename + ": " + msg
+        return msg
+
+    # HTTPException subclasses often have a vague str().
+    if isinstance(exc, http.client.HTTPException):
+        return "HTTP error ({}): {}".format(exc.__class__.__name__,
+                                            str(exc))
+
+    return str(exc)
+
+# Custom canonization function which forces "http://foo.example" to
+# "http://foo.example/" and removes empty or vacuous components
+# (e.g. "http://foo.example:80/" becomes "http://foo.example/").
+def canonical_form(url):
+    # Insist on working with purely ASCII URLs, because a site that
+    # responds to http://foo.example/Br%e8ve probably won't accept
+    # http://foo.example/Br%c3%a8ve as the same thing.
+    # requests wants str, not bytes, though.
+    if hasattr(url, "encode"):
+        url = url.encode("ascii").decode("ascii")
     else:
-        sys.stderr.write("{:05}: {} => {}\n".format(mypid, orig_url, canon))
-    sys.stderr.flush()
+        url = url.decode("ascii")
 
-def log_fail(orig_url, resp):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} => {}\n"
-                     .format(mypid, orig_url, fmt_status(resp)))
-    sys.stderr.flush()
+    exploded = urllib.parse.urlparse(url)
+    scheme = exploded.scheme
+    user   = exploded.username or ""
+    passwd = exploded.password or ""
+    host   = exploded.hostname or ""
+    port   = exploded.port     or ""
+    path   = exploded.path
+    params = exploded.params
+    query  = exploded.query
+    frag   = exploded.fragment
 
+    if (scheme == "http" or scheme == "https") and path == "":
+        path = "/"
+    netloc = exploded.hostname
+    if passwd:
+        netloc = user + ":" + passwd + "@" + netloc
+    elif user:
+        netloc = user + "@" + netloc
+    if port and port != "80":
+        netloc = netloc + ":" + port
 
-def log_good_redirect(orig_url, redir, resp, cookies):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} => {} to {}{}\n"
-                     .format(mypid, orig_url, fmt_status(resp), redir,
-                             fmt_cookies(cookies)))
-    sys.stderr.flush()
+    return urllib.parse.urlunparse((scheme, netloc, path, params, query, frag))
 
-def log_bad_redirect(orig_url, resp):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} => {} to nowhere\n"
-                     .format(mypid, orig_url, fmt_status(resp)))
-    sys.stderr.flush()
+def load_enough_content(resp):
+    # Load no more than 16KB of a response, in 1K chunks.
+    # Allow this process to take no more than 5 seconds in total.
+    # These numbers are arbitrarily chosen to defend against
+    # teergrubes (intentional or not) while still allowing us a
+    # useful amount of data for anomaly post-mortem.
+    body = b""
+    start = time.time()
+    for chunk in resp.iter_content(chunk_size=1024):
+        body += chunk
+        if len(body) > 16*1024 or time.time() - start > 5:
+            resp.close()
+            break
+    return body
 
-def log_redirect_loop(orig_url, redir, resp):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} => {} to {}, loop detected\n"
-                     .format(mypid, orig_url, fmt_status(resp), redir))
-    sys.stderr.flush()
+# This is approximately what
+#  namedtuple("CanonResult", "url_id canon_url status anomaly")
+# would produce, but with some gunk we don't need stripped, and
+# convenience constructors added.
+class CanonResult(tuple):
+    __slots__ = ()
+    _fields = ('url_id', 'canon_url', 'status', 'anomaly')
+    def __new__(cls, url_id, canon_url, status, anomaly):
+        return tuple.__new__(cls, (url_id, canon_url, status, anomaly))
 
-def log_declined_redirect(orig_url, canon, redir, resp):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} => {} ({} to {})\n"
-                     .format(mypid, orig_url, canon, fmt_status(resp), redir))
-    sys.stderr.flush()
+    def __repr__(self):
+        return self.__class__.__name__ + \
+            '(url_id=%r, canon_url=%r, status=%r, anomaly=%r)' % self
 
-def log_env_error(orig_url, exc):
-    if not options.verbose: return
-    if exc.filename:
-        sys.stderr.write("{:05}: {} => {}: {}\n"
-                         .format(mypid, orig_url, exc.filename, exc.strerror))
-    elif exc.strerror:
-        sys.stderr.write("{:05}: {} => {}\n"
-                         .format(mypid, orig_url, exc.strerror))
-    else:
-        sys.stderr.write("{:05}: {} => {}\n"
-                         .format(mypid, orig_url, str(exc)))
-    sys.stderr.flush()
+    url_id = property(operator.itemgetter(0))
+    canon_url = property(operator.itemgetter(1))
+    status = property(operator.itemgetter(2))
+    anomaly = property(operator.itemgetter(3))
 
-def log_http_error(orig_url, exc):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} => HTTP error ({}): {}\n"
-                     .format(mypid, orig_url, exc.__class__.__name__, str(exc)))
-    sys.stderr.flush()
+    @classmethod
+    def success(cls, url_id, canon_url):
+        return cls(url_id, canon_url, "200 OK", None)
 
-def log_gen_error(orig_url, exc):
-    if not options.verbose: return
-    sys.stderr.write("{:05}: {} => {}\n"
-                     .format(mypid, orig_url, str(exc)))
-    sys.stderr.flush()
+    @classmethod
+    def http_failure(cls, url_id, resp):
+        return cls(url_id, None, fmt_status(resp), None)
 
+    @classmethod
+    def http_anomaly(cls, url_id, resp, body):
+        # Response headers:
+        headers = "\n".join("{}: {}".format(*kv)
+                            for kv in sorted(resp.headers.items()))
 
-# Custom canonization function which treats "foo.com/blah" as equivalent to
-# "http://foo.com/blah" rather than as a partial URL with no host or scheme
-# (as urlparse.urlsplit does).
-def precanonize(url):
-    (scheme, sep, rest) = url.partition('://')
-    if sep == '':
-        rest = scheme
-        scheme = 'http'
-    else:
-        scheme = scheme.lower()
-    (host, sep, path) = rest.partition('/')
-    if path == '':
-        path = '/'
-    else:
-        path = '/' + path
-    host = host.lower()
-    return scheme + "://" + host + path
+        # The headers do not include the status line.
+        status = fmt_status(resp)
+        full_status = "HTTP/{} ".format(resp.raw.version/10.) + status
 
-# Custom canonization function which forces "http://foo.com" to
-# "http://foo.com/" and removes empty params/query/fragment.
-def postcanonize(url):
-    (scheme, netloc, path, params, query, fragment) = \
-        urlparse.urlparse(url)
-    if (scheme == 'http' or scheme == 'https') and path == '':
-        path = '/'
-    norm = urlparse.urlunparse((scheme, netloc, path, params, query, fragment))
-    # %-quote non-ASCII characters (and only those characters).
-    return urllib.quote(norm, safe=string.punctuation)
+        return cls(url_id,
+                   None,
+                   status,
+                   (full_status + "\n" + headers + "\n\n").encode("ascii")
+                   + body)
 
-# Subroutine of chase_redirects: report an anomalous response to the
-# database-monger process.
-def anomalous_response(orig_id, resp, body):
+    @classmethod
+    def exception(cls, url_id, exc):
+        return cls(url_id, None, fmt_exception(exc), None)
 
-    # Response headers:
-    headers = "\n".join("{}: {}".format(*kv)
-                        for kv in sorted(resp.getheaders()))
+class HTTPWorker:
+    def __init__(self, inq, outq):
+        self.inq      = inq
+        self.outq     = outq
+        self.mon      = None
+        self.sess     = None
+        self.prev_msg = ""
 
-    # The headers do not include the status line.
-    status = fmt_status(resp)
-    full_status = "HTTP/{} ".format(resp.version/10.) + status
+    def report_status(self, msg):
+        self.mon.report_status("{1:<{0}.{0}} {2}".format(self.mon._max_x // 2,
+                                                         self.prev_msg, msg))
+        self.prev_msg = msg
 
-    return (orig_id,
-            None,
-            status,
-            full_status + "\n" + headers + "\n\n" + body)
+    def log_start(self, orig_url):
+        self.report_status(orig_url + " ...")
 
-def chase_redirects(args):
-    global mypid
-    orig_id, orig_url = args
-    seen = set()
-    cookies = cookielib.CookieJar()
-    orig_url = orig_url.strip()
-    url = precanonize(orig_url)
-    log_start(orig_url)
-    try:
-        while True:
-            req = HTTPRequest(url)
-            url = req.get_full_url()
+    def log_success(self, orig_url, canon):
+        self.report_status("{} => {}"
+                           .format(orig_url, canon))
 
-            seen.add(url)
-            cookies.add_cookie_header(req)
-            resp = req.fire()
-            body = resp.read()
+    def log_fail(self, orig_url, resp):
+        self.report_status("{} => {}"
+                           .format(orig_url, fmt_status(resp)))
 
-            # Only code 200 counts as success.
-            if resp.status == 200:
-                url = postcanonize(url)
-                log_success(orig_url, url, resp)
-                return (orig_id, url, "200 OK", None)
+    def log_good_redirect(self, orig_url, redir, resp, cookies):
+        self.report_status("{} => {} to {}{}"
+                           .format(orig_url, fmt_status(resp), redir,
+                                   fmt_cookies(cookies)))
 
-            # Codes 400, 401, 403, 404, and 410 are "normal" failures;
-            # they do not get recorded as anomalous.
-            if resp.status in (400, 401, 403, 404, 410):
-                log_fail(orig_url, resp)
-                return (orig_id, None, fmt_status(resp), None)
+    def log_redirect_loop(self, orig_url, redir, resp):
+        self.report_status("{} => {} to {}, loop detected"
+                           .format(orig_url, fmt_status(resp), redir))
 
-            # Codes 301, 302, 303, 307, 308 are understood as
-            # redirection directives.  All other codes are treated as
-            # anomalous failures.
-            if resp.status not in (301, 302, 303, 307, 308):
-                log_fail(orig_url, resp)
-                return anomalous_response(orig_id, resp, body)
+    def log_exception(self, orig_url, exc):
+        self.report_status("{} => {}"
+                           .format(orig_url, fmt_exception(exc)))
 
-            # Redirected, so where to?
-            location = resp.getheader("Location")
-            if location is None:
-                location = resp.getheader("Uri")
-            if location is None:
-                # A redirection with no Location or Uri header is anomalous.
-                log_bad_redirect(orig_url, resp)
-                return anomalous_response(orig_id, resp, body)
+    def process_one_response(self, orig_id, orig_url, resp):
+        # Only code 200 counts as success.
+        if resp.status_code == 200:
+            url = canonical_form(resp.url)
+            self.log_success(orig_url, url)
+            return CanonResult.success(orig_id, url)
 
-            # pick up any cookies attached to the redirection
-            cookies.extract_cookies(resp, req)
+        # Codes 400, 401, 403, 404, 410, 500, and 503 are "normal"
+        # failures; they do not get recorded as anomalous.
+        if resp.status_code in (400, 401, 403, 404, 410, 500, 503):
+            self.log_fail(orig_url, resp)
+            return CanonResult.http_failure(orig_id, resp)
 
-            # update the url
-            newurl = urlparse.urljoin(url, location)
-            if newurl in seen:
-                # Redirect loops are also anomalous.
-                log_redirect_loop(orig_url, newurl, resp)
-                return anomalous_response(orig_id, resp, body)
+        # This logic must match requests.session's idea of what a
+        # redirect is.
+        if (resp.status_code not in requests.sessions.REDIRECT_STATI
+            or "location" not in resp.headers):
+            self.log_fail(orig_url, resp)
+            return CanonResult.http_anomaly(orig_id, resp,
+                                            load_enough_content(resp))
 
-            log_good_redirect(orig_url, newurl, resp, cookies)
-            url = newurl
-            # and loop
+        return None
 
-    # Do not allow any exceptions to escape, or the entire job will crash.
-    # Exceptions do _not_ count as anomalous; they generally occur before
-    # the response is even received and there's nothing more to record.
-    except httplib.HTTPException, e:
-        log_http_error(orig_url, e)
-        return (orig_id, None,
-                "HTTP error ({}): {}".format(e.__class__.__name__,
-                                             str(e)), None)
+    def chase_redirects(self, orig_id, orig_url):
+        # In some circumstances we need to access the last-examined
+        # response object and/or its body from an exception handler.
+        last_resp = None
+        try:
+            url = orig_url = canonical_form(orig_url)
+            self.log_start(orig_url)
+            self.sess.cookies.clear()
 
-    # socket.timeout is an EnvironmentError, but its .strerror is None!
-    except socket.timeout, e:
-        log_gen_error(orig_url, e)
-        return (orig_id, None, str(e), None)
+            # We will manually iterate over the redirects.
+            # SSL certs are not verified because we don't want to exclude
+            # sites with self-signed certs at this stage.
+            req = requests.Request('GET', orig_url)
+            pr  = self.sess.prepare_request(req)
+            r   = self.sess.send(pr, timeout=10, allow_redirects=False,
+                                 verify=False, stream=True)
 
-    except EnvironmentError, e:
-        log_env_error(orig_url, e)
-        if e.filename: msg = "{}: {}".format(e.filename, e.strerror)
-        elif e.strerror: msg = e.strerror
-        else: msg = str(e)
-        return (orig_id, None, msg, None)
+            # The resolve_redirects generator does not emit the very first
+            # response; that's 'r'.  Don't bother invoking it if the first
+            # response isn't a redirect.
+            last_resp = r
+            result = self.process_one_response(orig_id, orig_url, r)
+            if result is not None: return result
+            self.log_good_redirect(orig_url, r.headers["location"],
+                                   r, self.sess.cookies)
 
-    except Exception, e:
-        log_gen_error(orig_url, e)
-        return (orig_id, None, str(e), None)
+            for resp in self.sess.resolve_redirects(r, pr,
+                                                    timeout=10,
+                                                    verify=False,
+                                                    stream=True):
+                last_resp = resp
+                result = self.process_one_response(orig_id, orig_url, resp)
+                if result is not None: return result
+                self.log_good_redirect(orig_url, resp.headers["location"],
+                                       resp, self.sess.cookies)
+
+        # All exceptions are captured and recorded as failures. The most
+        # common causes of exceptions are timeouts and DNS resolution
+        # failures, neither of which are "anomalous".  When we do have a
+        # genuine anomaly (e.g. HTTP response failed to parse) we may well
+        # not have enough information to record it, but we do our best.
+        except requests.exceptions.ConnectionError as e:
+            # requests lumps a whole bunch of different network-layer
+            # issues under this exception.  In all cases observed so far,
+            # a ConnectionError wraps a urllib3 exception which wraps a
+            # socket error, and the outer two layers are uninteresting.
+            try:
+                sockerr = e.args[0].reason
+                self.log_exception(orig_url, sockerr)
+                return CanonResult.exception(orig_id, sockerr)
+            except:
+                raise
+                #self.log_exception(orig_url, e)
+                #return CanonResult.exception(orig_id, e)
+
+        # It is not clear to me why, but sometimes these show up bare,
+        # not wrapped in a requests.ConnectionsError.
+        except urllib3.exceptions.MaxRetryError as e:
+            try:
+                sockerr = e.reason
+                self.log_exception(orig_url, sockerr)
+                return CanonResult.exception(orig_id, sockerr)
+            except:
+                self.log_exception(orig_url, e)
+                return CanonResult.exception(orig_id, e)
+
+        except requests.exceptions.TooManyRedirects as e:
+            # Redirect loop: treat the last response as anomalous.
+            self.log_redirect_loop(orig_url, last_resp.url, last_resp)
+            return CanonResult.http_anomaly(orig_id, last_resp,
+                                            load_enough_content(last_resp))
+
+        except (OSError, UnicodeError) as e:
+            self.log_exception(orig_url, e)
+            return CanonResult.exception(orig_id, e)
+
+        # allow other exceptions to escape and crash the thread
+
+    def __call__(self, mon, thr):
+        self.mon = mon
+        # separate sessions for each thread
+        self.sess = requests.Session()
+        # mimic a real browser's headers
+        self.sess.headers.update({
+           "Accept":
+             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+           "Accept-Encoding": "gzip, deflate",
+           "Accept-Language": "en-US,en;q=0.5",
+           "User-Agent":
+             "Mozilla/5.0 (Macintosh; rv:24.0) Gecko/20100101 Firefox/24.0",
+        })
+        try:
+            while True:
+                self.mon.maybe_pause_or_stop()
+                task = self.inq.get(block=False)
+                self.outq.put(self.chase_redirects(*task))
+        except queue.Empty:
+            return
 
 # Bizarrely, sqlite3.Cursor is not an iterator nor does it have a method
 # to return an iterator over the current query result.
@@ -325,133 +785,167 @@ def fetch_iter(cursor):
         if not rows: break
         for row in rows: yield row
 
-# So we can stop cleanly on ^C.
-interrupted = False
-def sigint_handler(signo, frame):
-    global interrupted
-    interrupted = True
+class DatabaseWorker:
+    def __init__(self, db_filename, n_workers):
+        self.db_filename = db_filename
+        self.n_workers   = n_workers
 
-def worker_init():
-    global mypid
-    mypid = os.getpid()
-    # the main process will issue a clean teardown on SIGINT
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+        # We mustn't actually create any of these objects till we're
+        # on the proper thread.
+        self.db             = None
+        self.mon            = None
+        self.url_strings    = None
+        self.canon_statuses = None
+        self.work_queue     = None
+        self.result_queue   = None
 
-def sanitize_urls(db_filename):
-    global interrupted
+        # Statistics counters.
+        self.total     = 0
+        self.processed = 0
+        self.successes = 0
+        self.failures  = 0
+        self.anomalies = 0
 
-    # FIXME: Use urldb.py.
-    db = sqlite3.connect(db_filename)
-    cr = db.cursor()
-    cr.executescript(r"""
-PRAGMA encoding = "UTF-8";
-PRAGMA foreign_keys = ON;
-PRAGMA locking_mode = NORMAL;
-""")
+    def __call__(self, mon, thr):
+        self.mon = mon
+        self.load_database()
+        self.main_loop()
 
-    # Cache the URL and status tables in memory.
-    cr.execute("SELECT id, url FROM url_strings;")
-    url_strings = { row[1]: row[0]
-                    for row in fetch_iter(cr) }
-    cr.execute("SELECT id, status FROM canon_statuses;")
-    canon_statuses = { row[1]: row[0]
-                       for row in fetch_iter(cr) }
-    status_ok = canon_statuses["200 OK"]
+    def report_final_statistics(self):
+        # Called after the Monitor shuts down, so it's ok to use stdout.
+        sys.stderr.write("Processed {} of {} URLs: {} canonized, {} failures, "
+                         "{} anomalies\n"
+                         .format(self.processed, self.total,
+                                 self.successes, self.failures, self.anomalies))
 
-    # Add rows to the canon_urls table for new entries in the urls table.
-    cr.execute("INSERT INTO canon_urls"
-               "  SELECT DISTINCT url, NULL, NULL FROM urls"
-               "    WHERE url NOT IN (SELECT url FROM canon_urls);")
+    def log_overall_progress(self):
+        if self.processed == 0:
+            self.mon.report_status("Processing {} URLs...".format(self.total))
+        else:
+            total = str(self.total)
+            wd = len(total)
+            msg = (("Processed {1:>{0}} of {2}: {3} canonized, "
+                   "{4} failures, {5} anomalies")
+                   .format(wd, self.processed, total,
+                           self.successes, self.failures, self.anomalies))
+            self.mon.report_status(msg)
 
-    # Load the list of URLs-to-do.
-    # This must be done in advance so that multiprocessing doesn't try to
-    # call the cursor on the wrong thread.
-    cr.execute("SELECT u.url, v.url"
-               "  FROM canon_urls as u"
-               "  LEFT JOIN url_strings as v on u.url = v.id"
-               "  WHERE u.canon IS NULL AND u.status IS NULL;")
-    urls_to_process = [(row[0], row[1])
-                        for row in fetch_iter(cr)]
+    def load_database(self):
+        self.mon.report_status("Loading database...")
 
-    # We are now ready to spin up the worker pool.
-    workers = multiprocessing.Pool(options.parallel, worker_init)
-    pid = os.getpid()
-    signal.signal(signal.SIGINT, sigint_handler)
+        # FIXME: Use urldb.py.
+        db = sqlite3.connect(self.db_filename)
+        self.db = db
+        cr = db.cursor()
+        cr.executescript('PRAGMA encoding = "UTF-8";'
+                         'PRAGMA foreign_keys = ON;'
+                         'PRAGMA locking_mode = NORMAL;')
 
-    processed = 0
-    total = len(urls_to_process)
-    width = len(str(total))
-    try:
-        if not options.verbose:
-            sys.stderr.write("\rprocessed {1:>{0}} of {2:>{0}}..."
-                             .format(width, processed, total))
-        cr.execute("BEGIN EXCLUSIVE;")
-        for (orig_id, canon_url, status, anomaly) in \
-                workers.imap_unordered(chase_redirects,
-                                       urls_to_process,
-                                       50):
-            processed += 1
-            if processed % 100 == 0:
-                if not options.verbose:
-                    sys.stderr.write("\rprocessed {1:>{0}} of {2:>{0}}..."
-                                     .format(width, processed, total))
-                db.commit()
-                cr.execute("BEGIN EXCLUSIVE;")
+        # Cache the URL and status tables in memory.
+        self.mon.report_status("Loading database... (URL strings)")
+        self.mon.maybe_pause_or_stop()
+        cr.execute("SELECT id, url FROM url_strings;")
+        self.url_strings = { row[1]: row[0]
+                             for row in fetch_iter(cr) }
 
-            status_id = canon_statuses.get(status)
-            if status_id is None:
-                cr.execute("INSERT INTO canon_statuses VALUES(NULL, ?)",
-                           (status,))
-                status_id = cr.lastrowid
-                canon_statuses[status] = status_id
+        self.mon.report_status("Loading database... (canon statuses)")
+        self.mon.maybe_pause_or_stop()
+        cr.execute("SELECT id, status FROM canon_statuses;")
+        self.canon_statuses = { row[1]: row[0]
+                                for row in fetch_iter(cr) }
 
-            if anomaly is not None:
-                cr.execute("INSERT INTO anomalies VALUES(?, ?, ?)",
-                           (url_id, status_id, anomaly))
+        # Add rows to the canon_urls table for new entries in the urls table.
+        self.mon.report_status("Loading database... (canon table entries)")
+        self.mon.maybe_pause_or_stop()
+        cr.execute("INSERT INTO canon_urls"
+                   "  SELECT DISTINCT url, NULL, NULL FROM urls"
+                   "    WHERE url NOT IN (SELECT url FROM canon_urls);")
 
-            if canon_url is None:
-                canon_id = None
-            else:
-                canon_id = url_strings.get(canon_url)
-                if canon_id is None:
-                    cr.execute("INSERT INTO url_strings VALUES(NULL, ?)",
-                               (canon_url,))
-                    canon_id = cr.lastrowid
-                    url_strings[canon_url] = canon_id
+        # Load the list of URLs-to-do.
+        # This must be done in advance so that multiprocessing doesn't try to
+        # call the cursor on the wrong thread.
+        self.mon.report_status("Loading database... (work queue)")
+        self.mon.maybe_pause_or_stop()
+        cr.execute("SELECT u.url, v.url"
+                   "  FROM canon_urls as u"
+                   "  LEFT JOIN url_strings as v on u.url = v.id"
+                   "  WHERE u.canon IS NULL AND u.status IS NULL;")
 
-            cr.execute("UPDATE canon_urls SET canon = ?, status = ?"
-                       "  WHERE url = ?",
-                       (canon_id, status_id, orig_id))
+        work_queue = queue.Queue()
+        total = 0
+        for row in fetch_iter(cr):
+            orig_id = row[0]
 
-            if interrupted:
-                break
+            work_queue.put(row)
+            total += 1
+        self.total = total
+        self.work_queue = work_queue
+        self.result_queue = queue.Queue()
 
-        if not options.verbose:
-            sys.stderr.write("\rprocessed {1:>{0}} of {2:>{0}}...\n"
-                             .format(width, processed, total))
-        db.commit()
-        workers.close()
-        workers.join()
+    def record_canonized(self, result):
+        cr = self.db.cursor()
+        status_id = self.canon_statuses.get(result.status)
+        if status_id is None:
+            cr.execute("INSERT INTO canon_statuses VALUES(NULL, ?)",
+                       (result.status,))
+            status_id = cr.lastrowid
+            self.canon_statuses[result.status] = status_id
 
-    except:
-        if not options.verbose:
-            sys.stderr.write("\n")
-        db.rollback()
-        workers.close()
-        workers.join()
-        raise
+        if result.anomaly is not None:
+            cr.execute("INSERT INTO anomalies VALUES(?, ?, ?)",
+                       (result.url_id, status_id, result.anomaly))
+            self.anomalies += 1
+
+        if result.canon_url is None:
+            canon_id = None
+            self.failures += 1
+        else:
+            self.successes += 1
+            canon_id = self.url_strings.get(result.canon_url)
+            if canon_id is None:
+                cr.execute("INSERT INTO url_strings VALUES(NULL, ?)",
+                           (result.canon_url,))
+                canon_id = cr.lastrowid
+                self.url_strings[result.canon_url] = canon_id
+
+        cr.execute("UPDATE canon_urls SET canon = ?, status = ?"
+                   "  WHERE url = ?",
+                   (canon_id, status_id, result.url_id))
+        self.processed += 1
+
+    def main_loop(self):
+        self.log_overall_progress()
+        self.mon.maybe_pause_or_stop()
+
+        for _ in range(self.n_workers):
+            self.mon.add_work_thread(HTTPWorker(self.work_queue,
+                                                self.result_queue))
+
+        while True:
+            with self.db:
+                try:
+                    while True:
+                        result = self.result_queue.get(timeout=1)
+                        self.record_canonized(result)
+                        self.log_overall_progress()
+                        if self.processed % 1000 == 0:
+                            db.commit()
+                except queue.Empty:
+                    pass
+            # Only allow the database writer to pause when the result
+            # queue is completely drained.
+            self.mon.maybe_pause_or_stop()
 
 if __name__ == '__main__':
 
     op = optparse.OptionParser(
         usage="usage: %prog [options] database",
         version="%prog 1.0")
-    op.add_option("-q", "--quiet",
-                  action="store_false", dest="verbose", default=True,
-                  help="don't print progress messages to stderr")
     op.add_option("-p", "--parallel",
                   action="store", dest="parallel", type="int", default=10,
                   help="number of simultaneous HTTP requests to issue")
 
     (options, args) = op.parse_args()
-    sanitize_urls(args[0])
+    dbw = DatabaseWorker(args[0], options.parallel)
+    Monitor(dbw, banner="Canonicalizing URLs")
+    dbw.report_final_statistics()

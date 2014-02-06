@@ -94,10 +94,12 @@ CREATE TABLE canon_urls (
 );
 
 -- Anomalous HTTP responses are logged in this table.
+-- 'response' is a BLOB because py3 doesn't want to write a byte string
+-- to a TEXT field.
 CREATE TABLE anomalies (
   url        INTEGER PRIMARY KEY REFERENCES url_strings(id),
   status     INTEGER NOT NULL REFERENCES canon_statuses(id),
-  response   TEXT NOT NULL
+  response   BLOB NOT NULL
 );
 """
 
