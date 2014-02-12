@@ -416,9 +416,9 @@ class Monitor:
             return
 
         curses.endwin()
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, [exit_signal])
-        signal.signal(exit_signal, signal.SIG_DFL)
-        os.kill(self._pid, exit_signal)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, [signo])
+        signal.signal(signo, signal.SIG_DFL)
+        os.kill(self._pid, signo)
 
     def _output_thread_fn(self):
         self._scr.clear()
@@ -538,7 +538,7 @@ def canonical_form(url):
     user   = exploded.username or ""
     passwd = exploded.password or ""
     host   = exploded.hostname or ""
-    port   = exploded.port     or ""
+    port   = str(exploded.port) if exploded.port else ""
     path   = exploded.path
     params = exploded.params
     query  = exploded.query
@@ -729,9 +729,8 @@ class HTTPWorker:
                 self.log_exception(orig_url, sockerr)
                 return CanonResult.exception(orig_id, sockerr)
             except:
-                raise
-                #self.log_exception(orig_url, e)
-                #return CanonResult.exception(orig_id, e)
+                self.log_exception(orig_url, e)
+                return CanonResult.exception(orig_id, e)
 
         # It is not clear to me why, but sometimes these show up bare,
         # not wrapped in a requests.ConnectionsError.
@@ -744,17 +743,22 @@ class HTTPWorker:
                 self.log_exception(orig_url, e)
                 return CanonResult.exception(orig_id, e)
 
+        except urllib3.exceptions.LocationParseError as e:
+            # Redirect to bogus URL: treat the last response as anomalous.
+            self.log_fail(orig_url, last_resp)
+            return CanonResult.http_anomaly(orig_id, last_resp,
+                                            load_enough_content(last_resp))
+
+
         except requests.exceptions.TooManyRedirects as e:
             # Redirect loop: treat the last response as anomalous.
             self.log_redirect_loop(orig_url, last_resp.url, last_resp)
             return CanonResult.http_anomaly(orig_id, last_resp,
                                             load_enough_content(last_resp))
 
-        except (OSError, UnicodeError) as e:
+        except Exception as e:
             self.log_exception(orig_url, e)
             return CanonResult.exception(orig_id, e)
-
-        # allow other exceptions to escape and crash the thread
 
     def __call__(self, mon, thr):
         self.mon = mon
@@ -794,7 +798,6 @@ class DatabaseWorker:
         # on the proper thread.
         self.db             = None
         self.mon            = None
-        self.url_strings    = None
         self.canon_statuses = None
         self.work_queue     = None
         self.result_queue   = None
@@ -841,13 +844,7 @@ class DatabaseWorker:
                          'PRAGMA foreign_keys = ON;'
                          'PRAGMA locking_mode = NORMAL;')
 
-        # Cache the URL and status tables in memory.
-        self.mon.report_status("Loading database... (URL strings)")
-        self.mon.maybe_pause_or_stop()
-        cr.execute("SELECT id, url FROM url_strings;")
-        self.url_strings = { row[1]: row[0]
-                             for row in fetch_iter(cr) }
-
+        # Cache the status table in memory; it's reasonably small.
         self.mon.report_status("Loading database... (canon statuses)")
         self.mon.maybe_pause_or_stop()
         cr.execute("SELECT id, status FROM canon_statuses;")
@@ -901,12 +898,15 @@ class DatabaseWorker:
             self.failures += 1
         else:
             self.successes += 1
-            canon_id = self.url_strings.get(result.canon_url)
-            if canon_id is None:
+            cr.execute("SELECT id FROM url_strings WHERE url = ?",
+                       (result.canon_url,))
+            row = cr.fetchone()
+            if row is not None:
+                canon_id = row[0]
+            else:
                 cr.execute("INSERT INTO url_strings VALUES(NULL, ?)",
                            (result.canon_url,))
                 canon_id = cr.lastrowid
-                self.url_strings[result.canon_url] = canon_id
 
         cr.execute("UPDATE canon_urls SET canon = ?, status = ?"
                    "  WHERE url = ?",
@@ -929,7 +929,7 @@ class DatabaseWorker:
                         self.record_canonized(result)
                         self.log_overall_progress()
                         if self.processed % 1000 == 0:
-                            db.commit()
+                            self.db.commit()
                 except queue.Empty:
                     pass
             # Only allow the database writer to pause when the result
