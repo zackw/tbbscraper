@@ -190,6 +190,11 @@ class Monitor:
         threading.Thread(target=self._work_thread_fn,
                          args=(worker_fn, args, kwargs)).start()
 
+    def caller_is_only_active_thread(self):
+        """True if the calling thread is the only active worker thread."""
+        with self._counters_lock:
+            return self._active_work_threads == 1
+
     def maybe_pause_or_stop(self):
         """Worker threads must call this method in between jobs; if
            the overall process is about to be suspended, it will block,
@@ -780,6 +785,7 @@ class HTTPWorker:
                 task = self.inq.get(block=False)
                 self.outq.put(self.chase_redirects(*task))
         except queue.Empty:
+            self.report_status("")
             return
 
 # Bizarrely, sqlite3.Cursor is not an iterator nor does it have a method
@@ -933,9 +939,15 @@ class DatabaseWorker:
                             self.db.commit()
                 except queue.Empty:
                     pass
-            # Only allow the database writer to pause when the result
-            # queue is completely drained.
-            self.mon.maybe_pause_or_stop()
+
+            # Only allow the database writer to pause or stop when the
+            # result queue is completely drained and all other workers
+            # have stopped.
+            if self.mon.caller_is_only_active_thread():
+                if self.work_queue.empty() and self.result_queue.empty():
+                    return # completely done, hurrah!
+
+                self.mon.maybe_pause_or_stop()
 
 if __name__ == '__main__':
 
