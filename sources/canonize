@@ -611,7 +611,8 @@ class CanonResult(tuple):
         return cls(url_id,
                    None,
                    status,
-                   (full_status + "\n" + headers + "\n\n").encode("ascii")
+                   (full_status + "\n" + headers + "\n\n")
+                       .encode("ascii", "backslashreplace")
                    + body)
 
     @classmethod
