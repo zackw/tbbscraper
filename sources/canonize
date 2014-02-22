@@ -779,14 +779,14 @@ class HTTPWorker:
            "User-Agent":
              "Mozilla/5.0 (Macintosh; rv:24.0) Gecko/20100101 Firefox/24.0",
         })
-        try:
-            while True:
-                self.mon.maybe_pause_or_stop()
-                task = self.inq.get(block=False)
-                self.outq.put(self.chase_redirects(*task))
-        except queue.Empty:
-            self.report_status("")
-            return
+        while True:
+            self.mon.maybe_pause_or_stop()
+            task = self.inq.get()
+            if task is None: break
+            self.outq.put(self.chase_redirects(*task))
+
+        # done:
+        self.report_status("")
 
 # Bizarrely, sqlite3.Cursor is not an iterator nor does it have a method
 # to return an iterator over the current query result.
@@ -806,8 +806,6 @@ class DatabaseWorker:
         self.db             = None
         self.mon            = None
         self.canon_statuses = None
-        self.work_queue     = None
-        self.result_queue   = None
 
         # Statistics counters.
         self.total     = 0
@@ -858,36 +856,20 @@ class DatabaseWorker:
         self.canon_statuses = { row[1]: row[0]
                                 for row in fetch_iter(cr) }
 
-        # Add rows to the canon_urls table for new entries in the urls table.
-        self.mon.report_status("Loading database... (canon table entries)")
-        self.mon.maybe_pause_or_stop()
-        cr.execute("INSERT INTO canon_urls"
-                   "  SELECT DISTINCT url, NULL, NULL FROM urls"
-                   "    WHERE url NOT IN (SELECT url FROM canon_urls);")
-
-        # Load the list of URLs-to-do.
-        # This must be done in advance so that multiprocessing doesn't try to
-        # call the cursor on the wrong thread.
+        # Load the list of URLs-to-do into a temporary table.
         self.mon.report_status("Loading database... (work queue)")
         self.mon.maybe_pause_or_stop()
-        cr.execute("SELECT u.url, v.url"
-                   "  FROM canon_urls as u"
-                   "  LEFT JOIN url_strings as v on u.url = v.id"
-                   "  WHERE u.canon IS NULL AND u.status IS NULL;")
+        cr.execute("CREATE TEMPORARY TABLE urls_to_do AS "
+                   "SELECT DISTINCT u.url AS id, v.url AS url"
+                   "  FROM urls AS u"
+                   "  LEFT JOIN url_strings AS v ON u.url = v.id"
+                   "  WHERE u.url NOT IN (SELECT url FROM canon_urls)"
+                   "  ORDER BY u.url")
 
-        work_queue = queue.Queue()
-        total = 0
-        for row in fetch_iter(cr):
-            orig_id = row[0]
+        cr.execute("SELECT COUNT(*) FROM urls_to_do");
+        self.total = cr.fetchone()[0];
 
-            work_queue.put(row)
-            total += 1
-        self.total = total
-        self.work_queue = work_queue
-        self.result_queue = queue.Queue()
-
-    def record_canonized(self, result):
-        cr = self.db.cursor()
+    def record_canonized(self, result, cr):
         status_id = self.canon_statuses.get(result.status)
         if status_id is None:
             cr.execute("INSERT INTO canon_statuses VALUES(NULL, ?)",
@@ -915,28 +897,62 @@ class DatabaseWorker:
                            (result.canon_url,))
                 canon_id = cr.lastrowid
 
-        cr.execute("UPDATE canon_urls SET canon = ?, status = ?"
-                   "  WHERE url = ?",
-                   (canon_id, status_id, result.url_id))
+        cr.execute("INSERT INTO canon_urls VALUES(?, ?, ?)",
+                   (result.url_id, canon_id, status_id))
         self.processed += 1
 
     def main_loop(self):
         self.log_overall_progress()
         self.mon.maybe_pause_or_stop()
 
-        for _ in range(self.n_workers):
-            self.mon.add_work_thread(HTTPWorker(self.work_queue,
-                                                self.result_queue))
+        work_queue = queue.Queue()
+        result_queue = queue.Queue()
 
+        read_cr = self.db.cursor()
+        write_cr = self.db.cursor()
+
+        # for some ghodforsaken reason, the read cursor gets reset on
+        # every call to fetchmany(), so we have to manually keep track
+        # of where we were. this probably means we're walking through
+        # the temp table in Schlemiel the Painter fashion, but that
+        # beats having the work queue consume all available memory.
+        offset = 0
+        read_cr.arraysize = max(50, self.n_workers * 2)
+        read_cr.execute("SELECT * FROM urls_to_do LIMIT ? OFFSET ?",
+                        (read_cr.arraysize, offset))
+
+        # Pre-populate the work queue before starting the HTTPWorkers.
+        for row in read_cr.fetchmany():
+            work_queue.put(row)
+            offset += 1
+
+        for _ in range(self.n_workers):
+            self.mon.add_work_thread(HTTPWorker(work_queue, result_queue))
+
+        done = False
         while True:
             with self.db:
                 try:
                     while True:
-                        result = self.result_queue.get(timeout=1)
-                        self.record_canonized(result)
+                        result = result_queue.get(timeout=1)
+                        self.record_canonized(result, write_cr)
                         self.log_overall_progress()
                         if self.processed % 1000 == 0:
                             self.db.commit()
+
+                        if not done and work_queue.qsize() < self.n_workers:
+                            read_cr.execute("SELECT * FROM urls_to_do "
+                                            "LIMIT ? OFFSET ?",
+                                            (read_cr.arraysize, offset))
+                            block = read_cr.fetchmany()
+                            if not block:
+                                done = True
+                                for _ in range(self.n_workers):
+                                    work_queue.put(None)
+                            else:
+                                for row in block:
+                                    work_queue.put(row)
+                                    offset += 1
                 except queue.Empty:
                     pass
 
@@ -944,7 +960,7 @@ class DatabaseWorker:
             # result queue is completely drained and all other workers
             # have stopped.
             if self.mon.caller_is_only_active_thread():
-                if self.work_queue.empty() and self.result_queue.empty():
+                if work_queue.empty() and result_queue.empty():
                     return # completely done, hurrah!
 
                 self.mon.maybe_pause_or_stop()
