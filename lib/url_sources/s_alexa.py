@@ -4,19 +4,20 @@
 
 import argparse
 import contextlib
-import cStringIO
 import gzip
+import io
 import os
 import os.path
 import re
 import sqlite3
 import sys
 import time
-import urllib2
-import urlparse
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 
-import urldb
+import url_sources.urldb
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Download the current Alexa "
@@ -49,8 +50,8 @@ def download_sitelist(args, datestamp):
         return cached_csv
 
     # urllib2's filelike is not with-compatible; neither is it seekable.
-    with contextlib.closing(cStringIO.StringIO()) as mbuf:
-        with contextlib.closing(urllib2.urlopen(args.src)) as src:
+    with contextlib.closing(io.StringIO()) as mbuf:
+        with contextlib.closing(urllib.request.urlopen(args.src)) as src:
             mbuf.write(src.read())
 
         mbuf.seek(0)
@@ -64,7 +65,7 @@ def download_sitelist(args, datestamp):
     return cached_csv
 
 def normalize_url(spliturl):
-    """Given a SplitResult object returned from urlparse.urlsplit,
+    """Given a SplitResult object returned from urllib.parse.urlsplit,
        normalize its network location and path.  This means stripping
        empty username and password fields, stripping a port number
        that is redundant to the scheme, and converting an empty path
@@ -98,7 +99,7 @@ def normalize_url(spliturl):
         pwrd = ""
 
     # We don't have to worry about ':' or '@' in the user and password
-    # strings, because urlparse does not do %-decoding on them.
+    # strings, because urllib.parse does not do %-decoding on them.
     if user == "" and pwrd == "":
         auth = ""
     elif pwrd == "":
@@ -111,25 +112,25 @@ def normalize_url(spliturl):
     if path == '':
         path = '/'
 
-    return urlparse.SplitResult(spliturl.scheme,
-                                netloc,
-                                path,
-                                spliturl.query,
-                                spliturl.fragment)
+    return urllib.parse.SplitResult(spliturl.scheme,
+                                    netloc,
+                                    path,
+                                    spliturl.query,
+                                    spliturl.fragment)
 
 def to_https(spliturl):
-    return urlparse.SplitResult("https",
-                                spliturl.netloc,
-                                spliturl.path,
-                                spliturl.query,
-                                spliturl.fragment)
+    return urllib.parse.SplitResult("https",
+                                    spliturl.netloc,
+                                    spliturl.path,
+                                    spliturl.query,
+                                    spliturl.fragment)
 
 def to_siteroot(spliturl):
-    return urlparse.SplitResult(spliturl.scheme,
-                                spliturl.netloc,
-                                "/",
-                                spliturl.query,
-                                spliturl.fragment)
+    return urllib.parse.SplitResult(spliturl.scheme,
+                                    spliturl.netloc,
+                                    "/",
+                                    spliturl.query,
+                                    spliturl.fragment)
 
 def add_www(spliturl):
     if "@" in spliturl.netloc:
@@ -138,11 +139,11 @@ def add_www(spliturl):
     else:
         netloc = "www." + spliturl.netloc
 
-    return urlparse.SplitResult(spliturl.scheme,
-                                netloc,
-                                spliturl.path,
-                                spliturl.query,
-                                spliturl.fragment)
+    return urllib.parse.SplitResult(spliturl.scheme,
+                                    netloc,
+                                    spliturl.path,
+                                    spliturl.query,
+                                    spliturl.fragment)
 
 no_www_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+$|\[[\dA-Fa-f:]+\]$|www\.)")
 
@@ -181,7 +182,7 @@ def add_urls_from_site(cur, site, ordinal, oid, already_seen):
     # It does not make sense to prepend 'www.' if 'site' already starts with
     # 'www.' or if it is an IP address.
 
-    parsed = normalize_url(urlparse.urlsplit("http://" + site))
+    parsed = normalize_url(urllib.parse.urlsplit("http://" + site))
 
     assert parsed.path != ""
     if parsed.path != "/":
@@ -279,7 +280,7 @@ def process_sitelist(db, sitelist_name, datestamp):
 def main():
     args      = parse_args()
     datestamp = time.strftime("%Y%m%d", time.gmtime())
-    db        = urldb.ensure_database(args)
+    db        = url_sources.urldb.ensure_database(args)
     sitelist  = download_sitelist(args, datestamp)
     process_sitelist(db, sitelist, datestamp)
 
