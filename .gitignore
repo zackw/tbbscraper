@@ -6,6 +6,7 @@
 *.pyc
 *.pyo
 *.o
+__pycache__/
 
 /lib/controller/bridge-data/
 /lib/controller/controller.ini
@@ -19,7 +20,7 @@
 /lib/client/tbb_*/
 /lib/client/watchdog
 
-/lib/sources/twitter_credential.txt
+/lib/url_sources/twitter_credential.txt
 
 /pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
