@@ -25,7 +25,7 @@ import time
 #import twitter
 import urllib.parse
 
-import url_sources.urldb
+import shared.url_database
 
 def parse_args():
     def positive_int(arg):
@@ -123,7 +123,7 @@ CREATE TABLE twitter_scans (
 ) WITHOUT ROWID;
 """
 
-    db = urldb.ensure_database(args)
+    db = shared.url_database.ensure_database(args)
     with db:
         # FIXME: More sophisticated way of detecting presence of our
         # ancillary schema.

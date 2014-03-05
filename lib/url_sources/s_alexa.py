@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-import url_sources.urldb
+import shared.url_database
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Download the current Alexa "
@@ -280,7 +280,7 @@ def process_sitelist(db, sitelist_name, datestamp):
 def main():
     args      = parse_args()
     datestamp = time.strftime("%Y%m%d", time.gmtime())
-    db        = url_sources.urldb.ensure_database(args)
+    db        = shared.url_database.ensure_database(args)
     sitelist  = download_sitelist(args, datestamp)
     process_sitelist(db, sitelist, datestamp)
 
