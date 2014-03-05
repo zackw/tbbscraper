@@ -8,21 +8,16 @@
 # There is NO WARRANTY.
 
 import argparse
-import os.path
 import pkgutil
 
-print(__name__)
-print(__path__)
-
-# Command-line-invokable source modules all have names starting "s_";
-# other modules in this package are shared code.  Load up all the
-# commands so we can access their argument parsers.
-
-commands = [(n[2:], f.find_module(n).load_module(n))
-            for f, n, _ in pkgutil.iter_modules(__path__)
-            if n.startswith("s_")]
-
 def driver(argv):
-    print("got here: " + " ".join(argv))
+    # Command-line-invokable source modules all have names starting "s_";
+    # other modules in this package are shared code.  Load up all the
+    # commands so we can access their argument parsers.
+
+    commands = [(name[2:], finder.find_module(name).load_module(name))
+                for finder, name, ispkg in pkgutil.iter_modules(__path__)
+                if not ispkg and name.startswith("s_")]
+
     for c in commands:
-        print(repr(c))
+        print(c[0], dir(c[1]))
