@@ -53,6 +53,7 @@ CREATE TABLE origins (
 
 -- This table holds the actual text of every URL.
 -- Other tables refer to URLs by id number in this table.
+-- URLs must be 7-bit ASCII (percent-encoded as necessary).
 CREATE TABLE url_strings (
   id         INTEGER PRIMARY KEY,
   url        TEXT NOT NULL UNIQUE
@@ -72,14 +73,16 @@ CREATE TABLE urls (
 
 -- Canonicalization of URLs is a separate pass and has different uniqueness
 -- requirements, so it gets its own tables.
--- (Maybe this should move into canonize.py?)
+-- (Maybe the canonizer should create these tables?)
 
 -- Status lines received during canonicalization.
 -- These are not necessarily *HTTP* statuses: for instance,
 -- DNS lookup failure gets recorded here too.
+-- Status lines are supposed to be ASCII, but sometimes we see data in
+-- unspecified legacy encodings, so we use a BLOB for the text.
 CREATE TABLE canon_statuses (
   id         INTEGER PRIMARY KEY,
-  status     TEXT NOT NULL UNIQUE
+  status     BLOB NOT NULL UNIQUE
 );
 
 -- URLs and their canonical forms (i.e. after chasing all redirects).
@@ -94,8 +97,10 @@ CREATE TABLE canon_urls (
 );
 
 -- Anomalous HTTP responses are logged in this table.
--- 'response' is a BLOB because py3 doesn't want to write a byte string
--- to a TEXT field.
+-- They have been partially interpreted and then reserialized, but may
+-- contain data in arbitrary legacy encodings or even be truly binary
+-- (nothing says one can't make the body of a 5xx response be an image)
+-- so the content is a BLOB.
 CREATE TABLE anomalies (
   url        INTEGER PRIMARY KEY REFERENCES url_strings(id),
   status     INTEGER NOT NULL REFERENCES canon_statuses(id),
