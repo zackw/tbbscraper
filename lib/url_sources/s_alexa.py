@@ -1,31 +1,9 @@
 #! /usr/bin/python
 
-# Alexa-top-1-million source for URLs.
+"""Download the current Alexa top-1-million-sites list and add it to the
+   URL database."""
 
-import argparse
-import contextlib
-import gzip
-import io
-import os
-import os.path
-import re
-import sqlite3
-import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import zipfile
-
-import shared.url_database
-
-def parse_args():
-    ap = argparse.ArgumentParser(description="Download the current Alexa "
-                                 "top-1-million-sites list and add it to the "
-                                 "URL database.")
-    ap.add_argument("--database", "-d", metavar="DB",
-                help="The database to update.",
-                default="urls.db")
+def setup_argp(ap):
     ap.add_argument("--src", "-s", metavar="URL",
                 help="Source URL for the sites list. "
                      "Assumed to name a zipfile.",
@@ -37,7 +15,31 @@ def parse_args():
                 help="Directory in which to cache downloaded site lists.",
                 default="alexa")
 
-    return ap.parse_args()
+def run(args):
+    datestamp = time.strftime("%Y%m%d", time.gmtime())
+    db        = shared.url_database.ensure_database(args)
+    try:
+        sys.stderr.write("\033[?25l")
+        sitelist  = download_sitelist(args, datestamp)
+        process_sitelist(db, sitelist, datestamp)
+    finally:
+        sys.stderr.write("\033[?12l\033[?25h\n")
+
+import argparse
+import contextlib
+import gzip
+import io
+import os
+import os.path
+import re
+import requests
+import sqlite3
+import sys
+import time
+import urllib.parse
+import zipfile
+
+import shared.url_database
 
 def download_sitelist(args, datestamp):
     # We hardwire the knowledge that Alexa only updates this once a day.
@@ -49,12 +51,23 @@ def download_sitelist(args, datestamp):
     if os.path.isfile(cached_csv):
         return cached_csv
 
-    # urllib2's filelike is not with-compatible; neither is it seekable.
-    with contextlib.closing(io.StringIO()) as mbuf:
-        with contextlib.closing(urllib.request.urlopen(args.src)) as src:
-            mbuf.write(src.read())
+    with contextlib.closing(io.BytesIO()) as mbuf:
+        sys.stderr.write("Downloading list...")
+        sys.stderr.flush()
+        with contextlib.closing(requests.get(args.src, stream=True)) as src:
+            total = src.headers['content-length']
+            npad = len(total)
+            sofar = 0
+            for block in src.iter_content(8192):
+                mbuf.write(block)
+                sofar += len(block)
+                sys.stderr.write("\rDownloading list: {1:>{0}}/{2} bytes...\033[K"
+                                 .format(npad, sofar, total))
+                sys.stderr.flush()
 
         mbuf.seek(0)
+        sys.stderr.write("\rRecompressing {}...\033[K".format(cached_csv))
+        sys.stderr.flush()
         zipf = zipfile.ZipFile(mbuf, "r")
         # canonicalize line endings, as long as we're recompressing
         inf = zipf.open(args.src_name, "rU")
@@ -216,6 +229,7 @@ def add_urls_from_site(cur, site, ordinal, oid, already_seen):
 
     ordinal = int(ordinal) * 8
 
+    nnew = 0
     for tag, url in urls:
         if url in already_seen:
             continue
@@ -235,53 +249,61 @@ def add_urls_from_site(cur, site, ordinal, oid, already_seen):
 
         # We want to add an url-table entry for this URL even if it's
         # already there from some other source; we only drop them if
-        # they are redundant within this data set.
-        cur.execute("INSERT INTO urls VALUES(?, ?, ?)",
+        # they are redundant within this data set.  However, in case
+        # the database-loading operation got interrupted midway,
+        # do an INSERT OR IGNORE.
+        cur.execute("INSERT OR IGNORE INTO urls VALUES(?, ?, ?)",
                     (oid, ordinal + tag, uid))
+        nnew += 1
 
+    return nnew
+
+def db_checkpoint(db):
+    ckpt_start = time.time()
+    sys.stderr.write("\rCheckpointing...\033[K")
+    sys.stderr.flush()
+    db.commit()
+    ckpt_stop = time.time()
+    return ckpt_stop - ckpt_start
 
 def process_sitelist(db, sitelist_name, datestamp):
 
     # sometimes the same site is on the list in several different guises
     already_seen = set()
 
-    # one giant transaction should be fine for this job
-    with db:
-        cur = db.cursor()
+    cur = db.cursor()
 
-        # First, create our entry in the origins table.  We don't need
-        # a metadata table; all of the available meta-information is
-        # captured by the source name (with its embedded date stamp)
-        # and the ordinal within Alexa's list, which is what we use
-        # for the origin_id.
-        label = ("alexa_" + datestamp,)
-        cur.execute("SELECT id FROM origins WHERE label = ?", label)
-        row = cur.fetchone()
-        if row is not None:
-            oid = row[0]
-        else:
-            cur.execute("INSERT INTO origins VALUES(NULL, ?)", label)
-            oid = cur.lastrowid
-            db.commit()
+    # First, create our entry in the origins table.  We don't need
+    # a metadata table; all of the available meta-information is
+    # captured by the source name (with its embedded date stamp)
+    # and the ordinal within Alexa's list, which is what we use
+    # for the origin_id.
+    label = ("alexa_" + datestamp,)
+    cur.execute("SELECT id FROM origins WHERE label = ?", label)
+    row = cur.fetchone()
+    if row is not None:
+        oid = row[0]
+    else:
+        cur.execute("INSERT INTO origins VALUES(NULL, ?)", label)
+        oid = cur.lastrowid
+        db.commit()
 
-        with gzip.GzipFile(sitelist_name, "r") as sitelist:
-            for i, line in enumerate(sitelist):
-                ordinal, _, site = line.partition(",")
-                site = site.rstrip()
-                add_urls_from_site(cur, site, ordinal, oid, already_seen)
-                if i % 1000 == 0:
-                    db.commit()
-                    sys.stderr.write("\r{}".format(i))
+    start = time.time()
+    ckpt_time = 0
 
-        sys.stderr.write("\n")
-
-
-
-def main():
-    args      = parse_args()
-    datestamp = time.strftime("%Y%m%d", time.gmtime())
-    db        = shared.url_database.ensure_database(args)
-    sitelist  = download_sitelist(args, datestamp)
-    process_sitelist(db, sitelist, datestamp)
-
-if __name__ == '__main__': main()
+    with gzip.GzipFile(sitelist_name, "r") as sitelist:
+        nurls = 0
+        for line in sitelist:
+            ordinal, _, site = line.decode("ascii").partition(",")
+            site = site.rstrip()
+            nurls += add_urls_from_site(cur, site, ordinal, oid, already_seen)
+            sys.stderr.write("\rLoaded {:>8} URLs from {:>7} sites | {}\033[K"
+                             .format(nurls, ordinal, site[:35]))
+            sys.stderr.flush()
+            if int(ordinal) % 10000 == 0:
+                ckpt_time += db_checkpoint(db)
+    ckpt_time += db_checkpoint(db)
+    stop = time.time()
+    elapsed = stop - start
+    sys.stderr.write("\rDone in {:6.4}s ({:6.4}s for checkpoints)\033[K"
+                     .format(elapsed, ckpt_time))
