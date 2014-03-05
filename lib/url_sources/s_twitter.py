@@ -16,16 +16,16 @@
 
 import argparse
 import calendar
+import email.utils
 import os
-import cPickle as pickle
+import pickle
 import re
-import rfc822
 import sys
 import time
-import twitter
-import urlparse
+#import twitter
+import urllib.parse
 
-from . import urldb
+import url_sources.urldb
 
 def parse_args():
     def positive_int(arg):
@@ -232,9 +232,8 @@ class Extraction(object):
         withheld.sort()
         withheld = "|".join(withheld)
 
-        hashtags = ["|"+h.text.replace("|", "_") for h in t.hashtags]
-        hashtags.sort()
-        hashtags = "".join(hashtags) + "|"
+        hashtags = "|".join(sorted(h.text.replace("|", "_")
+                                   for h in t.hashtags))
 
         self.pending_tweets.append((t.id, t.user.id, t.created_at_in_seconds,
                                     t.retweet_count,
@@ -302,7 +301,8 @@ class Extraction(object):
                              "(?,?,?,?,0,?,?,?,?,?,?,?)",
                              (uid,
                               # no created_at_in_seconds for users :-(
-                              calendar.timegm(rfc822.parsedate(u.created_at)),
+                              calendar.timegm(
+                                  email.utils.parsedate(u.created_at)),
                               u.verified,
                               u.protected,
                               u.screen_name,
