@@ -32,7 +32,11 @@ import socket
 import sqlite3
 import time
 import urllib.parse
-import urllib3.exceptions
+try:
+    from urllib3 import exceptions as urllib3_exceptions
+except ImportError:
+    # thanks everso, MacPorts
+    from requests.packages.urllib3 import exceptions as urllib3_exceptions
 
 class Monitor:
     """Monitor is responsible for all terminal I/O, including signal
@@ -69,22 +73,15 @@ class Monitor:
         pass
 
     # See _input_thread_fn for how each signal is treated.
-    _SIGNALS = (signal.SIGALRM,
-                signal.SIGHUP,
-                signal.SIGINT,
-                signal.SIGPIPE,
-                signal.SIGPWR,
-                signal.SIGQUIT,
-                signal.SIGTERM,
-                signal.SIGTSTP,
-                signal.SIGTTIN,
-                signal.SIGTTOU,
-                signal.SIGUSR1,
-                signal.SIGUSR2,
-                signal.SIGVTALRM,
-                signal.SIGXCPU,
-                signal.SIGXFSZ,
-                signal.SIGWINCH)
+    # thanks everso, MacOS, for making me care what signals exist
+    _SIGNALS = tuple(getattr(signal, s)
+                     for s in dir(signal)
+                     if (s.startswith("SIG") and not s.startswith("SIG_")
+                         and s not in frozenset((
+                # hopefully this is an exhaustive list of potential
+                # kernel-generated synchronous and/or unblockable signals
+                "SIGILL", "SIGTRAP", "SIGABRT", "SIGIOT", "SIGEMT", "SIGFPE",
+                "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGSTOP"))))
 
     # Called in a couple of different places.
     def _initscr_plus(self):
@@ -740,7 +737,7 @@ class HTTPWorker:
 
         # It is not clear to me why, but sometimes these show up bare,
         # not wrapped in a requests.ConnectionsError.
-        except urllib3.exceptions.MaxRetryError as e:
+        except urllib3_exceptions.MaxRetryError as e:
             try:
                 sockerr = e.reason
                 self.log_exception(orig_url, sockerr)
@@ -749,7 +746,7 @@ class HTTPWorker:
                 self.log_exception(orig_url, e)
                 return CanonResult.exception(orig_id, e)
 
-        except urllib3.exceptions.LocationParseError as e:
+        except urllib3_exceptions.LocationParseError as e:
             # Redirect to bogus URL: treat the last response as anomalous.
             self.log_fail(orig_url, last_resp)
             return CanonResult.http_anomaly(orig_id, last_resp,
