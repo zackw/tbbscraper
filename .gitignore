@@ -3,24 +3,23 @@
 .#*
 *.orig
 *.rej
+*.pyc
+*.pyo
+*.o
 
-/controller/bridge-data/
-/controller/controller.ini
-/controller/controller_identity
-/controller/controller_identity.pub
-/controller/controller_sshconfig
-/controller/*.pyc
-/controller/*.pkts
-/controller/*.urls
-/controller/*.txt
+/lib/controller/bridge-data/
+/lib/controller/controller.ini
+/lib/controller/controller_identity
+/lib/controller/controller_identity.pub
+/lib/controller/controller_sshconfig
+/lib/controller/*.pkts
+/lib/controller/*.urls
+/lib/controller/*.txt
 
-/client/tbb_*/
-/client/*.pyc
-/client/*.o
-/client/watchdog
+/lib/client/tbb_*/
+/lib/client/watchdog
 
-/sources/twitter_credential.txt
-/sources/*.pyc
+/lib/sources/twitter_credential.txt
 
 /pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
