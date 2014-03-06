@@ -1,15 +1,28 @@
-# canonize - canonicalize and clean a list of URLs.
 # Copyright © 2010, 2013, 2014 Zack Weinberg
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 # http://www.apache.org/licenses/LICENSE-2.0
 # There is NO WARRANTY.
 
+"""Canonicalize URLs in an existing database by following redirections.
+
+This operation also weeds out URLs that are no longer functional, or that
+never were functional in the first place.  Peculiar responses are recorded
+in a special "anomalies" table."""
+
+def setup_argp(ap):
+    ap.add_argument("-p", "--parallel",
+                    action="store", dest="parallel", type=int, default=10,
+                    help="number of simultaneous HTTP requests to issue")
+
+def run(args):
+    dbw = DatabaseWorker(args)
+    Monitor(dbw, banner="Canonicalizing URLs")
+    dbw.report_final_statistics()
+
 import http.client
 import operator
-import optparse # FIXME: argparse
 import queue
 import requests
 import socket
@@ -24,6 +37,7 @@ except ImportError:
     from requests.packages.urllib3 import exceptions as urllib3_exceptions
 
 from shared.monitor import Monitor
+from shared.url_database import ensure_database
 
 #
 # Logging.
@@ -335,9 +349,8 @@ def fetch_iter(cursor):
         for row in rows: yield row
 
 class DatabaseWorker:
-    def __init__(self, db_filename, n_workers):
-        self.db_filename = db_filename
-        self.n_workers   = n_workers
+    def __init__(self, args):
+        self.args = args
 
         # We mustn't actually create any of these objects till we're
         # on the proper thread.
@@ -381,13 +394,9 @@ class DatabaseWorker:
     def load_database(self):
         self.mon.report_status("Loading database...")
 
-        # FIXME: Use urldb.py.
-        db = sqlite3.connect(self.db_filename)
+        db = ensure_database(self.args)
         self.db = db
         cr = db.cursor()
-        cr.executescript('PRAGMA encoding = "UTF-8";'
-                         'PRAGMA foreign_keys = ON;'
-                         'PRAGMA locking_mode = NORMAL;')
 
         # Cache the status table in memory; it's reasonably small.
         self.mon.report_status("Loading database... (canon statuses)")
@@ -397,8 +406,8 @@ class DatabaseWorker:
                                 for row in fetch_iter(cr) }
 
         # Load the list of URLs-to-do.
-        # This must be done in advance so that multiprocessing doesn't try to
-        # call the cursor on the wrong thread.
+        # This must be done in advance so that we don't try to call
+        # the cursor on the wrong thread.
         self.mon.report_status("Loading database... (work queue)")
         self.mon.maybe_pause_or_stop()
         cr.execute("SELECT u.url, v.url"
@@ -407,7 +416,6 @@ class DatabaseWorker:
                    "  WHERE u.url NOT IN (SELECT url FROM canon_urls)"
                    "  ORDER BY v.url")
 
-
         work_queue = queue.Queue()
         total = 0
         for row in fetch_iter(cr):
@@ -415,6 +423,7 @@ class DatabaseWorker:
 
             work_queue.put(row)
             total += 1
+            if total == 100: break
         self.total = total
         self.work_queue = work_queue
         self.result_queue = queue.Queue()
@@ -456,7 +465,7 @@ class DatabaseWorker:
         self.log_overall_progress()
         self.mon.maybe_pause_or_stop()
 
-        for _ in range(self.n_workers):
+        for _ in range(self.args.parallel):
             self.mon.add_work_thread(HTTPWorker(self.work_queue,
                                                 self.result_queue))
 
@@ -480,17 +489,3 @@ class DatabaseWorker:
                     return # completely done, hurrah!
 
                 self.mon.maybe_pause_or_stop()
-
-if __name__ == '__main__':
-
-    op = optparse.OptionParser(
-        usage="usage: %prog [options] database",
-        version="%prog 1.0")
-    op.add_option("-p", "--parallel",
-                  action="store", dest="parallel", type="int", default=10,
-                  help="number of simultaneous HTTP requests to issue")
-
-    (options, args) = op.parse_args()
-    dbw = DatabaseWorker(args[0], options.parallel)
-    Monitor(dbw, banner="Canonicalizing URLs")
-    dbw.report_final_statistics()
