@@ -1,4 +1,9 @@
-#! /usr/bin/python
+# Copyright © 2013, 2014 Zack Weinberg
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+# There is NO WARRANTY.
 
 """Download the current Alexa top-1-million-sites list and add it to the
    URL database."""
@@ -25,7 +30,6 @@ def run(args):
     finally:
         sys.stderr.write("\033[?12l\033[?25h\n")
 
-import argparse
 import contextlib
 import gzip
 import io
@@ -33,7 +37,6 @@ import os
 import os.path
 import re
 import requests
-import sqlite3
 import sys
 import time
 import urllib.parse
