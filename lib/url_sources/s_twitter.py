@@ -1,84 +1,101 @@
-#! /usr/bin/python
+# Copyright © 2013, 2014 Zack Weinberg
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+# There is NO WARRANTY.
 
-# This script extracts URLs from a Twitter stream and writes them to a CSV
-# file with some of the per-tweet metadata.  The output format is like this:
-#
-# id,user.id,timestamp,retweet_count,lang,possibly_sensitive,withheld,hashtags,urls
-#
-# corresponding to fields from
-# https://dev.twitter.com/docs/platform-objects/tweets
-# https://dev.twitter.com/docs/platform-objects/entities
-#
-# The "withheld", "hashtags", and "urls" fields are |-separated lists.
-# Vertical bars in the URLs, if any, are %-encoded.
-#
-# You get the expanded URLs, not the t.co URLs.
+"""Extract URLs from Twitter streams.
 
-import argparse
-import calendar
-import email.utils
-import os
-import pickle
-import re
-import sys
-import time
-#import twitter
-import urllib.parse
+You can choose to examine the stream of a single user, a snowball
+sample of all users within some follow-graph distance of one user, or
+a frontier sample of users from the entire population.  Or you can
+examine a random sample of all tweets, filtered with search
+parameters."""
 
-import shared.url_database
-
-def parse_args():
+def setup_argp(ap):
     def positive_int(arg):
         val = int(arg)
         if val <= 0:
             raise TypeError("argument must be positive")
         return val
 
-    ap = argparse.ArgumentParser(description=
-                                 "Extract URLs from Twitter streams, "
-                                 "either for a single user, breadth-"
-                                 "first to some depth starting with a "
-                                 "single user, or frontier sampled from "
-                                 "the entire user population.")
-
-    ap.add_argument("--database", "-d", metavar="DB",
-                    default="urls.db",
-                    help="The database to update.")
-    ap.add_argument("--creds", "-c", metavar="FILE",
-                    default="sources/twitter_credential.txt",
-                    help="read Twitter API credentials from this file "
-                    "(four lines: consumer key, consumer secret, "
-                    " access token, access secret)")
-
-    ap.add_argument("--mode", "-m", metavar="EXTRACTION_MODE",
-                    choices=("single", "breadth", "frontier", "resume",
-                             "urls"),
+    ap.add_argument("mode", metavar="extraction-mode",
+                    choices=("single", "snowball", "frontier",
+                             "firehose", "resume", "urls"),
                     default="single",
-                    help="Extraction mode.  Use 'resume' to resume a "
-                    "previous, interrupted scan.  Use 'urls' to just "
-                    "extract more URLs from all users already in the "
-                    "database.")
+                    help="single=one user.\n"
+                    "snowball=all users within some distance of a seed user.\n"
+                    "frontier=random sample of the entire user population.\n"
+                    "firehose=random sample of all tweets as they go by "
+                    "(possibly filtered with search parameters).\n"
+                    "resume=continue an interrupted scan.\n"
+                    "urls=extract new URLs from users already in the database.")
 
-    ap.add_argument("--number", "-n", metavar="N",
+    ap.add_argument("-l", "--limit",
                     type=positive_int, default=1,
-                    help="Numeric parameter used by some modes: "
-                    "For 'breadth' mode, the depth of the search "
-                    "(1=friends, 2=friends of friends, and so on). "
-                    "For 'frontier' mode, the number of simultaneous "
-                    "random walks.")
+                    help="How 'big' of a sample to take, in some sense. "
+                    "For snowball mode, the distance from the seed user. "
+                    "For frontier and firehose mode, the number of unique "
+                    "users to pick before stopping.")
 
-    ap.add_argument("--quiet", "-q", action="store_true",
-                    help="disable progress messages")
+    ap.add_argument("-p", "--parallel",
+                    type=positive_int, default=1,
+                    help="Parallelism: only relevant for frontier sampling, "
+                    "where it controls the number of simultaneous random "
+                    "walks.")
 
-    ap.add_argument("seed", nargs="?",
+    ap.add_argument("seed", nargs="*",
                     help="Starting point for the scan. "
-                    "For 'single' and 'breadth' modes, this should be a "
-                    "Twitter handle (leading @ not required).  For 'resume' "
-                    "mode, the tag of a previous scan (specify --mode=resume "
-                    "with no seed to get a list of resumable scans). "
-                    "Not used in frontier mode.")
+                    "For 'single' and 'snowball' modes, you must supply one "
+                    "Twitter handle (leading @ not required).  For 'frontier' "
+                    "and 'firehose' modes, you may supply a search query which "
+                    "will limit the initial stream request. "
+                    "For 'resume' mode, you must supply the tag of a previous "
+                    "scan (specify --mode=resume with no seed to get a list "
+                    "of resumable scans). ")
 
-    return ap.parse_args()
+def run(args):
+    extractors = {
+        'single':   SingleExtractor,
+        'snowball': SnowballExtractor,
+        'frontier': FrontierExtractor,
+        'firehose': FirehoseExtractor,
+        'urls':     UrlsOnlyExtractor,
+        'resume':   resume_extraction
+    }
+    args.seed = " ".join(args.seed)
+    db, oid = ensure_database(args)
+    extractor = extractors[args.mode](args, db, oid)
+    extractor.run()
+
+import calendar
+import email.utils
+import os
+import pickle
+import pickletools
+import pkgutil
+import re
+import shutil
+import sys
+import time
+import twython
+import urllib.parse
+
+import shared.url_database
+
+def fatal(message, *args, **kwargs):
+    import os.path
+    import textwrap
+    prog = os.path.basename(sys.argv[0])
+    sys.stderr.write(textwrap.fill(message.format(*args, prog=prog, **kwargs)))
+    sys.stderr.write('\n')
+    sys.exit(1)
+
+def connect_to_twitter_api():
+    cred = pkgutil.get_data("url_sources", "twitter_credential.txt")
+    (app_key, app_secret, oauth_token, oauth_secret) = cred.split("\n", 4)
+    return twython.Twython(app_key, app_secret, oauth_token, oauth_secret)
 
 def ensure_database(args):
     twitter_schema = """\
@@ -115,12 +132,13 @@ CREATE TABLE twitter_tweets (
 );
 
 CREATE TABLE twitter_scans (
-    tag                TEXT PRIMARY KEY,
-    mode               TEXT NOT NULL,
-    number             INTEGER,
+    scan               INTEGER PRIMARY KEY,
+    mode               TEXT    NOT NULL,
+    limit_             INTEGER NOT NULL,
+    parallel           INTEGER NOT NULL,
     seed               TEXT,
     state              BLOB
-) WITHOUT ROWID;
+);
 """
 
     db = shared.url_database.ensure_database(args)
@@ -155,209 +173,154 @@ CREATE TABLE twitter_scans (
 
         return db, oid
 
-class Session(object):
-    def __init__(self, fname):
-        self.api = None
-        # I would like to use application-only auth but it appears that
-        # python-twitter does not support this.
-        with open(fname) as cf:
-            self.consumer_key    = cf.readline().strip()
-            self.consumer_secret = cf.readline().strip()
-            self.access_token    = cf.readline().strip()
-            self.access_secret   = cf.readline().strip()
+def dump_resumables_and_exit(db):
+    resumable = db.execute("SELECT scan, mode, limit_, parallel, seed "
+                           "FROM twitter_scans "
+                           "WHERE state NOT NULL "
+                           "ORDER BY mode").fetchall()
+    if not resumable:
+        fatal("{prog}: No scans can be resumed.")
 
-    def __enter__(self):
-        self.api = twitter.Api(consumer_key=self.consumer_key,
-                               consumer_secret=self.consumer_secret,
-                               access_token_key=self.access_token,
-                               access_token_secret=self.access_secret)
-        return self.api
+    # we need to munge the list
+    resumable = list(list(row) for row in resumable)
 
-    def __exit__(self, *ignored):
-        if self.api is not None:
-            self.api.ClearCredentials()
-            self.api = None
+    colheads = ["scan", "mode", "limit", "par", "seed"]
+    colwidths = [len(x) for x in colheads]
+    maxwidth = shutil.get_terminal_size().columns
 
-class Extraction(object):
-    """All of the state associated with an ongoing extraction run."""
+    for row in resumable:
+        row[2] = str(row[2])
+        row[3] = str(row[3])
+        for i, col in enumerate(row):
+            colwidths[i] = max(len(col), colwidths[i])
 
-    def __init__(self, tag, number, seed, db, oid, api, verbose):
-        self._tag     = tag
-        self._n       = number
-        self._seed    = seed
-        self._db      = db
-        self._oid     = oid
-        self._api     = api
-        self._verbose = verbose
+    separator = ["-"*n for n in colwidths]
+    resumable.insert(0, separator)
+    resumable.insert(0, colheads)
 
-        # fully constructed rows, queued for insertion
-        self.pending_tweets = []
-        self.pending_urls   = []
+    sys.stderr.write("Scans that can be resumed:\n")
+    for row in resumable:
+        sys.stderr.write("{1:<{0}} {3:>{2}} {5:>{4}} {7:>{6}} {9:<{8}}\n"
+                         .format(colwidths[0], row[0],
+                                 colwidths[1], row[1],
+                                 colwidths[2], row[2],
+                                 colwidths[3], row[3],
+                                 colwidths[4], row[4][:colwidths[4]]))
+    fatal("Use '{prog} twitter resume SCAN' to resume an "
+          "interrupted scan.")
 
-    def flush_tweets(force=False):
-        """Batch insert the pending_tweets and pending_urls into the
-           database, if they're big enough to be worth it."""
-        if force: minrows = 1
-        else:     minrows = 1000
+def resume_extraction(args, db, oid):
+    if not args.seed:
+        dump_resumables_and_exit(db)
 
-        if (len(self.pending_tweets) < minrows and
-            len(self.pending_urls) < minrows):
-            return
+    if len(args.seed) > 1:
+        fatal("{prog}: too many arguments for 'twitter resume' mode")
 
-        with self._db:
-            if self.pending_tweets:
-                # We might have duplicates, e.g. from retweeting.
-                self._db.executemany("INSERT OR IGNORE INTO twitter_tweets "
-                                    "  VALUES(?,?,?,?,?,?,?,?)",
-                                     self.pending_tweets)
-                self.pending_tweets = []
-            if self.pending_urls:
-                # We might have duplicates, e.g. from retweeting.
-                self._db.executemany("INSERT OR IGNORE INTO urls VALUES(?,?,?)",
-                                     self.pending_urls)
-                self.pending_urls = []
+    state = db.execute("SELECT * FROM twitter_scans WHERE scan = ?",
+                       (args.seed[0],)).fetchall()
+    assert len(state) <= 1
+    if not state:
+        fatal("{prog}: no scan '{scan}' to resume.\n"
+              "Use '{prog} twitter resume' with no further arguments "
+              "for a list of resumable scans.", scan=args.seed[0])
 
-    def process_tweet(self, t):
-        """Record everything we care to know about tweet T.  May be
-           extended by subclasses."""
+    extractor = Extractor.reload(*state[0])
+    return extractor
 
-        lang = t.lang if t.lang else ""
-        sensitive = "1" if t.possibly_sensitive else 0
+class Extractor:
+    """Base class for extraction algorithms.  Note: subclasses should
+       call Extractor.__init__ at the _end_ of their own __init__
+       (if they need one), because it does an immediate checkpoint
+       (via set_scan_number)."""
+    def __init__(self, args, db, oid):
+        self.db       = db
+        self.oid      = oid
+        self.db_name  = args.database
+        self.mode     = args.mode
+        self.limit    = args.limit
+        self.parallel = args.parallel
+        self.seed     = args.seed
+        self.set_scanno()
 
-        withheld = []
-        if t.withheld_copyright:
-            withheld.append("copy")
-        if t.withheld_in_countries:
-            withheld.extend(c.lower() for c in t.withheld_in_countries)
-        withheld.sort()
-        withheld = "|".join(withheld)
+    def __getstate__(self):
+        # Don't attempt to pickle the database handle, or anything that
+        # is stored in the database outside the pickle.
+        state = self.__dict__.copy()
+        for k in ('db', 'db_name', 'oid', 'mode', 'limit', 'parallel',
+                  'seed', 'scanno'):
+            try: del state[k]
+            except KeyError: pass
 
-        hashtags = "|".join(sorted(h.text.replace("|", "_")
-                                   for h in t.hashtags))
+        return state
 
-        self.pending_tweets.append((t.id, t.user.id, t.created_at_in_seconds,
-                                    t.retweet_count,
-                                    lang,
-                                    sensitive,
-                                    withheld,
-                                    hashtags))
+    @classmethod
+    def reload(cls, args, db, oid, scan, mode, limit, parallel, seed, state):
+        this = pickle.loads(state)
+        assert isinstance(this, cls)
 
-        self.pending_urls.extend((self._oid,
-                                  t.id << 1, # from a tweet
-                                  urlparse.urlparse(u.expanded_url).geturl())
-                                 for u in t.urls)
-        self.flush_tweets()
+        this.db       = db
+        this.oid      = oid
+        this.db_name  = args.database
+        this.scanno   = scan
+        this.mode     = mode
+        this.limit    = limit
+        this.seed     = seed
+        this.parallel = parallel
 
-    def process_tweets_for_user(self, uid, screen_name, since):
-        """Retrieve as many tweets as possible for user UID and populate
-           the twitter_tweets and urls tables from them.  If SINCE is
-           nonzero, we have already processed this user and we need only
-           check for tweets since that serial number."""
+        if this.limit != args.limit and args.limit != 1:
+            fatal("{prog}: Cannot change --limit when resuming a scan.")
+        if this.parallel != args.parallel and args.parallel != 1:
+            fatal("{prog}: Cannot change --parallel when resuming a scan.")
+        if this.seed != args.seed and args.seed != "":
+            fatal("{prog}: Cannot change seed when resuming a scan.")
 
-        time.sleep(self._api.GetSleepTime("/statuses/user_timeline"))
-        tweets = self._api.GetUserTimeline(user_id=uid, since_id=since)
-        if not tweets: return
+        return this
 
-        new_highest_tid = tweets[0].id
-        total = 0
-        while tweets:
-            for t in tweets:
-                if t.urls:
-                    total += len(t.urls)
-                    self.process_tweet(t)
+    def set_scanno(self):
+        cur = self.db.execute("INSERT INTO twitter_scans "
+                              "VALUES (NULL, ?, ?, ?, ?, ?)",
+                              (self.mode, self.limit, self.parallel, self.seed,
+                               pickletools.optimize(pickle.dumps(self))))
+        self.scanno = cur.lastrowid
+        self.db.commit()
 
-            max_id = tweets[-1].id - 1
-            time.sleep(self._api.GetSleepTime("/statuses/user_timeline"))
-            tweets = self._api.GetUserTimeline(user_id=uid,
-                                               max_id=max_id, since_id=since)
+    def checkpoint(self):
+        self.db.execute("UPDATE twitter_scans SET state = ? WHERE scan = ?",
+                        (pickletools.optimize(pickle.dumps(self)), self.scanno))
+        self.db.commit()
 
-        self._db.execute("UPDATE twitter_users SET highest_tweet_seen = ?"
-                         "  WHERE uid = ?", (new_highest_tid, uid))
+    def complete(self):
+        self.db.execute("UPDATE twitter_scans SET state = NULL WHERE scan = ?",
+                        (self.scanno,))
+        self.db.commit()
 
-        if self._verbose:
-            sys.stderr.write("added {} urls from @{}\n"
-                             .format(total, screen_name))
+    def abandon(self, message, *args, **kwargs):
+        self.db.execute("DELETE FROM twitter_scans WHERE scan = ?",
+                        (self.scanno,))
+        self.db.commit()
+        fatal(message, *args, **kwargs)
 
+    def run(self):
+        """The main logic of each subclass goes here."""
+        raise NotImplementedError
 
-    def ensure_user(self, uid=None, screen_name=None):
-        """Make sure the user with the given UID has an entry in the
-           twitter_users table.  Does NOT load this user's relations.
-           Returns the row vector for the user."""
+class SingleExtractor(Extractor):
+    def __init__(self, args, db, oid):
+        if not args.seed:
+            fatal("{prog}: Must specify a Twitter handle from which to begin.")
+        Extractor.__init__(self, args, db, oid)
 
-        assert (uid is None or screen_name is None)
-        if uid:
-            row = self._db.execute("SELECT * FROM twitter_users"
-                                   "  WHERE uid = ?", (uid,)).fetchone()
-            if row is not None: return row
+class SnowballExtractor(Extractor):
+    def __init__(self, args, db, oid):
+        if not args.seed:
+            fatal("{prog}: Must specify a Twitter handle from which to begin.")
+        Extractor.__init__(self, args, db, oid)
 
-        # python-twitter drops user entities on the floor, feh, so
-        # there's no point asking for them.
-        time.sleep(self._api.GetSleepTime("/users/show"))
-        u = self._api.GetUser(user_id=uid, screen_name=screen_name,
-                              include_entities=False)
+class FrontierExtractor(Extractor):
+    pass
 
-        with self._db:
-            self._db.execute("INSERT INTO twitter_users VALUES "
-                             "(?,?,?,?,0,?,?,?,?,?,?,?)",
-                             (uid,
-                              # no created_at_in_seconds for users :-(
-                              calendar.timegm(
-                                  email.utils.parsedate(u.created_at)),
-                              u.verified,
-                              u.protected,
-                              u.screen_name,
-                              u.name,
-                              u.lang,
-                              u.location,
-                              u.description))
+class FirehoseExtractor(Extractor):
+    pass
 
-        if u.url:
-            self.pending_urls.append((self._oid,
-                                      (uid << 1) | 1, # from a user
-                                      urlparse.urlparse(u.url).geturl()))
-            self.flush_tweets()
-
-    def process_user(self, uid):
-        """Load the user indicated by UID fully into the database; in
-           addition to what ensure_user does, this populates the
-           twitter_relations, twitter_tweets, and urls tables from the
-           selected user."""
-        urow = self.ensure_user(uid)
-        assert urow[0] == uid
-        self.process_tweets_for_user(urow[0], # uid
-                                     urow[5], # screen_name
-                                     urow[4]) # highest_tweet_seen
-
-        with self._db:
-            self.process_edges(uid, False)
-            self.process_edges(uid, True)
-
-    def process_edges(self, uid, followers):
-        if followers:
-            get_ids = self._api.GetFollowerIDs
-            marshal = lambda f: (f, uid)
-        else:
-            get_ids = self._api.GetFriendIDs
-            marshal = lambda f: (uid, f)
-
-        # GetFollowerIDs and GetFriendIDs internally handle cursoring
-        # and rate-limiting!  How nice.
-        users = get_ids(user_id=uid)
-        relations = []
-        for u in users:
-            self.ensure_user(u)
-            relations.append(marshal(u))
-        self._db.executemany("INSERT INTO twitter_relations VALUES(?,?)",
-                             relations)
-
-
-def main():
-    args = parse_args()
-    db, oid = ensure_database(args)
-    with Session(args.creds) as sess:
-        extractor = Extraction("test", args.number, args.seed,
-                               db, oid, sess, not args.quiet)
-        urow = extractor.ensure_user(screen_name=args.seed)
-        extractor.process_user(urow[0])
-
-if __name__ == "__main__": main()
+class UrlsOnlyExtractor(Extractor):
+    pass
