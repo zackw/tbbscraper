@@ -66,8 +66,12 @@ def run(args):
     }
     args.seed = " ".join(args.seed)
     db, oid = ensure_database(args)
-    extractor = extractors[args.mode](args, db, oid)
-    extractor.run()
+    twi = connect_to_twitter_api()
+    extractor = extractors[args.mode](args, db, oid, twi)
+    try:
+        extractor.run()
+    finally:
+        sys.stderr.write("\n")
 
 import calendar
 import email.utils
@@ -82,6 +86,18 @@ import time
 import twython
 import urllib.parse
 
+# debugging
+#import requests
+#import logging
+#import http.client
+#http.client.HTTPConnection.debuglevel = 1
+
+#logging.basicConfig() # you need to initialize logging, otherwise you will not see anything from requests
+#logging.getLogger().setLevel(logging.DEBUG)
+#requests_log = logging.getLogger("requests.packages.urllib3")
+#requests_log.setLevel(logging.DEBUG)
+#requests_log.propagate = True
+
 import shared.url_database
 
 def fatal(message, *args, **kwargs):
@@ -93,8 +109,8 @@ def fatal(message, *args, **kwargs):
     sys.exit(1)
 
 def connect_to_twitter_api():
-    cred = pkgutil.get_data("url_sources", "twitter_credential.txt")
-    (app_key, app_secret, oauth_token, oauth_secret) = cred.split("\n", 4)
+    cred = pkgutil.get_data("url_sources", "twitter_credential.txt").strip()
+    (app_key, app_secret, oauth_token, oauth_secret) = cred.split()
     return twython.Twython(app_key, app_secret, oauth_token, oauth_secret)
 
 def ensure_database(args):
@@ -209,7 +225,7 @@ def dump_resumables_and_exit(db):
     fatal("Use '{prog} twitter resume SCAN' to resume an "
           "interrupted scan.")
 
-def resume_extraction(args, db, oid):
+def resume_extraction(args, db, oid, twi):
     if not args.seed:
         dump_resumables_and_exit(db)
 
@@ -224,7 +240,7 @@ def resume_extraction(args, db, oid):
               "Use '{prog} twitter resume' with no further arguments "
               "for a list of resumable scans.", scan=args.seed[0])
 
-    extractor = Extractor.reload(*state[0])
+    extractor = Extractor.reload(args, db, oid, twi, *state[0])
     return extractor
 
 class Extractor:
@@ -232,7 +248,8 @@ class Extractor:
        call Extractor.__init__ at the _end_ of their own __init__
        (if they need one), because it does an immediate checkpoint
        (via set_scan_number)."""
-    def __init__(self, args, db, oid):
+    def __init__(self, args, db, oid, twi):
+        self.twi      = twi
         self.db       = db
         self.oid      = oid
         self.db_name  = args.database
@@ -243,21 +260,24 @@ class Extractor:
         self.set_scanno()
 
     def __getstate__(self):
-        # Don't attempt to pickle the database handle, or anything that
-        # is stored in the database outside the pickle.
+        # Don't attempt to pickle the database handle, the Twitter API
+        # handle, or anything that is stored in the database already.
         state = self.__dict__.copy()
-        for k in ('db', 'db_name', 'oid', 'mode', 'limit', 'parallel',
-                  'seed', 'scanno'):
+        for k in ('twi', 'db', 'db_name', 'oid',
+                  'mode', 'limit', 'parallel', 'seed',
+                  'scanno'):
             try: del state[k]
             except KeyError: pass
 
         return state
 
     @classmethod
-    def reload(cls, args, db, oid, scan, mode, limit, parallel, seed, state):
+    def reload(cls, args, db, oid, twi,
+               scan, mode, limit, parallel, seed, state):
         this = pickle.loads(state)
         assert isinstance(this, cls)
 
+        this.twi      = twi
         this.db       = db
         this.oid      = oid
         this.db_name  = args.database
@@ -300,21 +320,182 @@ class Extractor:
         self.db.commit()
         fatal(message, *args, **kwargs)
 
+    def note_url(self, url, source, sid):
+        """Record one URL in the database."""
+        cur = self.db.cursor()
+        # It is a damned shame that there is no way to do this
+        # in one SQL operation.
+        cur.execute("SELECT id FROM url_strings WHERE url = ?",
+                    (url,))
+        row = cur.fetchone()
+        if row is not None:
+            uid = row[0]
+        else:
+            cur.execute("INSERT INTO url_strings VALUES(NULL, ?)",
+                        (url,))
+            uid = cur.lastrowid
+
+        # We currently only have two sources: 'user' and 'tweet'.
+        # Leave number space for a few more, though.
+        assert source == 'tweet' or source == 'user'
+        if source == 'tweet': stag = 0
+        else: stag = 1
+        sid = (sid << 4) | stag
+
+        # We may well encounter the same URL triplet multiple times, e.g.
+        # due to retweeting.
+        cur.execute("INSERT OR IGNORE INTO urls VALUES(?, ?, ?)",
+                    (self.oid, sid, uid))
+
+    def ensure_user(self, uid=None, screen_name=None):
+        """Make sure the user with the given UID (or screen name, but
+           not both) has an entry in the twitter_users table.
+           Does NOT load this user's relations.
+           Returns the row vector for the user."""
+
+        assert ((uid is not None and screen_name is None) or
+                (uid is None and screen_name is not None))
+        if uid is not None:
+            row = self.db.execute("SELECT * FROM twitter_users"
+                                  "  WHERE uid = ?", (uid,)).fetchone()
+        else:
+            row = self.db.execute("SELECT * FROM twitter_users"
+                                  "  WHERE screen_name = ?",
+                                  (screen_name,)).fetchone()
+        if row is not None:
+            return row
+
+        u = self.twi.show_user(user_id=uid, screen_name=screen_name)
+        row = (u['id'],
+               # no created_at_in_seconds for users :-(
+               calendar.timegm(email.utils.parsedate(u['created_at'])),
+               int(u.get('verified', False)),
+               int(u.get('protected', False)),
+               0,
+               u['screen_name'],
+               u.get('name', ""),
+               u.get('lang', ""),
+               u.get('location', ""),
+               u.get('description', ""))
+
+        self.db.execute("INSERT INTO twitter_users VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        row)
+        for thing in u['entities'].values():
+            for url in thing.get('urls', []):
+                self.note_url(url['expanded_url'], 'user', u['id'])
+
+        return row
+
+    def note_tweet(self, t):
+        """Record one Tweet in the database, if it is interesting.
+           For our purposes, tweets are interesting if and only if
+           they contain URLs."""
+
+        entities = t.get("entities", {})
+
+        urls = entities.get("urls", [])
+        if not urls:
+            return
+
+        lang      = t.get("lang", "")
+        sensitive = int(t.get("possibly_sensitive", 0))
+        withheld = []
+        if t.get("withheld_copyright", False):
+            # Use the reserved-for-user-use country code ZZ to
+            # indicate withholding for copyright violation.  Twitter
+            # uses XX and XY for related purposes (withheld everywhere,
+            # withheld due to DMCA respectively).
+            withheld.append("ZZ")
+        withheld.extend(c.lower() for c in t.get("withheld_in_countries", []))
+        withheld.sort()
+        withheld = "|".join(withheld)
+
+        hashtags = "|".join(sorted(h["text"].replace("|", "_")
+                                   for h in entities.get("hashtags", [])))
+
+        uid = t["user"]["id"]
+        user = self.ensure_user(uid=uid)
+
+        sys.stderr.write("\r{user}:{tid}: {text}...\033[K"
+                         .format(user=user[5], # screen name
+                                 tid=t["id"],
+                                 text=t["text"][:60]))
+
+        try:
+            created_at = t["created_at_in_seconds"]
+        except KeyError:
+            created_at = calendar.timegm(email.utils.parsedate(t["created_at"]))
+
+        # We may encounter the same tweet multiple times due to retweeting.
+        self.db.execute("INSERT OR IGNORE INTO twitter_tweets "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (t["id"],
+                         uid,
+                         created_at,
+                         t.get("retweet_count", 0),
+                         lang,
+                         sensitive,
+                         withheld,
+                         hashtags))
+        for u in urls:
+            self.note_url(u["expanded_url"], "tweet", t["id"])
+
     def run(self):
         """The main logic of each subclass goes here."""
         raise NotImplementedError
 
 class SingleExtractor(Extractor):
-    def __init__(self, args, db, oid):
+    def __init__(self, args, db, oid, twi):
         if not args.seed:
             fatal("{prog}: Must specify a Twitter handle from which to begin.")
-        Extractor.__init__(self, args, db, oid)
+
+        try:
+            # replicated from Extractor.__init__ to allow ensure_user to work
+            self.db = db
+            self.twi = twi
+            self.oid = oid
+            user = self.ensure_user(screen_name=args.seed)
+        except twython.TwythonError as e:
+            # most likely scenario:
+            if e.error_code == 404:
+                fatal("{prog}: No such Twitter handle: {seed}", seed=args.seed)
+
+        self.seed_uid     = user[0]
+        self.since_id     = user[4]
+        self.new_since_id = 0
+        self.max_id       = None
+        Extractor.__init__(self, args, db, oid, twi)
+
+    def run(self):
+        while True:
+            params = { "user_id":  self.seed_uid,
+                       "trim_user": True,
+                       "exclude_replies": False,
+                       "include_rts": True }
+
+            if self.since_id > 0:
+                params["since_id"] = self.since_id
+            if self.max_id is not None:
+                params["max_id"] = self.max_id
+
+            timeline = self.twi.cursor(self.twi.get_user_timeline,
+                                       **params)
+            try:
+                for tweet in timeline:
+                    self.note_tweet(tweet)
+                    self.max_id = (tweet["id"] if self.max_id is None
+                                   else min(self.max_id, tweet["id"]))
+                    self.new_since_id = max(self.new_since_id, tweet["id"])
+
+            finally:
+                self.checkpoint()
+
 
 class SnowballExtractor(Extractor):
-    def __init__(self, args, db, oid):
+    def __init__(self, args, db, oid, twi):
         if not args.seed:
             fatal("{prog}: Must specify a Twitter handle from which to begin.")
-        Extractor.__init__(self, args, db, oid)
+        Extractor.__init__(self, args, db, oid, twi)
 
 class FrontierExtractor(Extractor):
     pass
