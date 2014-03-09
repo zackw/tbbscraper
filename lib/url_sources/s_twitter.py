@@ -68,10 +68,7 @@ def run(args):
     db, oid = ensure_database(args)
     twi = connect_to_twitter_api()
     extractor = extractors[args.mode](args, db, oid, twi)
-    try:
-        extractor.run()
-    finally:
-        sys.stderr.write("\n")
+    extractor.run()
 
 import calendar
 import email.utils
@@ -257,6 +254,7 @@ class Extractor:
         self.limit    = args.limit
         self.parallel = args.parallel
         self.seed     = args.seed
+        self.last_checkpoint = time.time()
         self.set_scanno()
 
     def __getstate__(self):
@@ -265,7 +263,7 @@ class Extractor:
         state = self.__dict__.copy()
         for k in ('twi', 'db', 'db_name', 'oid',
                   'mode', 'limit', 'parallel', 'seed',
-                  'scanno'):
+                  'scanno', 'last_checkpoint'):
             try: del state[k]
             except KeyError: pass
 
@@ -286,6 +284,7 @@ class Extractor:
         this.limit    = limit
         this.seed     = seed
         this.parallel = parallel
+        this.last_checkpoint = time.time()
 
         if this.limit != args.limit and args.limit != 1:
             fatal("{prog}: Cannot change --limit when resuming a scan.")
@@ -366,6 +365,9 @@ class Extractor:
             return row
 
         u = self.twi.show_user(user_id=uid, screen_name=screen_name)
+        return self.note_user(u)
+
+    def note_user(self, u):
         row = (u['id'],
                # no created_at_in_seconds for users :-(
                calendar.timegm(email.utils.parsedate(u['created_at'])),
@@ -378,9 +380,10 @@ class Extractor:
                u.get('location', ""),
                u.get('description', ""))
 
-        self.db.execute("INSERT INTO twitter_users VALUES(?,?,?,?,?,?,?,?,?,?)",
+        self.db.execute("INSERT OR IGNORE INTO twitter_users "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
                         row)
-        for thing in u['entities'].values():
+        for thing in u.get('entities', {}).values():
             for url in thing.get('urls', []):
                 self.note_url(url['expanded_url'], 'user', u['id'])
 
@@ -413,10 +416,9 @@ class Extractor:
         hashtags = "|".join(sorted(h["text"].replace("|", "_")
                                    for h in entities.get("hashtags", [])))
 
-        uid = t["user"]["id"]
-        user = self.ensure_user(uid=uid)
+        user = self.note_user(t["user"])
 
-        sys.stderr.write("\r{user}:{tid}: {text}...\033[K"
+        sys.stderr.write("{user}: {text}...\n"
                          .format(user=user[5], # screen name
                                  tid=t["id"],
                                  text=t["text"][:60]))
@@ -430,7 +432,7 @@ class Extractor:
         self.db.execute("INSERT OR IGNORE INTO twitter_tweets "
                         "VALUES(?,?,?,?,?,?,?,?)",
                         (t["id"],
-                         uid,
+                         user[0], # uid
                          created_at,
                          t.get("retweet_count", 0),
                          lang,
@@ -439,6 +441,11 @@ class Extractor:
                          hashtags))
         for u in urls:
             self.note_url(u["expanded_url"], "tweet", t["id"])
+
+        now = time.time()
+        if (now - self.last_checkpoint) > 60:
+            self.checkpoint()
+            self.last_checkpoint = now
 
     def run(self):
         """The main logic of each subclass goes here."""
@@ -500,8 +507,31 @@ class SnowballExtractor(Extractor):
 class FrontierExtractor(Extractor):
     pass
 
+class FirehoseStreamer(twython.TwythonStreamer):
+    def __init__(self, app_key, app_secret, oauth_key, oauth_secret,
+                 tweet_callback):
+        twython.TwythonStreamer.__init__(self, app_key, app_secret,
+                                         oauth_key, oauth_secret)
+        self.tweet_callback = tweet_callback
+
+    def on_success(self, message):
+        # weed out non-tweet messages
+        if 'id' in message and 'user' in message and 'entities' in message:
+            self.tweet_callback(message)
+
 class FirehoseExtractor(Extractor):
-    pass
+    def run(self):
+        cred = pkgutil.get_data("url_sources", "twitter_credential.txt").strip()
+        (app_key, app_secret, oauth_token, oauth_secret) = cred.split()
+        stream = FirehoseStreamer(app_key,
+                                  app_secret,
+                                  oauth_token,
+                                  oauth_secret,
+                                  tweet_callback=self.note_tweet)
+        try:
+            stream.statuses.sample() # does not return until interrupted
+        finally:
+            self.complete()
 
 class UrlsOnlyExtractor(Extractor):
     pass
