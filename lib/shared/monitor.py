@@ -201,7 +201,11 @@ class Monitor:
                 # hopefully this is an exhaustive list of potential
                 # kernel-generated synchronous and/or unblockable signals
                 "SIGILL", "SIGTRAP", "SIGABRT", "SIGIOT", "SIGEMT", "SIGFPE",
-                "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGSTOP"))))
+                "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGSTOP", "SIGCONT",
+                # signals that we can get but don't care about
+                "SIGCLD", "SIGCHLD",
+                # not actually signal numbers
+                "SIGRTMIN", "SIGRTMAX"))))
 
     # Called in a couple of different places.
     def _initscr_plus(self):
@@ -279,6 +283,7 @@ class Monitor:
             msg = "*** Uncaught exception: " + \
                 traceback.format_exception_only(type(e), e)[0][:-1]
             self.report_status(msg)
+            self._tasks.put((self._EXIT, 0))
 
         finally:
             with self._counters_lock:
