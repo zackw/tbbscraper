@@ -235,6 +235,8 @@ class Monitor:
                 self._tasks.put((self._REDRAW,))
 
         def handle_signal_char(ch):
+            if len(ch) == 0:
+                return
             sig = struct.unpack("B", ch)[0]
             if sig == signal.SIGWINCH:
                 self._tasks.put((self._REDRAW,))
