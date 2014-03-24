@@ -509,26 +509,36 @@ class FrontierExtractor(Extractor):
 
 class FirehoseStreamer(twython.TwythonStreamer):
     def __init__(self, app_key, app_secret, oauth_key, oauth_secret,
-                 tweet_callback):
+                 tweet_callback, stop_time):
         twython.TwythonStreamer.__init__(self, app_key, app_secret,
                                          oauth_key, oauth_secret)
         self.tweet_callback = tweet_callback
+        self.stop_time = stop_time
 
     def on_success(self, message):
         # weed out non-tweet messages
         if 'id' in message and 'user' in message and 'entities' in message:
             self.tweet_callback(message)
+        if time.time() > self.stop_time:
+            self.disconnect()
+            return False
+        return True
 
 class FirehoseExtractor(Extractor):
     def run(self):
         cred = pkgutil.get_data("url_sources", "twitter_credential.txt").strip()
         (app_key, app_secret, oauth_token, oauth_secret) = cred.split()
-        stream = FirehoseStreamer(app_key,
-                                  app_secret,
-                                  oauth_token,
-                                  oauth_secret,
-                                  tweet_callback=self.note_tweet)
+
+        start_time = 1395028799
+        stop_time = 1395633600
+        time.sleep(start_time - time.time())
         try:
+            stream = FirehoseStreamer(app_key,
+                                      app_secret,
+                                      oauth_token,
+                                      oauth_secret,
+                                      tweet_callback=self.note_tweet,
+                                      stop_time = stop_time)
             stream.statuses.sample() # does not return until interrupted
         finally:
             self.complete()
