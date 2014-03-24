@@ -410,7 +410,7 @@ class DatabaseWorker:
         # the cursor on the wrong thread.
         self.mon.report_status("Loading database... (work queue)")
         self.mon.maybe_pause_or_stop()
-        cr.execute("SELECT u.url, v.url"
+        cr.execute("SELECT DISTINCT u.url, v.url"
                    "  FROM urls as u"
                    "  LEFT JOIN url_strings as v on u.url = v.id"
                    "  WHERE u.url NOT IN (SELECT url FROM canon_urls)"
@@ -423,7 +423,6 @@ class DatabaseWorker:
 
             work_queue.put(row)
             total += 1
-            if total == 100: break
         self.total = total
         self.work_queue = work_queue
         self.result_queue = queue.Queue()
@@ -457,9 +456,15 @@ class DatabaseWorker:
                            (result.canon_url,))
                 canon_id = cr.lastrowid
 
-        cr.execute("INSERT INTO canon_urls VALUES (?, ?, ?)",
-                   (result.url_id, canon_id, status_id))
-        self.processed += 1
+        try:
+            cr.execute("INSERT INTO canon_urls VALUES (?, ?, ?)",
+                       (result.url_id, canon_id, status_id))
+            self.processed += 1
+        except sqlite3.IntegrityError as e:
+            self.db.commit()
+            raise RuntimeError("duplicate result: ({}, {}, {})"
+                               .format(result.url_id, canon_id,
+                                       status_id)) from e
 
     def main_loop(self):
         self.log_overall_progress()
