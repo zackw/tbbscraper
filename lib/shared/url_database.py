@@ -136,6 +136,7 @@ def ensure_database(args):
         application_id=numeric_application_id)
 
     db = sqlite3.connect(args.database)
+    db.row_factory=sqlite3.Row
     db.executescript(connection_pragmata)
 
     schema_version = int(db.execute("PRAGMA user_version;").fetchone()[0])
@@ -158,6 +159,7 @@ def reconnect_to_database(args):
        when reading and writing from the database simultaneously (see
        e.g. s_canonize.py) and by Checkpointer."""
     db = sqlite3.connect(args.database)
+    db.row_factory=sqlite3.Row
     db.executescript(connection_pragmata)
 
     schema_version = int(db.execute("PRAGMA user_version;").fetchone()[0])
@@ -301,6 +303,12 @@ def add_url_string(db, url):
 
     return (id, url)
 
+def fetch_iter(cur):
+    """Inexplicably, a sqlite3.Cursor is not an iterator. Correct this."""
+    while True:
+        rows = cur.fetchmany()
+        if not rows: break
+        for row in rows: yield row
 
 #
 # Common schema used by all sources and the scraper controller.
