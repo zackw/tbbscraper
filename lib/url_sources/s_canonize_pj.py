@@ -18,6 +18,10 @@ def setup_argp(ap):
     ap.add_argument("-c", "--chroot",
                     action="store", dest="chroot",
                     help="Name of chroot in which to isolate phantomjs")
+    ap.add_argument("-w", "--work-queue",
+                    action="store", dest="work_queue",
+                    help="File to read the work queue from "
+                    "(instead of taking it directly from the database)")
 
 def run(args):
     os.environ["PYTHONPATH"] = sys.path[0]
@@ -25,7 +29,6 @@ def run(args):
         curses.wrapper(cw)
         cw.report_final_statistics()
 
-import collections
 import curses
 import json
 import os
@@ -88,10 +91,9 @@ class SchrootSession:
 
 class CanonTask:
     """Representation of one canonicalization job."""
-    def __init__(self, chroot, uid, url, retries, idx):
+    def __init__(self, chroot, uid, url, idx):
         self.original_uid = uid
         self.original_url = url
-        self.retries      = retries
         self.idx          = idx
         self.canon_url    = None
         self.status       = None
@@ -148,10 +150,8 @@ class CanonizeWorker(SchrootSession):
     def __init__(self, args):
         self.args        = args
         self.in_progress = {}
-        self.todo        = collections.deque()
 
         # Statistics counters.
-        self.total       = 0
         self.processed   = 0
         self.successes   = 0
         self.failures    = 0
@@ -165,7 +165,7 @@ class CanonizeWorker(SchrootSession):
                 job.terminate()
             except ProcessLookupError:
                 pass
-        self.dbw.commit()
+        self.db.commit()
         SchrootSession.__exit__(self, *_)
 
     def __call__(self, screen):
@@ -192,13 +192,11 @@ class CanonizeWorker(SchrootSession):
 
     def report_overall_progress(self):
         if self.processed == 0:
-            self.report_progress("Processing {} URLs...".format(self.total))
+            self.report_progress("Processing URLs...")
         else:
-            total = str(self.total)
-            wd = len(total)
-            msg = (("Processed {1:>{0}} of {2}: {3} canonized, "
-                   "{4} failures, {5} anomalies")
-                   .format(wd, self.processed, total,
+            msg = (("Processed {} URLs: {} canonized, "
+                    "{} failures, {} anomalies")
+                   .format(self.processed,
                            self.successes, self.failures, self.anomalies))
             self.report_progress(msg)
 
@@ -232,41 +230,39 @@ class CanonizeWorker(SchrootSession):
 
     def report_final_statistics(self):
         # Called after curses shuts down, so it's ok to use stdout.
-        sys.stdout.write("Processed {} of {} URLs: {} canonized, {} failures, "
+        sys.stdout.write("Processed {} URLs: {} canonized, {} failures, "
                          "{} anomalies\n"
-                         .format(self.processed, self.total,
+                         .format(self.processed,
                                  self.successes, self.failures, self.anomalies))
 
     def load_database(self):
         self.report_progress("Loading database...")
-        self.dbr = url_database.ensure_database(self.args)
-        self.dbw = url_database.reconnect_to_database(self.args)
+        self.db = url_database.ensure_database(self.args)
 
-        cr = self.dbr.cursor()
+        cr = self.db.cursor()
         # Cache the status table in memory; it's reasonably small.
         self.report_progress("Loading database... (canon statuses)")
         cr.execute("SELECT id, status FROM canon_statuses;")
         self.canon_statuses = { row[1]: row[0]
                                 for row in url_database.fetch_iter(cr) }
 
-        # Load the list of URLs-to-do.
-        self.report_progress("Loading database... (work queue)")
-        cr.execute("SELECT DISTINCT u.url, v.url, 0"
+        if self.args.work_queue:
+            self.todo = open(self.args.work_queue, "rt", encoding="ascii")
+        else:
+            self.report_progress("Loading database... (work queue)")
+            self.todo = tempfile.TemporaryFile("w+t", encoding="ascii")
+            subprocess.check_call(["sqlite3", self.args.database,
+                   "SELECT DISTINCT u.url, v.url"
                    "  FROM urls as u"
                    "  LEFT JOIN url_strings as v on u.url = v.id"
-                   "  WHERE u.url NOT IN (SELECT url FROM canon_urls)")
-        while True:
-            rows = cr.fetchmany()
-            if not rows: break
-            self.total += len(rows)
-            self.todo.extend(rows)
-            self.report_progress("Loading database... (work queue {})"
-                                 .format(self.total))
+                   "  WHERE u.url NOT IN (SELECT url FROM canon_urls)"],
+                                  stdout=self.todo)
+            self.todo.seek(0)
 
     def record_canonized(self, result):
         try:
             self.processed += 1
-            cr = self.dbw.cursor()
+            cr = self.db.cursor()
             status_id = self.canon_statuses.get(result.status)
             if status_id is None:
                 cr.execute("INSERT INTO canon_statuses VALUES(NULL, ?)",
@@ -294,7 +290,7 @@ class CanonizeWorker(SchrootSession):
                        (result.original_uid, canon_id, status_id))
 
             if self.processed % 1000 == 0:
-                dbw.commit()
+                db.commit()
 
         except Exception as e:
             raise type(e)("Bogus result: {{ status: {!r} canon: {!r} anomaly: {!r} }}".format(result.status, result.canon_url, result.anomaly)) from e
@@ -302,12 +298,20 @@ class CanonizeWorker(SchrootSession):
     def main_loop(self):
         self.report_overall_progress()
 
-        while self.todo or self.in_progress:
-            while self.todo and len(self.in_progress) < self.args.parallel:
-                uid, url, retries = self.todo.popleft()
+        all_read = False
+
+        while self.in_progress or not all_read:
+            while not all_read and len(self.in_progress) < self.args.parallel:
+
+                line = self.todo.readline().strip()
+                if line == "":
+                    all_read = True
+                    break
+
+                uid, url = line.split("|", 1)
                 url = url_database.canon_url_syntax(url)
                 idx = self.assign_display_index(url)
-                task = CanonTask(self, uid, url, retries, idx)
+                task = CanonTask(self, uid, url, idx)
                 self.in_progress[task.pid] = task
 
             try:
@@ -317,14 +321,4 @@ class CanonizeWorker(SchrootSession):
 
             task = self.in_progress.pop(pid)
             task.pickup_results(status)
-
-            # Retry network timeouts up to five times.
-            if task.status == "Network timeout":
-                if task.retries < 5:
-                    self.report_result(task, task.status)
-                    self.todo.append((task.original_uid,
-                                      task.original_url,
-                                      task.retries + 1))
-                    continue
-
             self.record_canonized(task)
