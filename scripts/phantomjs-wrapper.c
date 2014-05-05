@@ -24,46 +24,109 @@
 #include <grp.h>
 #include <limits.h>
 #include <pwd.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+/* Compile-time configuration knobs.  This program is to be invoked as
+   root, so runtime configuration has been minimized. */
+#ifndef PHANTOMJS_PATH
+#define PHANTOMJS_PATH "/bin"
+#endif
+#ifndef PHANTOMJS_BINARY
+#define PHANTOMJS_BINARY "/bin/phantomjs"
+#endif
+#ifndef PHANTOMJS_FIND_BINARY
+#define PHANTOMJS_FIND_BINARY "/bin/find"
+#endif
+#ifndef PHANTOMJS_RLIMIT_CPU
+#define PHANTOMJS_RLIMIT_CPU 60 /* one minute */
+#endif
+#ifndef PHANTOMJS_RLIMIT_WALL
+#define PHANTOMJS_RLIMIT_WALL 600 /* ten minutes */
+#endif
+#ifndef PHANTOMJS_RLIMIT_MEM
+#define PHANTOMJS_RLIMIT_MEM (1L<<30) /* one gigabyte */
+#endif
+
+#if defined __GNUC__ && __GNUC__ >= 4
+#define NORETURN void __attribute__((noreturn))
+#define PRINTFLIKE __attribute__((format(printf,1,2)))
+#define UNUSED(arg) arg __attribute__((unused))
+#else
+#define NORETURN void
+#define PRINTFLIKE /*nothing*/
+#define UNUSED(arg) arg
+#endif
+
 typedef struct child_state
 {
-  char *homedir;
-  char **argv;
-  char **envp;
+  const char *homedir;
+  const char **argv;
+  const char **envp;
   uid_t uid;
   gid_t gid;
 } child_state;
 
-static bool
+static NORETURN
+fatal(const char *msg)
+{
+  fprintf(stderr, "phantomjs-wrapper: %s\n", msg);
+  exit(1);
+}
+
+static NORETURN
+fatal_perror(const char *msg)
+{
+  fprintf(stderr, "phantomjs-wrapper: %s: %s\n", msg, strerror(errno));
+  exit(1);
+}
+
+static PRINTFLIKE NORETURN
+fatal_printf(const char *msg, ...)
+{
+  va_list ap;
+  fputs("phantomjs-wrapper: ", stderr);
+  va_start(ap, msg);
+  vfprintf(stderr, msg, ap);
+  va_end(ap);
+  putc('\n', stderr);
+  exit(1);
+}
+
+static PRINTFLIKE NORETURN
+fatal_eprintf(const char *msg, ...)
+{
+  int err = errno;
+  fputs("phantomjs-wrapper: ", stderr);
+  va_list ap;
+  va_start(ap, msg);
+  vfprintf(stderr, msg, ap);
+  va_end(ap);
+  fprintf(stderr, ": %s\n", strerror(err));
+  exit(1);
+}
+
+static void
 select_homedir(child_state *cs)
 {
   DIR *dirp;
-  char pathbuf[PATH_MAX];
+  char *homedir;
+  char *qws;
   struct dirent dent, *dent_out;
   struct stat st;
 
-  if (chdir("/home")) {
-    perror("chdir: /home");
-    return false;
-  }
-  if (!(dirp = opendir("."))) {
-    perror("opendir: /home");
-    return false;
-  }
+  if (!(dirp = opendir("/home")))
+    fatal_perror("opendir: /home");
   for (;;) {
-    if ((errno = readdir_r(dirp, &dent, &dent_out))) {
-      perror("readdir: /home");
-      closedir(dirp);
-      return false;
-    }
-    if (!dent_out) {
-      closedir(dirp);
-      return false;
-    }
+    if ((errno = readdir_r(dirp, &dent, &dent_out)) != 0)
+      fatal_perror("readdir: /home");
+
+    if (!dent_out)
+      fatal("no usable home directory found");
+
     if (dent.d_name[0] == '\0' || dent.d_name[0] == '.'
 #ifdef _DIRENT_HAVE_D_TYPE
         || (dent.d_type != DT_UNKNOWN && dent.d_type != DT_DIR)
@@ -71,49 +134,54 @@ select_homedir(child_state *cs)
         )
       continue;
 
-    if (snprintf(pathbuf, sizeof pathbuf,
-                 "/home/%s/.qws", dent.d_name) >= PATH_MAX)
-      continue; /* name too long, ignore it */
+    if (asprintf(&qws, "/home/%s/.qws", dent.d_name) == -1)
+      fatal_perror("asprintf");
 
-    if (!mkdir(pathbuf, 0777))
+    if (!mkdir(qws, 0700))
       break; /* success! */
 
-    if (errno != EEXIST) {
-      fprintf(stderr, "mkdir: %s: %s\n", pathbuf, strerror(errno));
-      closedir(dirp);
-      return false;
-    }
+    if (errno != EEXIST)
+      fatal_eprintf("mkdir: %s", qws);
+
+    free(qws);
   }
   closedir(dirp);
 
-  cs->homedir = strdup(pathbuf);
-  if (!cs->homedir) {
-    perror("malloc");
-    return false;
+  if (asprintf(&homedir, "/home/%s", dent.d_name) == -1) {
+    int err = errno;
+    rmdir(qws);
+    errno = err;
+    fatal_perror("asprintf");
   }
-  *strrchr(cs->homedir, '/') = '\0';
 
-  if (stat(cs->homedir, &st)) {
-    fprintf(stderr, "stat: %s: %s\n", cs->homedir, strerror(errno));
-    return false;
+  if (stat(homedir, &st)) {
+    int err = errno;
+    rmdir(qws);
+    errno = err;
+    fatal_eprintf("stat: %s", homedir);
   }
+
   /* phantomjs will run under the user and group ID that owns the
      selected home directory.  This had better not be root. */
   if (!st.st_uid || !st.st_gid) {
-    fprintf(stderr, "%s owned by uid %d group %d - configuration botch\n",
-            cs->homedir, st.st_uid, st.st_gid);
-    return false;
-  }
-  cs->uid = st.st_uid;
-  cs->gid = st.st_gid;
-  /* The .qws directory we just created is owned by root: change it to belong
-     to the user that owns the selected home directory. */
-  if (lchown(pathbuf, cs->uid, cs->gid)) {
-    fprintf(stderr, "lchown: %s: %s\n", pathbuf, strerror(errno));
-    return false;
+    rmdir(qws);
+    fatal_printf("%s: owned by uid %d group %d - configuration botch",
+                 homedir, st.st_uid, st.st_gid);
   }
 
-  return true;
+  /* The .qws directory we just created is owned by root: change it to belong
+     to the user that owns the selected home directory. */
+  if (lchown(qws, cs->uid, cs->gid)) {
+    int err = errno;
+    rmdir(qws);
+    errno = err;
+    fatal_eprintf("lchown: %s", qws);
+  }
+
+  cs->uid = st.st_uid;
+  cs->gid = st.st_gid;
+  cs->homedir = homedir;
+  free(qws);
 }
 
 static inline bool
@@ -133,19 +201,9 @@ should_copy_envvar(char *envvar)
 static char *
 make_envvar(const char *name, const char *value)
 {
-  size_t ln = strlen(name);
-  size_t lv = strlen(value);
-  size_t all = ln + lv + 2;
-  char *rv = malloc(all);
-  if (!rv) {
-    perror("malloc");
-    exit(1);
-  }
-  size_t x = snprintf(rv, all, "%s=%s", name, value);
-  if (x != all-1) {
-    fprintf(stderr, "expected %zu got %zu - %s\n", all-1, x, rv);
-    exit(1);
-  }
+  char *rv;
+  if (asprintf(&rv, "%s=%s", name, value) == -1)
+    fatal_perror("asprintf");
   return rv;
 }
 
@@ -155,7 +213,7 @@ compar_str(const void *a, const void *b)
   return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
-static bool
+static void
 prepare_environment(child_state *cs, char **argv, char **envp)
 {
   struct passwd *pw;
@@ -163,19 +221,15 @@ prepare_environment(child_state *cs, char **argv, char **envp)
   size_t envc;
   size_t i, j;
 
-  /* We copy argv so we can replace argv[0] and inject some
-     configuration options.  */
+  /* We copy argv so we can replace argv[0] and inject some options.  */
   for (argc = 0; argv[argc]; argc++);
-  cs->argv = malloc((argc + 4) * sizeof(char *));
-  if (!cs->argv) {
-    perror("malloc");
-    return false;
-  }
+  cs->argv = malloc((argc + 2) * sizeof(char *));
+  if (!cs->argv)
+    fatal_perror("malloc");
+
   i = 0;
   cs->argv[i++] = "phantomjs";
-  cs->argv[i++] = "--ignore-ssl-errors=true";
   cs->argv[i++] = "--ssl-protocol=any";
-  cs->argv[i++] = "--load-images=false";
   for (j = 1; j <= argc; i++, j++)
     cs->argv[i] = argv[j];
 
@@ -184,25 +238,21 @@ prepare_environment(child_state *cs, char **argv, char **envp)
      user 'phantomjs' will run as, discard all environment variables
      starting with SCHROOT_, and leave everything else alone. */
   pw = getpwuid(cs->uid);
-  if (!pw) {
-    perror("getpwuid");
-    return false;
-  }
+  if (!pw)
+    fatal_perror("getpwuid");
 
   /* sanity check */
-  if (pw->pw_uid != cs->uid || pw->pw_gid != cs->gid) {
-    fprintf(stderr, "wrong user/group for %s: homedir %d:%d, passwd %d:%d\n",
-            pw->pw_name, cs->uid, cs->gid, pw->pw_uid, pw->pw_gid);
-  }
-  if (strcmp(pw->pw_shell, "/bin/sh")) {
-    fprintf(stderr, "incorrect shell for user %s (uid %d): %s\n",
-            pw->pw_name, cs->uid, pw->pw_shell);
-    return false;
-  }
-  if (strcmp(pw->pw_dir, cs->homedir)) {
-    fprintf(stderr, "incorrect homedir for user %s: found %s, passwd %s\n",
-            pw->pw_name, cs->homedir, pw->pw_dir);
-  }
+  if (pw->pw_uid != cs->uid || pw->pw_gid != cs->gid)
+    fatal_printf("wrong user/group for %s: homedir %d:%d, passwd %d:%d",
+                 pw->pw_name, cs->uid, cs->gid, pw->pw_uid, pw->pw_gid);
+
+  if (strcmp(pw->pw_shell, "/bin/sh"))
+    fatal_printf("wrong shell for user %s (uid %d): %s",
+                 pw->pw_name, cs->uid, pw->pw_shell);
+
+  if (strcmp(pw->pw_dir, cs->homedir))
+    fatal_printf("wrong homedir for user %s: found %s, passwd %s",
+                 pw->pw_name, cs->homedir, pw->pw_dir);
 
   envc = 0;
   for (i = 0; envp[i]; i++)
@@ -213,13 +263,16 @@ prepare_environment(child_state *cs, char **argv, char **envp)
      HOME PWD USER LOGNAME PATH SHELL.
      One more for the terminator. */
   cs->envp = malloc((envc + 7) * sizeof(char *));
+  if (!cs->envp)
+    fatal_perror("malloc");
+
   envc = 0;
   for (i = 0; envp[i]; i++)
     if (should_copy_envvar(envp[i]))
       cs->envp[envc++] = envp[i];
 
   cs->envp[envc++] = "SHELL=/bin/sh";
-  cs->envp[envc++] = "PATH=/bin";
+  cs->envp[envc++] = "PATH=" PHANTOMJS_PATH;
   cs->envp[envc++] = make_envvar("HOME", cs->homedir);
   cs->envp[envc++] = make_envvar("PWD", cs->homedir);
   cs->envp[envc++] = make_envvar("USER", pw->pw_name);
@@ -227,7 +280,6 @@ prepare_environment(child_state *cs, char **argv, char **envp)
   cs->envp[envc] = 0;
 
   qsort(cs->envp, envc, sizeof(char *), compar_str);
-  return true;
 }
 
 static void
@@ -238,51 +290,36 @@ run_phantomjs(child_state *cs)
   /* This code executes on the child side of a fork(), but the
      parent has arranged for it to be safe for us to write to
      stderr under error conditions. */
-  if (chdir(cs->homedir)) {
-    fprintf(stderr, "chdir: %s: %s\n", cs->homedir, strerror(errno));
-    exit(1);
-  }
+  if (chdir(cs->homedir))
+    fatal_eprintf("chdir: %s", cs->homedir);
 
   /* Apply resource limits. */
-  rl.rlim_cur = 60; /* one minute */
-  rl.rlim_max = 60;
-  if (setrlimit(RLIMIT_CPU, &rl)) {
-    perror("setrlimit(RLIMIT_CPU)");
-    exit(1);
-  }
+  rl.rlim_cur = PHANTOMJS_RLIMIT_CPU;
+  rl.rlim_max = PHANTOMJS_RLIMIT_CPU;
+  if (setrlimit(RLIMIT_CPU, &rl))
+    fatal_perror("setrlimit(RLIMIT_CPU)");
 
-  rl.rlim_cur = 1L<<31; /* two gigabytes */
-  rl.rlim_max = 1L<<31;
-  if (setrlimit(RLIMIT_AS, &rl)) {
-    perror("setrlimit(RLIMIT_AS)");
-    exit(1);
-  }
-  if (setrlimit(RLIMIT_DATA, &rl)) {
-    perror("setrlimit(RLIMIT_DATA)");
-    exit(1);
-  }
+  rl.rlim_cur = PHANTOMJS_RLIMIT_MEM;
+  rl.rlim_max = PHANTOMJS_RLIMIT_MEM;
+  if (setrlimit(RLIMIT_AS, &rl))
+    fatal_perror("setrlimit(RLIMIT_AS)");
+  if (setrlimit(RLIMIT_DATA, &rl))
+    fatal_perror("setrlimit(RLIMIT_DATA)");
+
+  /* Wall-clock timeout. alarm() cannot fail. */
+  alarm(PHANTOMJS_RLIMIT_WALL);
 
   /* Drop privileges. */
-  if (setgroups(0, 0)) {
-    perror("setgroups");
-    exit(1);
-  }
-  if (setgid(cs->gid)) {
-    perror("setgid");
-    exit(1);
-  }
-  if (setuid(cs->uid)) {
-    perror("setuid");
-    exit(1);
-  }
+  if (setgroups(0, 0))
+    fatal_perror("setgroups");
+  if (setgid(cs->gid))
+    fatal_perror("setgid");
+  if (setuid(cs->uid))
+    fatal_perror("setuid");
 
-  /* wall-clock timeout: ten minutes
-     (cannot fail) */
-  alarm(60 * 10);
-
-  execve("/bin/phantomjs", cs->argv, cs->envp);
-  perror("execve");
-  exit(1);
+  /* execve() only returns on failure. */
+  execve(PHANTOMJS_BINARY, (char *const *)cs->argv, (char *const *)cs->envp);
+  fatal_perror("execve");
 }
 
 static void
@@ -299,10 +336,8 @@ cleanup_homedir(child_state *cs)
   pid_t child;
   int status;
 
-  if (chdir(cs->homedir)) {
-    fprintf(stderr, "chdir: %s: %s\n", cs->homedir, strerror(errno));
-    return;
-  }
+  if (chdir(cs->homedir))
+    fatal_eprintf("chdir: %s", cs->homedir);
 
   fflush(0);
   child = fork();
@@ -316,57 +351,46 @@ cleanup_homedir(child_state *cs)
         close(2) ||
         open("/dev/null", O_WRONLY) != 2)
       _exit(126);
-    execve("/bin/find", (char * const *)find_args, (char * const *)noenv);
+    execve(PHANTOMJS_FIND_BINARY,
+           (char * const *)find_args, (char * const *)noenv);
     _exit(127);
   }
 
-  if (waitpid(child, &status, 0) != child) {
-    perror("waitpid");
-    return;
-  }
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    fprintf(stderr, "find exited unsuccessfully - status %04x\n", status);
-    return;
-  }
+  if (waitpid(child, &status, 0) != child)
+    fatal_perror("waitpid");
+
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    fatal_printf("find exited unsuccessfully - status %04x", status);
+
   if (rmdir(".qws"))
-    perror("rmdir: .qws");
+    fatal_perror("rmdir: .qws");
 }
 
-int main(int argc __attribute__((unused)), char **argv, char **envp)
+int main(int UNUSED(argc), char **argv, char **envp)
 {
   pid_t child;
   int status;
   child_state cs;
   memset(&cs, 0, sizeof cs);
 
-  if (!select_homedir(&cs))
-    return 1; /* no homedir available */
-
-  if (!prepare_environment(&cs, argv, envp))
-    return 1;
+  select_homedir(&cs);
+  prepare_environment(&cs, argv, envp);
 
   fflush(0);
   child = fork();
-  if (child == -1) {
-    perror("fork");
-    return 1;
-  }
+  if (child == -1)
+    fatal_perror("fork");
+
   if (child == 0)
     run_phantomjs(&cs);
 
-  if (waitpid(child, &status, 0) != child) {
-    perror("waitpid");
-    return 1;
-  }
+  if (waitpid(child, &status, 0) != child)
+    fatal_perror("waitpid");
 
   cleanup_homedir(&cs);
 
-  if (WIFEXITED(status))
-    return WEXITSTATUS(status);
-  else {
-    fprintf(stderr, "Child process killed by signal %d\n", WTERMSIG(status));
-    return 1;
-  }
+  if (!WIFEXITED(status))
+    fatal_printf("child process killed by signal %d\n", WTERMSIG(status));
 
-  return 0;
+  return WEXITSTATUS(status);
 }
