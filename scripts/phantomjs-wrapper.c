@@ -24,10 +24,12 @@
 #include <grp.h>
 #include <limits.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Compile-time configuration knobs.  This program is to be invoked as
@@ -50,6 +52,9 @@
 #ifndef PHANTOMJS_RLIMIT_MEM
 #define PHANTOMJS_RLIMIT_MEM (1L<<30) /* one gigabyte */
 #endif
+#ifndef PHANTOMJS_RLIMIT_CORE
+#define PHANTOMJS_RLIMIT_CORE 0 /* no core dumps */
+#endif
 
 #if defined __GNUC__ && __GNUC__ >= 4
 #define NORETURN void __attribute__((noreturn))
@@ -68,7 +73,24 @@ typedef struct child_state
   const char **envp;
   uid_t uid;
   gid_t gid;
+  sigset_t sigmask;
 } child_state;
+
+static struct timespec
+timespec_minus(struct timespec end, struct timespec start)
+{
+  struct timespec temp;
+  if (end.tv_nsec - start.tv_nsec < 0) {
+    temp.tv_sec = end.tv_sec - start.tv_sec - 1;
+    temp.tv_nsec = 1000000000 + end.tv_nsec - start.tv_nsec;
+  } else {
+    temp.tv_sec = end.tv_sec - start.tv_sec;
+    temp.tv_nsec = end.tv_nsec - start.tv_nsec;
+  }
+  return temp;
+}
+
+/* Error reporting. */
 
 static NORETURN
 fatal(const char *msg)
@@ -107,6 +129,33 @@ fatal_eprintf(const char *msg, ...)
   va_end(ap);
   fprintf(stderr, ": %s\n", strerror(err));
   exit(1);
+}
+
+static void
+prepare_signals(child_state *cs, sigset_t *parent_sigmask)
+{
+  /* save current signal mask for child */
+  if (sigprocmask(0, 0, &cs->sigmask))
+    fatal_perror("sigprocmask");
+
+  /* in the parent, basically all signals are blocked and handled via
+     sigtimedwait */
+  sigfillset(parent_sigmask);
+
+  /* signals that cannot be caught */
+  sigdelset(parent_sigmask, SIGKILL);
+  sigdelset(parent_sigmask, SIGSTOP);
+
+  /* signals indicating a fatal CPU exception or user abort */
+  sigdelset(parent_sigmask, SIGABRT);
+  sigdelset(parent_sigmask, SIGBUS);
+  sigdelset(parent_sigmask, SIGFPE);
+  sigdelset(parent_sigmask, SIGILL);
+  sigdelset(parent_sigmask, SIGSEGV);
+  sigdelset(parent_sigmask, SIGQUIT);
+
+  if (sigprocmask(SIG_SETMASK, &parent_sigmask, 0))
+    fatal_perror("sigprocmask");
 }
 
 static void
@@ -282,8 +331,8 @@ prepare_environment(child_state *cs, char **argv, char **envp)
   qsort(cs->envp, envc, sizeof(char *), compar_str);
 }
 
-static void
-run_phantomjs(child_state *cs)
+static NORETURN
+run_phantomjs_child(child_state *cs)
 {
   struct rlimit rl;
 
@@ -292,6 +341,10 @@ run_phantomjs(child_state *cs)
      stderr under error conditions. */
   if (chdir(cs->homedir))
     fatal_eprintf("chdir: %s", cs->homedir);
+
+  /* Reset signal handling. */
+  if (sigprocmask(SIG_SETMASK, &cs->sigmask, 0))
+    fatal_perror("sigprocmask");
 
   /* Apply resource limits. */
   rl.rlim_cur = PHANTOMJS_RLIMIT_CPU;
@@ -306,8 +359,12 @@ run_phantomjs(child_state *cs)
   if (setrlimit(RLIMIT_DATA, &rl))
     fatal_perror("setrlimit(RLIMIT_DATA)");
 
-  /* Wall-clock timeout. alarm() cannot fail. */
-  alarm(PHANTOMJS_RLIMIT_WALL);
+  rl.rlim_cur = PHANTOMJS_RLIMIT_CORE;
+  rl.rlim_max = PHANTOMJS_RLIMIT_CORE;
+  if (setrlimit(RLIMIT_CORE, &rl))
+    fatal_perror("setrlimit(RLIMIT_CORE)");
+
+  /* Wall-clock timeout is applied by the parent. */
 
   /* Drop privileges. */
   if (setgroups(0, 0))
@@ -320,6 +377,91 @@ run_phantomjs(child_state *cs)
   /* execve() only returns on failure. */
   execve(PHANTOMJS_BINARY, (char *const *)cs->argv, (char *const *)cs->envp);
   fatal_perror("execve");
+}
+
+/* Reap all exited children.  If one of them was EXPECTED_CHILD,
+   then set *STATUSP to its exit status and return true; else
+   return false.  We shouldn't ever have any children other than
+   the expected one; this is extra defensiveness. */
+static bool
+reap_all(pid_t expected_child, int *statusp)
+{
+  pid_t child;
+  int status;
+  bool found = false;
+  while ((child = waitpid(0, &status, WNOHANG)) != 0) {
+    /* N.B. ECHILD here means that the process we care about somehow
+       escaped monitoring. */
+    if (child == -1)
+      fatal_perror("waitpid");
+
+    if (child == expected_child) {
+      *pstatus = status;
+      found = true;
+    }
+  }
+  return found;
+}
+
+static int
+run_phantomjs(child_state *cs, const sigset_t *mask)
+{
+  pid_t child;
+  int status;
+  int sig;
+  struct timespec timeout, before, after;
+  bool death_pending = false;
+
+  fflush(0);
+  child = fork();
+  if (child == -1)
+    fatal_perror("fork");
+  if (child == 0)
+    run_phantomjs_child(&cs);
+
+  /* We are the parent. */
+  timeout.tv_nsec = 0;
+  timeout.tv_sec = PHANTOMJS_RLIMIT_WALL;
+
+  for (;;) {
+    if (clock_gettime(CLOCK_MONOTONIC, &before))
+      fatal_perror("clock_gettime: CLOCK_MONOTONIC");
+
+    sig = sigtimedwait(mask, 0, &timeout);
+
+    if (clock_gettime(CLOCK_MONOTONIC, &after))
+      fatal_perror("clock_gettime: CLOCK_MONOTONIC");
+
+    /* this updates 'timeout' to the time remaining to wait */
+    timeout = timespec_minus(timeout, timespec_minus(after, before));
+
+    switch (sig) {
+    case SIGCHLD:
+      if (reap_all(child, &status))
+        return status;
+      break;
+
+    case SIGTSTP:
+    case SIGTTIN:
+    case SIGTTOU:
+      kill(child, sig);
+      raise(SIGSTOP);
+      kill(child, SIGCONT);
+      continue;
+
+    case -1: /* timeout */
+      sig = death_pending ? SIGKILL : SIGALRM;
+      /* fall through */
+
+    default:
+      kill(child, sig);
+      death_pending = 1;
+      timeout.tv_nsec = 0;
+      timeout.tv_sec = 1;
+    }
+  }
+
+  return status;
 }
 
 static void
@@ -368,24 +510,17 @@ cleanup_homedir(child_state *cs)
 
 int main(int UNUSED(argc), char **argv, char **envp)
 {
-  pid_t child;
   int status;
   child_state cs;
+  sigset_t parent_sigmask;
+
   memset(&cs, 0, sizeof cs);
+  prepare_signals(&cs, &parent_sigmask);
 
   select_homedir(&cs);
   prepare_environment(&cs, argv, envp);
 
-  fflush(0);
-  child = fork();
-  if (child == -1)
-    fatal_perror("fork");
-
-  if (child == 0)
-    run_phantomjs(&cs);
-
-  if (waitpid(child, &status, 0) != child)
-    fatal_perror("waitpid");
+  status = run_phantomjs(&cs, &parent_sigmask);
 
   cleanup_homedir(&cs);
 
