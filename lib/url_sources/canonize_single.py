@@ -81,7 +81,9 @@ def chase_redirects(url):
     # actual error.
     except requests.exceptions.ConnectionError as e:
         try:
-            neterr = e.args[0].reason
+            neterr = e.args[0]
+            if hasattr(neterr, 'reason'):
+                neterr = neterr.reason
             report_neterror(neterr)
         except:
             report_exc_anomaly()
@@ -206,7 +208,7 @@ def report_exc_anomaly():
     # Record a complete traceback in the anomaly field.
     # Relies on sys.exc_info.
     (last_type, last_value, _) = sys.exc_info()
-    status = traceback.format_exception_only(last_type, last_value)
+    status = "\n".join(traceback.format_exception_only(last_type, last_value))
     anomaly = traceback.format_exc()
     report(None, status, anomaly)
 

@@ -15,6 +15,7 @@
 #define _GNU_SOURCE
 #include <stdbool.h>
 #include <sys/types.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <dirent.h>
@@ -232,11 +233,32 @@ prepare_environment(child_state *cs, char **argv, char **envp)
 static void
 run_phantomjs(child_state *cs)
 {
+  struct rlimit rl;
+
   /* This code executes on the child side of a fork(), but the
      parent has arranged for it to be safe for us to write to
      stderr under error conditions. */
   if (chdir(cs->homedir)) {
     fprintf(stderr, "chdir: %s: %s\n", cs->homedir, strerror(errno));
+    exit(1);
+  }
+
+  /* Apply resource limits. */
+  rl.rlim_cur = 60; /* one minute */
+  rl.rlim_max = 60;
+  if (setrlimit(RLIMIT_CPU, &rl)) {
+    perror("setrlimit(RLIMIT_CPU)");
+    exit(1);
+  }
+
+  rl.rlim_cur = 1L<<31; /* two gigabytes */
+  rl.rlim_max = 1L<<31;
+  if (setrlimit(RLIMIT_AS, &rl)) {
+    perror("setrlimit(RLIMIT_AS)");
+    exit(1);
+  }
+  if (setrlimit(RLIMIT_DATA, &rl)) {
+    perror("setrlimit(RLIMIT_DATA)");
     exit(1);
   }
 
@@ -253,6 +275,10 @@ run_phantomjs(child_state *cs)
     perror("setuid");
     exit(1);
   }
+
+  /* wall-clock timeout: ten minutes
+     (cannot fail) */
+  alarm(60 * 10);
 
   execve("/bin/phantomjs", cs->argv, cs->envp);
   perror("execve");

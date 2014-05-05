@@ -130,13 +130,14 @@ class CanonizeWorker:
                 job.terminate()
             except ProcessLookupError:
                 pass
-        self.dbw.commit()
 
     def __call__(self, screen):
         self.screen = screen
         self.init_display()
         self.load_database()
-        self.main_loop()
+        while self.load_work_queue():
+            self.main_loop()
+            self.db.commit()
 
     def init_display(self):
         self.max_y, self.max_x = self.screen.getmaxyx()
@@ -203,34 +204,39 @@ class CanonizeWorker:
 
     def load_database(self):
         self.report_progress("Loading database...")
-        self.dbr = url_database.ensure_database(self.args)
-        self.dbw = url_database.reconnect_to_database(self.args)
+        self.db = url_database.ensure_database(self.args)
 
-        cr = self.dbr.cursor()
+        cr = self.db.cursor()
         # Cache the status table in memory; it's reasonably small.
         self.report_progress("Loading database... (canon statuses)")
         cr.execute("SELECT id, status FROM canon_statuses;")
         self.canon_statuses = { row[1]: row[0]
                                 for row in url_database.fetch_iter(cr) }
-
+        
+    def load_work_queue(self):
         # Load the list of URLs-to-do.
         self.report_progress("Loading database... (work queue)")
+        cr = self.db.cursor()
         cr.execute("SELECT DISTINCT u.url, v.url, 0"
                    "  FROM urls as u"
                    "  LEFT JOIN url_strings as v on u.url = v.id"
-                   "  WHERE u.url NOT IN (SELECT url FROM canon_urls)")
+                   "  WHERE u.url NOT IN (SELECT url FROM canon_urls)"
+                   "  LIMIT 100000")
+        this_cycle = 0
         while True:
             rows = cr.fetchmany()
             if not rows: break
-            self.total += len(rows)
+            this_cycle += len(rows)
             self.todo.extend(rows)
             self.report_progress("Loading database... (work queue {})"
                                  .format(self.total))
+        self.total += this_cycle
+        return this_cycle != 0
 
     def record_canonized(self, result):
         try:
             self.processed += 1
-            cr = self.dbw.cursor()
+            cr = self.db.cursor()
             status_id = self.canon_statuses.get(result.status)
             if status_id is None:
                 cr.execute("INSERT INTO canon_statuses VALUES(NULL, ?)",
@@ -257,7 +263,7 @@ class CanonizeWorker:
                        (result.original_uid, canon_id, status_id))
 
             if self.processed % 1000 == 0:
-                dbw.commit()
+                self.db.commit()
 
         except Exception as e:
             raise type(e)("Bogus result: {{ status: {!r} canon: {!r} anomaly: {!r} }}".format(result.status, result.canon_url, result.anomaly)) from e
@@ -274,7 +280,12 @@ class CanonizeWorker:
                 self.in_progress[task.pid] = task
 
             try:
-                (pid, status) = os.wait()
+                while True:
+                    try:
+                        (pid, status) = os.wait()
+                        break
+                    except InterruptedError:
+                        continue
             except ChildProcessError:
                 continue # no children to wait for: keep going
 

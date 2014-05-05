@@ -36,6 +36,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 from shared import url_database
 
@@ -125,20 +126,27 @@ class CanonTask:
         elif os.WIFEXITED(status):
             if os.WEXITSTATUS(status) == 0:
                 self.result_fd.seek(0)
-                results = json.load(self.result_fd)
-                if results["status"] is None:
-                    raise RuntimeError(repr(results))
+                try:
+                    results = json.load(self.result_fd)
+                    if results["status"] is None:
+                        raise RuntimeError(repr(results))
 
-                self.canon_url = results["canon"]
-                self.status    = results["status"]
-                self.anomaly   = results["log"]
+                    self.canon_url = results["canon"]
+                    self.status    = results["status"]
+                    self.anomaly   = results["log"]
+                except:
+                    self.result_fd.seek(0)
+                    self.status = "Garbage output from tracer"
+                    self.anomaly = { "stdout": self.result_fd.read() }
             else:
                 self.status = (
-                    "Process exited unsuccessfully ({})"
+                    "Tracer exited unsuccessfully ({})"
                     .format(os.WEXITSTATUS(status)))
+                self.anomaly = { "stdout": self.result_fd.read() }
 
         else:
-            self.status = "Unexpected exit status {:04x}".format(status)
+            self.status = "Incomprehensible exit status {:04x}".format(status)
+            self.anomaly = { "stdout": self.result_fd.read() }
 
         self.errors_fd.seek(0)
         errors = self.errors_fd.read()
@@ -170,6 +178,7 @@ class CanonizeWorker(SchrootSession):
 
     def __call__(self, screen):
         self.screen = screen
+        self.bogus_results = open("bogus_results.txt", "at", encoding="utf-8")
         self.init_display()
         self.load_database()
         self.main_loop()
@@ -201,9 +210,10 @@ class CanonizeWorker(SchrootSession):
             self.report_progress(msg)
 
     def repaint_line(self, y):
-        text = "{1:<{0}} {2:<{0}}".format(self.max_x // 2 - 1,
-                                          self.lines[y],
-                                          self.prev_lines[y])
+        maxl = self.max_x // 2 - 1
+        text = "{1:<{0}} {2:<{0}}".format(maxl,
+                                          self.lines[y][:maxl],
+                                          self.prev_lines[y][:maxl])
         self.screen.addnstr(y, 0, text, self.max_x - 1)
         self.screen.clrtoeol()
 
@@ -247,10 +257,10 @@ class CanonizeWorker(SchrootSession):
                                 for row in url_database.fetch_iter(cr) }
 
         if self.args.work_queue:
-            self.todo = open(self.args.work_queue, "rt", encoding="ascii")
+            self.todo = open(self.args.work_queue, "rb")
         else:
             self.report_progress("Loading database... (work queue)")
-            self.todo = tempfile.TemporaryFile("w+t", encoding="ascii")
+            self.todo = tempfile.TemporaryFile("w+b")
             subprocess.check_call(["sqlite3", self.args.database,
                    "SELECT DISTINCT u.url, v.url"
                    "  FROM urls as u"
@@ -286,14 +296,21 @@ class CanonizeWorker(SchrootSession):
                 self.successes += 1
                 self.report_result(result, curl)
 
-            cr.execute("INSERT INTO canon_urls VALUES (?, ?, ?)",
+            cr.execute("INSERT OR REPLACE INTO canon_urls VALUES (?, ?, ?)",
                        (result.original_uid, canon_id, status_id))
 
             if self.processed % 1000 == 0:
-                db.commit()
+                self.db.commit()
 
         except Exception as e:
-            raise type(e)("Bogus result: {{ status: {!r} canon: {!r} anomaly: {!r} }}".format(result.status, result.canon_url, result.anomaly)) from e
+            self.anomalies += 1
+            self.report_result(result, "bogus")
+            self.bogus_results.write("{}\n".format(json.dumps({
+                "exception": repr(e),
+                "canon": result.canon_url,
+                "status": result.status,
+                "anomaly": result.anomaly
+            })))
 
     def main_loop(self):
         self.report_overall_progress()
@@ -303,7 +320,17 @@ class CanonizeWorker(SchrootSession):
         while self.in_progress or not all_read:
             while not all_read and len(self.in_progress) < self.args.parallel:
 
-                line = self.todo.readline().strip()
+                try:
+                    raw_line = self.todo.readline()
+                    line = raw_line.decode("ascii").strip()
+                except Exception as e:
+                    self.anomalies += 1
+                    self.bogus_results.write("{}\n".format(json.dumps({
+                        "exception": repr(e),
+                        "raw_line": repr(raw_line)
+                    }))) 
+                    continue
+
                 if line == "":
                     all_read = True
                     break
