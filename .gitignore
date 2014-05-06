@@ -22,6 +22,8 @@ __pycache__/
 
 /lib/url_sources/twitter_credential.txt
 
+/scripts/isolate
+
 /pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
 /pkg/selenium-server-2.33.0/debian/selenium-server/
