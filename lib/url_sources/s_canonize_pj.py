@@ -15,9 +15,6 @@ def setup_argp(ap):
     ap.add_argument("-p", "--parallel",
                     action="store", dest="parallel", type=int, default=10,
                     help="number of simultaneous HTTP requests to issue")
-    ap.add_argument("-c", "--chroot",
-                    action="store", dest="chroot",
-                    help="Name of chroot in which to isolate phantomjs")
     ap.add_argument("-w", "--work-queue",
                     action="store", dest="work_queue",
                     help="File to read the work queue from "
@@ -39,6 +36,10 @@ import tempfile
 import time
 
 from shared import url_database
+
+pj_trace_redir = os.path.realpath(os.path.join(
+        os.path.dirname(__file__),
+        "../../scripts/pj-trace-redir.js"))
 
 # Python does not provide strsignal() even in the very latest 3.x.
 # This is a reasonable fake.
@@ -67,32 +68,9 @@ def fake_strsignal(n):
         return "out-of-range signal, number "+str(n)
     return _sigtbl[n]
 
-class SchrootSession:
-    """Wrapper for running processes inside an schroot.  You must have
-       the authority to run processes as root, without a password,
-       inside the named chroot passed as the primary argument."""
-    def __init__(self, chroot):
-        self.chroot_name = chroot
-
-    def __enter__(self):
-        self.chroot_session = subprocess.check_output(
-            ["schroot", "-b", "-c", self.chroot_name]).strip()
-        return self
-
-    def __exit__(self, *dontcare):
-        subprocess.check_call(["schroot", "-e", "-c", self.chroot_session])
-
-    def spawn(self, command, *args, **kwargs):
-        """Call this like you would subprocess.Popen.  Processes
-           inside the chroot start as root, with their current working
-           directory set to /tmp."""
-        return subprocess.Popen(["schroot", "-r", "-c", self.chroot_session,
-                                 "-u", "root", "-d", "/tmp", "--"] + command,
-                                *args, **kwargs)
-
 class CanonTask:
     """Representation of one canonicalization job."""
-    def __init__(self, chroot, uid, url, idx):
+    def __init__(self, uid, url, idx):
         self.original_uid = uid
         self.original_url = url
         self.idx          = idx
@@ -105,11 +83,16 @@ class CanonTask:
         # child process exits.
         self.result_fd = tempfile.TemporaryFile("w+t", encoding="utf-8")
         self.errors_fd = tempfile.TemporaryFile("w+t", encoding="utf-8")
-        self.proc = chroot.spawn(["phantomjs-wrapper", "/bin/pj-trace-redir.js",
-                                  self.original_url],
-                                 stdin=subprocess.DEVNULL,
-                                 stdout=self.result_fd,
-                                 stderr=self.errors_fd)
+        self.proc = subprocess.Popen([
+                "isolate", "phantomjs",
+                "--ssl-protocol=any",
+                "--ignore-ssl-errors=true",
+                "--load-images=false",
+                pj_trace_redir, self.original_url
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=self.result_fd,
+            stderr=self.errors_fd)
         self.pid = self.proc.pid
 
     def terminate(self):
@@ -154,7 +137,7 @@ class CanonTask:
             if self.anomaly is None: self.anomaly = {}
             self.anomaly["stderr"] = errors
 
-class CanonizeWorker(SchrootSession):
+class CanonizeWorker:
     def __init__(self, args):
         self.args        = args
         self.in_progress = {}
@@ -165,8 +148,6 @@ class CanonizeWorker(SchrootSession):
         self.failures    = 0
         self.anomalies   = 0
 
-        SchrootSession.__init__(self, self.args.chroot)
-
     def __exit__(self, *_):
         for job in self.in_progress.values():
             try:
@@ -174,7 +155,6 @@ class CanonizeWorker(SchrootSession):
             except ProcessLookupError:
                 pass
         self.db.commit()
-        SchrootSession.__exit__(self, *_)
 
     def __call__(self, screen):
         self.screen = screen
@@ -328,7 +308,7 @@ class CanonizeWorker(SchrootSession):
                     self.bogus_results.write("{}\n".format(json.dumps({
                         "exception": repr(e),
                         "raw_line": repr(raw_line)
-                    }))) 
+                    })))
                     continue
 
                 if line == "":
@@ -338,7 +318,7 @@ class CanonizeWorker(SchrootSession):
                 uid, url = line.split("|", 1)
                 url = url_database.canon_url_syntax(url)
                 idx = self.assign_display_index(url)
-                task = CanonTask(self, uid, url, idx)
+                task = CanonTask(uid, url, idx)
                 self.in_progress[task.pid] = task
 
             try:

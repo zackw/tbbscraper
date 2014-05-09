@@ -305,19 +305,14 @@ prepare_signals(child_state *cs, sigset_t *parent_sigmask)
   if (sigprocmask(SIG_SETMASK, parent_sigmask, &cs->sigmask))
     fatal_perror("sigprocmask");
 
+  /* The only signal whose siginfo_t we inspect is SIGCHLD, so we can
+     get away with just setting the handler for that one.  */
   struct sigaction sa;
   memset(&sa, 0, sizeof(struct sigaction));
   sa.sa_sigaction = dummy_signal_handler;
-  for (int sig = 1; sig < NSIG; sig++) {
-    if (!sigismember(parent_sigmask, sig))
-      continue;
-
-    sa.sa_flags = SA_RESTART|SA_SIGINFO;
-    if (sig == SIGCHLD)
-      sa.sa_flags |= SA_NOCLDSTOP;
-    if (sigaction(sig, &sa, 0))
-      fatal_perror("sigaction");
-  }
+  sa.sa_flags = SA_RESTART|SA_SIGINFO|SA_NOCLDSTOP;
+  if (sigaction(SIGCHLD, &sa, 0))
+    fatal_perror("sigaction");
 }
 
 /* Infuriatingly, Linux refuses to adopt closefrom(). This is the
