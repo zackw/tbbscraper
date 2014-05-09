@@ -435,8 +435,8 @@ class Extractor:
                          user[0], # uid
                          created_at,
                          t.get("retweet_count", 0),
-                         lang,
                          sensitive,
+                         lang,
                          withheld,
                          hashtags))
         for u in urls:
