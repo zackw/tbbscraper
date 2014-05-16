@@ -58,7 +58,7 @@
 #define ISOLATE_RLIMIT_WALL 600 /* ten minutes */
 #endif
 #ifndef ISOLATE_RLIMIT_MEM
-#define ISOLATE_RLIMIT_MEM (1L<<30) /* one gigabyte */
+#define ISOLATE_RLIMIT_MEM (1L<<31) /* two gigabytes */
 #endif
 #ifndef ISOLATE_RLIMIT_CORE
 #define ISOLATE_RLIMIT_CORE 0 /* no core dumps */
