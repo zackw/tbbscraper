@@ -22,9 +22,9 @@ def setup_argp(ap):
 
 def run(args):
     os.environ["PYTHONPATH"] = sys.path[0]
-    with CanonizeWorker(args) as cw:
-        curses.wrapper(cw)
-        cw.report_final_statistics()
+    cw = CanonizeWorker(args)
+    curses.wrapper(cw)
+    cw.report_final_statistics()
 
 import curses
 import json
