@@ -9,13 +9,14 @@
 // command-line argument, by following redirections.  The result is
 // reported as a JSON-formatted dictionary on stdout, like this:
 //
-// { "canon":   "canonicalized URL",
-//   "status":  "HTTP status phrase, or other one-line error message",
-//   "anomaly": "details of any error that may have occurred" }
+// { "status":  "final HTTP response code or network error code",
+//   "detail":  "HTTP status phrase, or other one-line error message",
+//   "canon":   "canonicalized URL",
+//   "log":     [ /* array of events; only present for anomalous failures */ ]
+// }
 //
-// 'canon' and 'anomaly' may be null.
-// 'status' and 'anomaly' will be base64ed if they contain non-ASCII
-// characters.
+// 'canon' and 'log' may be null.
+// '
 
 var system = require('system');
 if (system.args.length < 2) {
@@ -25,116 +26,65 @@ if (system.args.length < 2) {
 var address = system.args[1];
 var page = require('webpage').create();
 
-
 // Log events as Phantom passes them back up.  The report we want has
 // to be reconstructed from several of these once the task is  complete.
+var pending_resources = {};
+var resource_status = {};
 var event_log = [];
-var most_recent_nav_target;
+var probable_top_level_resources = [address];
 
 function log_event(evt) {
-    event_log.push(evt);
     //console.log(JSON.stringify(evt));
+    event_log.push(evt);
 }
 
-function report(final_url) {
-    if (!final_url || final_url === "about:blank") {
-        final_url = most_recent_nav_target;
-    }
+function report() {
+    var final_url, status;
 
-    var last_event;
-    var i;
-    // Scan the event log twice.  On the first pass, look specifically
-    // for a successful page load for the final URL; if we find that,
-    // don't treat subsequent errors as interesting.
-    for (i = event_log.length - 1; i >= 0; i--) {
-        if (event_log[i].url === final_url &&
-            event_log[i].what === "receive" &&
-            event_log[i].data.code === 200) {
-            last_event = event_log[i];
-            break;
-        }
-    }
-    if (!last_event) {
-        for (i = event_log.length - 1; i >= 0; i--) {
-            if (event_log[i].url == final_url) {
-                last_event = event_log[i];
-                break;
-            }
-        }
-    }
-    if (!last_event) {
-        if (event_log.length) {
-            last_event = event_log[event_log.length-1];
-        } else {
-            last_event = {"what":"?"};
-        }
-    }
+    while (final_url = probable_top_level_resources.pop()) {
+        if (/^about:/.test(final_url))
+            continue;
 
-    var status, log = null;
-    switch (last_event.what) {
-    case "receive":
-        switch (last_event.data.code) {
-        case 200: // success!
-            status = "200 OK";
-            break;
+        if (!resource_status.hasOwnProperty(final_url))
+            continue;
 
-            // "Normal" HTTP error codes.
-        case 400:
-        case 401:
-        case 403:
-        case 404:
-        case 410:
-        case 500:
-        case 503:
-            status = last_event.data.status;
-            break;
+        status = resource_status[final_url];
 
-            // All other HTTP errors are anomalous
-            // (that is, they trigger a dump of the entire event log).
-        default:
-            status = last_event.data.status;
-            log = event_log;
-        }
-        break;
-
-    case "neterror":
-        // Network errors are not anomalous.
-        status = last_event.data.status;
-        break;
-
-    case "timeout":
-        // Resource timeouts are not anomalous.
-        status = "timed out";
-        break;
-
-    default:
-        // All other last-events are anomalous.
-        status = last_event.what;
-        if (last_event.hasOwnProperty("data")) {
-            if (typeof last_event.data === "string") {
-                status = status + ": " + last_event.data;
-            } else if (last_event.data.hasOwnProperty("status")) {
-                status = status + ": " + last_event.data.status;
-            }
-        }
-        log = event_log;
+        system.stdout.writeLine(JSON.stringify({
+            "status": status.code,
+            "detail": status.detail,
+            "canon": final_url
+        }));
+        phantom.exit(0);
+        return;
     }
 
     system.stdout.writeLine(JSON.stringify({
-        "canon": final_url,
-        "status": status,
-        "log": log
+        "status": "abnormal failure",
+        "detail": null,
+        "canon": null,
+        "log": event_log
     }));
     phantom.exit(0);
 }
 
-// Global 60-second timeout; per-resource 10-second timeout.
-page.settings.resourceTimeout = 10000;
+// Global 9-minute timeout (just below isolate.c's 10-minute SIGKILL);
+// per-resource 30-second timeout.
+var really_loaded_timeout = null;
+page.settings.resourceTimeout = 30 * 1000;
 setTimeout(function () {
-    log_event({ what: "global-timeout" });
+    // If this fires in the middle of onLoadFinished's ten-second
+    // delay to give JS a chance to send us somewhere else, just cut
+    // that off early.  Otherwise, make note of it in the log and mark
+    // all outstanding resources as timed out.
+    if (really_loaded_timeout === null) {
+        var i;
+        for (i in pending_resources)
+            resource_status[pending_resources[i]] = { code: "timeout" };
+        log_event({ what: "global-timeout" });
+    }
     report();
-}, 60000);
-
+}, 9 * 60 * 1000);
 
 // Our modified user agent should not be _too_ much of a lie; in particular
 // if the PhantomJS embedded Webkit changes too much we should change ours
@@ -148,6 +98,9 @@ page.settings.userAgent =
     'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) ' +
     'Chrome/27.0.1453.93 Safari/537.36';
 
+//
+// These are here mostly for logging.
+//
 page.onAlert = function(msg) {
     log_event({what: "alert", url: page.url, data: msg});
 };
@@ -165,22 +118,91 @@ page.onConsoleMessage = function(msg, lineNum, sourceId) {
 };
 
 page.onError = function(msg, trace) {
-    var msgStack = [];
-    if (trace && trace.length) {
-        trace.forEach(function(t) {
-            msgStack.push(' -> ' + t.file + ': ' + t.line +
-                          (t.function ? ' (in function "' + t.function + '")'
-                           : ''));
-        });
-    }
-    log_event({what: "jserror", url: page.url, data: {
-        status: msg,
-        trace: msgStack
-    }});
+    log_event({what: "jserror", url: page.url, data: msg });
 };
 
+//
+// onLoadFinished is called when each page load completes - but that
+// means _after_ all HTTP-level redirections, and if there's an error
+// in the middle of the chain, it won't see a useful page.url.
+// We have to work around that using the resource hooks, below.
+//
 
-var really_loaded_timeout = null;
+page.onLoadFinished = function(status) {
+    if (status === "success")
+        probable_top_level_resources.push(page.url);
+
+    // Look for <meta refresh> and <link rel="canonical">.
+    // If we find either of them, and they aren't circular, immediately
+    // load the target.  Prefer <meta refresh>.
+    var html_redir_target = page.evaluate(function() {
+        var cand = document.querySelector("meta[http-equiv=refresh]");
+        if (cand) {
+            var content = cand.getAttribute("content");
+            if (typeof content === "string") {
+                content = content.split(";")[1].trim();
+                content = content.replace(/^url=/i, '').trim();
+
+                if (content && /^https?:/.test(content))
+                    return content;
+            }
+        }
+
+        // There's not supposed to be more than one <link rel="canonical">;
+        // we just take the first one if there are.
+        cand = document.querySelector("link[rel=canonical]");
+        if (cand)
+            return cand.getAttribute("href");
+    });
+
+    if (html_redir_target && html_redir_target !== page.url) {
+        log_event({ what: "html-redir", url: html_redir_target });
+        page.open(html_redir_target);
+        return;
+    }
+
+    // If there were any scripts, don't report quite yet; give them
+    // ten seconds to send us somewhere else.
+    if (page.evaluate(function() {
+        function documentHasScript(doc) {
+            return (doc.getElementsByTagName("script").length > 0 ||
+                    doc.evaluate("count(//@*[starts-with(name(), 'on')])",
+                                 doc, null, XPathResult.NUMBER_TYPE,
+                                 null).numberValue > 0);
+        }
+        function windowHasScript(win) {
+            var i;
+            if (documentHasScript(win.document))
+                return true;
+            for (i = 0; i < win.frames.length; i++)
+                if (windowHasScript(win.frames[i]))
+                    return true;
+            return false;
+        }
+        return windowHasScript(window);
+
+    })) {
+        really_loaded_timeout = setTimeout(function () {
+            report();
+        }, 10 * 1000);
+    } else {
+        report();
+    }
+}
+
+//
+// These don't see HTTP-level redirections either, and they aren't
+// told the destination URL reliably.  Their main function is to
+// cancel the really_loaded_timeout when appropriate.
+//
+
+page.onNavigationRequested = function(url, type, willNavigate, main) {
+    if (main && really_loaded_timeout !== null) {
+        clearTimeout(really_loaded_timeout);
+        really_loaded_timeout = null;
+        log_event({what: "nav", url: url })
+    }
+}
 page.onLoadStarted = function () {
     if (really_loaded_timeout !== null) {
         clearTimeout(really_loaded_timeout);
@@ -188,27 +210,21 @@ page.onLoadStarted = function () {
         log_event({what: "bounce", url: page.url })
     }
 }
-page.onLoadFinished = function(status) {
-    // Don't report quite yet - give JS and meta refresh
-    // a chance to send us somewhere else.
-    really_loaded_timeout = setTimeout(function () {
-        report(page.url);
-    }, 250);
-}
-page.onNavigationRequested = function(url, type, willNavigate, main) {
-    if (main) {
-        most_recent_nav_target = url;
-        if (really_loaded_timeout !== null) {
-            clearTimeout(really_loaded_timeout);
-            really_loaded_timeout = null;
-            log_event({what: "nav", url: page.url })
-        }
-    }
+
+//
+// The next four hooks see _every_ resource load.
+//
+
+function hasHeader(headers, key, val) {
+    var i;
+    for (i = 0; i < headers.length; i++)
+        if (headers[i].name === key)
+            return headers[i].value === val;
+    return false;
 }
 
-pending_resources = {}
 page.onResourceRequested = function(requestData, networkRequest) {
-    pending_resources[requestData.id] = true;
+    pending_resources[requestData.id] = requestData.url;
     log_event({
         what: "request",
         url: requestData.url,
@@ -216,65 +232,100 @@ page.onResourceRequested = function(requestData, networkRequest) {
             method: requestData.method,
             headers: requestData.headers
         }});
+
+    // There is no _good_ way of telling whether this is a top-level page
+    // load.  This looks for HTML page loads (which could be for (i)frames).
+    if (requestData.method === "GET" &&
+        hasHeader(requestData.headers, "Accept",
+                  "text/html,application/xhtml+xml,"+
+                  "application/xml;q=0.9,*/*;q=0.8")) {
+        probable_top_level_resources.push(requestData.url);
+
+        // Webkit catches HTTP redirect loops, but not HTML/JS redirect
+        // loops.  Webkit's limit is 20.  Add a hefty buffer for frames
+        // and suchlike.
+        if (probable_top_level_resources.length >= 100)
+            report();
+    }
 }
 
 page.onResourceReceived = function(response) {
     if (pending_resources[response.id]) {
-        pending_resources[response.id] = false;
+        var origUrl = pending_resources[response.id];
+        var status = {
+            code: response.status,
+            detail: response.status + " " + response.statusText,
+            headers: response.headers
+        };
+        resource_status[response.url] = status;
+        if (response.url != origUrl)
+            resource_status[origUrl] = status;
         log_event({
             what: "receive",
             url: response.url,
-            data: {
-                status: response.status + " " + response.statusText,
-                code: response.status,
-                headers: response.headers
-            }});
+            origUrl: origUrl,
+            data: status
+        });
+
+        pending_resources[response.id] = false;
     }
 }
 
 page.onResourceTimeout = function(request) {
     if (pending_resources[request.id]) {
+        var origUrl = pending_resources[request.id];
+        var status = {
+            code: "timeout",
+            detail: null
+        };
+        resource_status[request.url] = status;
+        if (request.url != origUrl)
+            resource_status[origUrl] = status;
+        log_event({
+            what: "timeout",
+            url: request.url,
+            origUrl: origUrl
+        });
         pending_resources[request.id] = false;
-        log_event({ what: "timeout", url: request.url });
     }
 }
 
 page.onResourceError = function(resourceError) {
     if (pending_resources[resourceError.id]) {
+        var origUrl = pending_resources[resourceError.id];
+
+        var status;
+        if (resourceError.status) {
+            status = {
+                code: resourceError.status,
+                detail: resourceError.status + " " + resourceError.statusText
+            };
+        } else {
+            status = {
+                code: "N"+resourceError.errorCode
+            };
+
+            // Some error strings are unnecessarily detailed.
+            switch (resourceError.errorCode) {
+            case 3:
+                status.detail = "N3 Host not found";
+                break;
+
+            default:
+                status.detail = status.code + " " +
+                    resourceError.errorString;
+            }
+        }
+        resource_status[resourceError.url] = status;
+        if (resourceError.url != origUrl)
+            resource_status[origUrl] = status;
+        log_event({
+            what: "error",
+            url: resourceError.url,
+            origUrl: origUrl,
+            data: status
+        });
         pending_resources[resourceError.id] = false;
-
-        var status = null;
-
-        // Some error strings are unnecessarily detailed.
-        switch (resourceError.errorCode) {
-        case 1:
-        case 2:
-        case 6:
-        case 99:
-        case 301:
-            status = resourceError.errorString;
-            break;
-
-        case 3:
-            if (/^Host \S* not found$/.test(resourceError.errorString))
-                status = "host not found";
-            break;
-
-        case 299:
-            if (/^Error downloading http/.test(resourceError.errorString))
-                status = resourceError.errorString.replace(/^.* replied: /,
-                                                   "Bad server response: ");
-            break;
-        }
-
-        if (status === null) {
-            status = resourceError.errorString + " (" +
-                resourceError.errorCode + ")";
-        }
-
-        log_event({ what: "neterror", url: resourceError.url,
-                    data: { status: status,
-                            code: resourceError.errorCode }});
     }
 }
 

@@ -29,7 +29,9 @@ def run(args):
 import curses
 import json
 import os
+import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -68,15 +70,48 @@ def fake_strsignal(n):
         return "out-of-range signal, number "+str(n)
     return _sigtbl[n]
 
+_stdout_junk_re = re.compile(
+    r"^(?:"
+    r"|[A-Z][a-z]+Error: .*"
+    r"|[A-Z_]+?_ERR: .*"
+    r"|Cannot init XMLHttpRequest object!"
+    r"|Error requesting /.*"
+    r"|Current location: https?://.*"
+    r"|  (?:https?://.*?|undefined)?:[0-9]+(?: in \S+)?"
+    r")$")
+
 class CanonTask:
     """Representation of one canonicalization job."""
-    def __init__(self, uid, url, idx):
+    def __init__(self, uid, url):
         self.original_uid = uid
         self.original_url = url
-        self.idx          = idx
+        self.idx          = -1
         self.canon_url    = None
         self.status       = None
-        self.anomaly      = None
+        self.detail       = None
+        self.anomaly      = {}
+        self.pid          = None
+
+        # Attempt a DNS lookup for the URL's hostname right now.  This
+        # preloads the DNS cache, reduces overhead in the surprisingly
+        # common case where the hostname is not found (2.85%), and most
+        # importantly, catches the rare URL that is *so* mangled that
+        # phantomjs just gives up and reports nothing at all.
+        try:
+            url = url_database.canon_url_syntax(url, want_splitresult = True)
+            dummy = socket.getaddrinfo(url.hostname, 80, proto=socket.SOL_TCP)
+            self.original_url = url.geturl()
+
+        except ValueError as e:
+            self.status = 'invalid URL'
+            self.detail = str(e)
+            return
+
+        except socket.gaierror as e:
+            if e.errno not in (socket.EAI_NONAME, socket.EAI_NODATA):
+                raise
+            self.status = 'hostname not found'
+            return
 
         # We use a temporary file for the results, instead of a pipe,
         # so we don't have to worry about reading them until after the
@@ -84,7 +119,9 @@ class CanonTask:
         self.result_fd = tempfile.TemporaryFile("w+t", encoding="utf-8")
         self.errors_fd = tempfile.TemporaryFile("w+t", encoding="utf-8")
         self.proc = subprocess.Popen([
-                "isolate", "phantomjs",
+                "isolate",
+                "env", "PHANTOMJS_DISABLE_CRASH_DUMPS=1", "MALLOC_CHECK_=0",
+                "phantomjs",
                 "--ssl-protocol=any",
                 "--ignore-ssl-errors=true",
                 "--load-images=false",
@@ -98,44 +135,113 @@ class CanonTask:
     def terminate(self):
         self.proc.terminate()
 
+    def parse_stdout(self, stdout):
+        # Under conditions which are presently unclear, PhantomJS dumps
+        # javascript console errors to stdout despite script logic which
+        # is supposed to intercept them; so we need to scan through all
+        # lines of output looking for something with the expected form.
+        if not stdout:
+            self.status = "crawler failure"
+            self.detail = "no output from tracer"
+            return False
+
+        anomalous_stdout = []
+        for line in stdout.strip().split("\n"):
+            if _stdout_junk_re.match(line):
+                continue
+
+            try:
+                results = json.loads(line)
+
+                self.canon_url = results["canon"]
+                self.status    = results["status"]
+                self.detail    = results.get("detail", None)
+                self.anomaly.update(results.get("log", {}))
+
+            except:
+                anomalous_stdout.append(line)
+
+        if anomalous_stdout:
+            self.anomaly["stdout"] = anomalous_stdout
+        if not self.status:
+            self.status = "garbage output from tracer"
+            return False
+        return True
+
+    def parse_stderr(self, stderr, valid_result):
+        status = None
+        anomalous_stderr = []
+
+        for err in stderr:
+            if err.startswith("isolate: env: "):
+                # This is 'isolate' reporting the status of
+                # the child process.  Certain signals are expected.
+
+                status = err[len("isolate: env: "):]
+                if status in ("Alarm clock", "Killed",
+                              "CPU time limit exceeded"):
+                    status = "timeout"
+
+                # PJS occasionally segfaults on exit.  If there is a
+                # valid report on stdout, don't count it as a crash.
+                else:
+                    if status != "Segmentation fault" or not valid_result:
+                        self.detail = status
+                        status = "crawler failure"
+
+            elif "bad_alloc" in err:
+                # PJS's somewhat clumsy way of reporting memory
+                # allocation failure.
+                if not status:
+                    self.detail = "out of memory"
+                    status = "crawler failure"
+            else:
+                anomalous_stderr.append(err)
+
+        if not valid_result:
+            if not status:
+                status = "unexplained exit code 1";
+            self.status = status
+
+        if anomalous_stderr:
+            self.anomaly["stderr"] = anomalous_stderr
+        elif "stderr" in self.anomaly:
+            del self.anomaly["stderr"]
+
     def pickup_results(self, status):
 
-        if os.WIFSIGNALED(status):
-            if os.WTERMSIG(status) == signal.SIGALRM:
-                self.status = "Network timeout"
-            else:
-                self.status = "Killed by " + fake_strsignal(os.WTERMSIG(status))
+        if self.pid is None:
+            return
 
-        elif os.WIFEXITED(status):
-            if os.WEXITSTATUS(status) == 0:
-                self.result_fd.seek(0)
-                try:
-                    results = json.load(self.result_fd)
-                    if results["status"] is None:
-                        raise RuntimeError(repr(results))
+        self.result_fd.seek(0)
+        stdout = self.result_fd.read()
+        self.result_fd.close()
+        self.errors_fd.seek(0)
+        stderr = self.errors_fd.read()
+        self.result_fd.close()
 
-                    self.canon_url = results["canon"]
-                    self.status    = results["status"]
-                    self.anomaly   = results["log"]
-                except:
-                    self.result_fd.seek(0)
-                    self.status = "Garbage output from tracer"
-                    self.anomaly = { "stdout": self.result_fd.read() }
+        valid_result = self.parse_stdout(stdout)
+        stderr = stderr.strip().split("\n")
+        if stderr and (len(stderr) > 1 or stderr[0] != ''):
+            self.anomaly["stderr"] = stderr
+
+        if os.WIFEXITED(status):
+            exitcode = os.WEXITSTATUS(status)
+            if exitcode == 0:
+                pass
+            elif exitcode == 1:
+                self.parse_stderr(stderr, valid_result)
             else:
-                self.status = (
-                    "Tracer exited unsuccessfully ({})"
-                    .format(os.WEXITSTATUS(status)))
-                self.anomaly = { "stdout": self.result_fd.read() }
+                self.status = "crawler failure"
+                self.detail = "unexpected exit code {}".format(exitcode)
+
+        elif os.WIFSIGNALED(status):
+            self.status = "crawler failure"
+            self.detail = "Killed by " + fake_strsignal(os.WTERMSIG(status))
 
         else:
-            self.status = "Incomprehensible exit status {:04x}".format(status)
-            self.anomaly = { "stdout": self.result_fd.read() }
-
-        self.errors_fd.seek(0)
-        errors = self.errors_fd.read()
-        if errors:
-            if self.anomaly is None: self.anomaly = {}
-            self.anomaly["stderr"] = errors
+            self.status = "crawler failure"
+            self.detail = "Incomprehensible exit status {:04x}".format(status)
 
 class CanonizeWorker:
     def __init__(self, args):
@@ -232,65 +338,130 @@ class CanonizeWorker:
         cr = self.db.cursor()
         # Cache the status table in memory; it's reasonably small.
         self.report_progress("Loading database... (canon statuses)")
-        cr.execute("SELECT id, status FROM canon_statuses;")
-        self.canon_statuses = { row[1]: row[0]
-                                for row in url_database.fetch_iter(cr) }
+        cr.execute("SELECT detail, id FROM canon_statuses;")
+        self.canon_statuses = { row.detail: row.id for row in cr }
 
         if self.args.work_queue:
             self.todo = open(self.args.work_queue, "rb")
         else:
             self.report_progress("Loading database... (work queue)")
             self.todo = tempfile.TemporaryFile("w+b")
-            subprocess.check_call(["sqlite3", self.args.database,
-                   "SELECT DISTINCT u.url, v.url"
-                   "  FROM urls as u"
-                   "  LEFT JOIN url_strings as v on u.url = v.id"
-                   "  WHERE u.url NOT IN (SELECT url FROM canon_urls)"],
-                                  stdout=self.todo)
+            cr.copy_expert(
+                "COPY (SELECT u.url, v.url"
+                "  FROM canon_urls u JOIN url_strings v ON u.url = v.id"
+                "  WHERE u.result IS NULL"
+                ") TO STDOUT (DELIMITER '|')",
+                self.todo)
             self.todo.seek(0)
+
+    def record_anomaly(self, result, exc=None):
+        self.anomalies += 1
+        self.bogus_results.write("{}\n".format(json.dumps({
+                        "_1_original": result.original_url,
+                        "_2_canon": result.canon_url,
+                        "_3_status": result.status,
+                        "_4_detail": result.detail,
+                        "_5_exception": repr(exc),
+                        "_6_anomaly": result.anomaly
+                        })))
+
+    def categorize_result(self, result, canon_id):
+        if not isinstance(result.status, int):
+            if result.status == "N301" or result.status == "invalid URL":
+                return False, "invalid URL"
+            elif result.status == "N3" or result.status == "hostname not found":
+                return False, "hostname not found"
+            elif result.status.startswith("N"):
+                return False, "network or protocol error"
+            elif result.status == "timeout":
+                return False, "timeout"
+            elif result.status == "crawler failure":
+                return False, "crawler failure"
+
+            result.status = int(result.status)
+
+        s = result.status
+        if s == 200:
+            if canon_id is None:
+                return False, "invalid URL"
+            elif result.original_uid == canon_id:
+                return True, "ok"
+            else:
+                return True, "ok (redirected)"
+
+        if s == 502 or s == 504 or 520 <= s <= 529:
+            return False, "proxy error (502/504/52x)"
+        elif s == 500:
+            return False, "server error (500)"
+        elif s == 503:
+            return False, "service unavailable (503)"
+        elif s == 400:
+            return False, "bad request (400)"
+        elif s == 401:
+            return False, "authentication required (401)"
+        elif s == 403:
+            return False, "forbidden (403)"
+        elif s == 404 or s == 410:
+            return False, "page not found (404/410)"
+        elif s in (301, 302, 303, 307, 308):
+            return False, "redirection loop"
+        elif canon_id is None:
+            return False, "invalid URL"
+        else:
+            return False, "other HTTP response"
 
     def record_canonized(self, result):
         try:
             self.processed += 1
             cr = self.db.cursor()
-            status_id = self.canon_statuses.get(result.status)
-            if status_id is None:
-                cr.execute("INSERT INTO canon_statuses VALUES(NULL, ?)",
-                           (result.status,))
-                status_id = cr.lastrowid
-                self.canon_statuses[result.status] = status_id
+            status_id = self.canon_statuses.get(result.detail)
+            if status_id is None and result.detail is not None:
+                cr.execute("INSERT INTO canon_statuses(id, detail) "
+                           "  VALUES(DEFAULT, %s)"
+                           "  RETURNING id", (result.detail,))
+                status_id = cr.fetchone()[0]
+                self.canon_statuses[result.detail] = status_id
 
-            if result.anomaly is not None:
-                cr.execute("INSERT INTO anomalies VALUES(?, ?, ?)",
-                           (result.original_uid, status_id,
-                            json.dumps(result.anomaly)))
-                self.anomalies += 1
+            canon_id = None
+            if result.canon_url is not None:
+                try:
+                    (canon_id, curl) = \
+                        url_database.add_url_string(cr, result.canon_url)
+                except ValueError as e:
+                    # This happens when the canon URL is hopelessly
+                    # ill-formed, like "httpons://host" or "http:/".
+                    pass
 
-            if result.canon_url is None:
-                canon_id = None
-                self.failures += 1
-                self.report_result(result, result.status)
-            else:
-                (canon_id, curl) = \
-                    url_database.add_url_string(cr, result.canon_url)
+            success, hlresult = self.categorize_result(result, canon_id)
+
+            if success:
                 self.successes += 1
                 self.report_result(result, curl)
+            else:
+                self.failures += 1
+                self.report_result(result,
+                                   result.detail if result.detail
+                                   else result.status)
 
-            cr.execute("INSERT OR REPLACE INTO canon_urls VALUES (?, ?, ?)",
-                       (result.original_uid, canon_id, status_id))
+            if result.anomaly:
+                self.record_anomaly(result)
+
+            cr.execute("UPDATE canon_urls"
+                       "  SET canon  = %(canon)s,"
+                       "      result = %(result)s,"
+                       "      detail = %(detail)s"
+                       "  WHERE url = %(url)s",
+                       { 'url': result.original_uid,
+                         'canon': canon_id,
+                         'result': hlresult,
+                         'detail': status_id })
 
             if self.processed % 1000 == 0:
                 self.db.commit()
 
         except Exception as e:
-            self.anomalies += 1
             self.report_result(result, "bogus")
-            self.bogus_results.write("{}\n".format(json.dumps({
-                "exception": repr(e),
-                "canon": result.canon_url,
-                "status": result.status,
-                "anomaly": result.anomaly
-            })))
+            self.record_anomaly(result, e)
 
     def main_loop(self):
         self.report_overall_progress()
@@ -302,7 +473,14 @@ class CanonizeWorker:
 
                 try:
                     raw_line = self.todo.readline()
-                    line = raw_line.decode("ascii").strip()
+                    if not raw_line:
+                        all_read = True
+                        break
+
+                    uid, url = raw_line.split(b'|', 1)
+                    uid = int(uid)
+                    url = url.strip().decode("unicode_escape")
+
                 except Exception as e:
                     self.anomalies += 1
                     self.bogus_results.write("{}\n".format(json.dumps({
@@ -311,15 +489,12 @@ class CanonizeWorker:
                     })))
                     continue
 
-                if line == "":
-                    all_read = True
-                    break
-
-                uid, url = line.split("|", 1)
-                url = url_database.canon_url_syntax(url)
-                idx = self.assign_display_index(url)
-                task = CanonTask(uid, url, idx)
-                self.in_progress[task.pid] = task
+                task = CanonTask(uid, url)
+                task.idx = self.assign_display_index(task.original_url)
+                if task.pid is None:
+                    self.record_canonized(task)
+                else:
+                    self.in_progress[task.pid] = task
 
             try:
                 (pid, status) = os.wait()
@@ -329,3 +504,6 @@ class CanonizeWorker:
             task = self.in_progress.pop(pid)
             task.pickup_results(status)
             self.record_canonized(task)
+
+        self.db.commit()
+
