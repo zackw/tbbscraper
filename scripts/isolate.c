@@ -69,12 +69,12 @@
 
 /* This program has only been tested on Linux.  C99 and POSIX.1-2001
    features are used throughout.  It also requires dirfd, lchown, and
-   strdup from POSIX.1-2008; and execvpe, initgroups, vasprintf, and
-   NSIG from the shared BSD/GNU extension set.
+   strdup from POSIX.1-2008; and execvpe, initgroups, and vasprintf
+   from the shared BSD/GNU extension set.
 
    It should not be difficult to port this program to any modern *BSD,
    but it may well be impractical to port it to anything older. */
-#define _GNU_SOURCE
+#define _GNU_SOURCE 1
 #define _FILE_OFFSET_BITS 64 /* large directory readdir(), large rlimits */
 
 #include <stdbool.h>
@@ -222,10 +222,10 @@ cleanups(void)
     killpg(child_pgrp, SIGKILL);
 
   if (homedir) {
-    const char *rm_args[] = {
+    const char *const rm_args[] = {
       "rm", "-rf", homedir, 0
     };
-    const char *noenv[] = { 0 };
+    const char *const noenv[] = { 0 };
     pid_t child;
     int status;
 
@@ -260,8 +260,8 @@ typedef struct child_state
   const char *homedir;
   const char *logname;
   const char *shell;
-  const char **argv;
-  const char **envp;
+  const char *const *argv;
+  const char *const *envp;
   uid_t uid;
   gid_t gid;
   sigset_t sigmask;
@@ -408,15 +408,16 @@ should_copy_envvar(const char *envvar)
 static int
 compar_str(const void *a, const void *b)
 {
-  return strcmp(*(char *const *)a, *(char *const *)b);
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
 static void
-prepare_environment(child_state *cs, char **envp)
+prepare_environment(child_state *cs, const char *const *envp)
 {
   size_t envc;
   size_t i;
   char *tmpdir;
+  const char **new_envp;
 
   tmpdir = xasprintf("%s/.tmp", cs->homedir);
   if (mkdir(tmpdir, 0700))
@@ -430,23 +431,24 @@ prepare_environment(child_state *cs, char **envp)
   /* Six environment variables are force-set:
      HOME PWD TMPDIR USER LOGNAME SHELL
      One more for the terminator. */
-  cs->envp = xmalloc((envc + 7) * sizeof(char *));
+  new_envp = xmalloc((envc + 7) * sizeof(char *));
 
   envc = 0;
   for (i = 0; envp[i]; i++)
     if (should_copy_envvar(envp[i]))
-      cs->envp[envc++] = envp[i];
+      new_envp[envc++] = envp[i];
 
-  cs->envp[envc++] = xasprintf("HOME=%s", cs->homedir);
-  cs->envp[envc++] = xasprintf("PWD=%s", cs->homedir);
-  cs->envp[envc++] = xasprintf("TMPDIR=%s", tmpdir);
-  cs->envp[envc++] = xasprintf("USER=%s", cs->logname);
-  cs->envp[envc++] = xasprintf("LOGNAME=%s", cs->logname);
-  cs->envp[envc++] = xasprintf("SHELL=%s", cs->shell);
-  cs->envp[envc] = 0;
+  new_envp[envc++] = xasprintf("HOME=%s", cs->homedir);
+  new_envp[envc++] = xasprintf("PWD=%s", cs->homedir);
+  new_envp[envc++] = xasprintf("TMPDIR=%s", tmpdir);
+  new_envp[envc++] = xasprintf("USER=%s", cs->logname);
+  new_envp[envc++] = xasprintf("LOGNAME=%s", cs->logname);
+  new_envp[envc++] = xasprintf("SHELL=%s", cs->shell);
+  new_envp[envc] = 0;
 
-  qsort(cs->envp, envc, sizeof(char *), compar_str);
+  qsort(new_envp, envc, sizeof(char *), compar_str);
   free(tmpdir);
+  cs->envp = new_envp;
 }
 
 static NORETURN
@@ -507,7 +509,7 @@ run_isolated_child(child_state *cs)
   fatal_perror("execvpe");
 }
 
-static int
+static NORETURN
 run_isolated(child_state *cs, const sigset_t *mask)
 {
   pid_t child;
@@ -556,9 +558,13 @@ run_isolated(child_state *cs, const sigset_t *mask)
          to kill it on the way out. */
       child_pgrp = 0;
 
-      if (si.si_code == CLD_EXITED)
-        /* We're done. */
-        return si.si_status;
+      if (si.si_code == CLD_EXITED) {
+        if (si.si_status == 0)
+          exit(0);
+        else
+          fatal_printf("%s: unsuccessful exit code %d",
+                       cs->argv[0], si.si_status);
+      }
 
       if (si.si_code == CLD_KILLED || si.si_code == CLD_DUMPED)
         fatal_printf("%s: %s%s",
@@ -613,12 +619,12 @@ main(int UNUSED(argc), char **argv, char **envp)
     fatal_perror("atexit");
 
   memset(&cs, 0, sizeof cs);
-  cs.argv = (const char **)(argv + 1);
+  cs.argv = (const char *const *)(argv + 1);
 
   prepare_fds();
   prepare_signals(&cs, &parent_sigmask);
   prepare_homedir(&cs);
-  prepare_environment(&cs, envp);
+  prepare_environment(&cs, (const char *const *)envp);
 
-  return run_isolated(&cs, &parent_sigmask);
+  run_isolated(&cs, &parent_sigmask);
 }
