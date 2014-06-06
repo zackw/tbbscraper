@@ -16,7 +16,6 @@
 // }
 //
 // 'canon' and 'log' may be null.
-// '
 
 var system = require('system');
 if (system.args.length < 2) {
@@ -41,7 +40,7 @@ function log_event(evt) {
 function report() {
     var final_url, status;
 
-    while (final_url = probable_top_level_resources.pop()) {
+    while ((final_url = probable_top_level_resources.pop())) {
         if (/^about:/.test(final_url))
             continue;
 
@@ -153,6 +152,8 @@ page.onLoadFinished = function(status) {
         cand = document.querySelector("link[rel=canonical]");
         if (cand)
             return cand.getAttribute("href");
+
+        return null;
     });
 
     if (html_redir_target && html_redir_target !== page.url) {
@@ -188,7 +189,7 @@ page.onLoadFinished = function(status) {
     } else {
         report();
     }
-}
+};
 
 //
 // These don't see HTTP-level redirections either, and they aren't
@@ -200,16 +201,16 @@ page.onNavigationRequested = function(url, type, willNavigate, main) {
     if (main && really_loaded_timeout !== null) {
         clearTimeout(really_loaded_timeout);
         really_loaded_timeout = null;
-        log_event({what: "nav", url: url })
+        log_event({what: "nav", url: url });
     }
-}
+};
 page.onLoadStarted = function () {
     if (really_loaded_timeout !== null) {
         clearTimeout(really_loaded_timeout);
         really_loaded_timeout = null;
-        log_event({what: "bounce", url: page.url })
+        log_event({what: "bounce", url: page.url });
     }
-}
+};
 
 //
 // The next four hooks see _every_ resource load.
@@ -247,7 +248,7 @@ page.onResourceRequested = function(requestData, networkRequest) {
         if (probable_top_level_resources.length >= 100)
             report();
     }
-}
+};
 
 page.onResourceReceived = function(response) {
     if (pending_resources[response.id]) {
@@ -269,7 +270,7 @@ page.onResourceReceived = function(response) {
 
         pending_resources[response.id] = false;
     }
-}
+};
 
 page.onResourceTimeout = function(request) {
     if (pending_resources[request.id]) {
@@ -288,7 +289,7 @@ page.onResourceTimeout = function(request) {
         });
         pending_resources[request.id] = false;
     }
-}
+};
 
 page.onResourceError = function(resourceError) {
     if (pending_resources[resourceError.id]) {
@@ -327,6 +328,10 @@ page.onResourceError = function(resourceError) {
         });
         pending_resources[resourceError.id] = false;
     }
-}
+};
 
 page.open(address);
+
+// Local Variables:
+// js2-additional-externs: ("require" "console" "phantom" "setTimeout" "clearTimeout")
+// End:
