@@ -9,20 +9,37 @@
 // command-line argument, by following redirections.  The result is
 // reported as a JSON-formatted dictionary on stdout, like this:
 //
-// { "status":  "final HTTP response code or network error code",
+// { "ourl":    "original URL",
+//   "status":  "final HTTP response code or network error code",
 //   "detail":  "HTTP status phrase, or other one-line error message",
 //   "canon":   "canonicalized URL",
+//   "redirs":  { "http": x, "html": y, "js": z } // total # of redirections
+//                                                // of each type
 //   "log":     [ /* array of events; only present for anomalous failures */ ]
 // }
 //
-// 'canon' and 'log' may be null.
+// 'canon' and 'log' may be absent; "detail" may be null.
+//
+// If invoked with --capture, successful canonicalizations (status == 200)
+// will include two more entries in the dictionary, both string-valued:
+// "content" the text content of the page, and "render" a base64-ed PNG of
+// the rendering of the page.  These properties will be absent for
+// unsuccessful canonicalizations.
 
-var system = require('system');
-if (system.args.length < 2) {
-    console.error('Usage: phantomjs pj-trace-redir.js URL');
+function usage() {
+    console.error('Usage: phantomjs pj-trace-redir.js [--capture] URL');
     phantom.exit(1);
 }
-var address = system.args[1];
+
+var system = require('system');
+if (system.args.length < 2 || system.args.length > 3)
+    usage();
+var capture = (system.args[1] === "--capture");
+if (capture && system.args.length < 3)
+    usage();
+var address = capture ? system.args[2] : system.args[1];
+var redirs = { http: 0, html: 0, js: 0 };
+
 var page = require('webpage').create();
 
 // Log events as Phantom passes them back up.  The report we want has
@@ -38,7 +55,14 @@ function log_event(evt) {
 }
 
 function report() {
-    var final_url, status;
+    var final_url, status, output;
+
+    //console.log(JSON.stringify(probable_top_level_resources));
+
+    // this is an approximation, likely to be invalid in the presence
+    // of iframes
+    redirs.http = probable_top_level_resources.length -
+        (redirs.html + redirs.js);
 
     while ((final_url = probable_top_level_resources.pop())) {
         if (/^about:/.test(final_url))
@@ -48,24 +72,40 @@ function report() {
             continue;
 
         status = resource_status[final_url];
+        output = {
+            ourl:   address,
+            status: status.code,
+            detail: status.detail,
+            canon:  final_url,
+            redirs: redirs
+        };
+        if (capture && status.code === 200) {
+            output.content = page.content.replace(/\s+/g, " ");
+            output.render = page.renderBase64("PNG");
+        }
 
-        system.stdout.writeLine(JSON.stringify({
-            "status": status.code,
-            "detail": status.detail,
-            "canon": final_url
-        }));
+        system.stdout.writeLine(JSON.stringify(output));
         phantom.exit(0);
         return;
     }
 
     system.stdout.writeLine(JSON.stringify({
-        "status": "abnormal failure",
-        "detail": null,
-        "canon": null,
-        "log": event_log
+        ourl: address,
+        status: "abnormal failure",
+        detail: null,
+        redirs: redirs,
+        log: event_log
     }));
     phantom.exit(0);
 }
+
+// Despite the rise of widescreen, the equally meteoric rise of mobile
+// devices means that 1024 is still a very common screen width.  768
+// is, alas, still the single most common screen height.  If the page
+// is very tall, PJS will render all of it despite the viewport
+// height, so it is also necessary to set .clipRect.
+page.viewportSize = { width: 1024, height: 768 };
+page.clipRect = { top: 0, left: 0, width: 1024, height: 768 };
 
 // Global 9-minute timeout (just below isolate.c's 10-minute SIGKILL);
 // per-resource 30-second timeout.
@@ -92,7 +132,7 @@ if (!/ AppleWebKit\/534\.34 /.test(page.settings.userAgent)) {
     console.error("Unexpected stock user agent: " + page.settings.userAgent);
     phantom.exit(1);
 }
-// Pretend to be Chrome 27 on Windows.
+// Pretend to be Chrome 27 on Windows 7.
 page.settings.userAgent =
     'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) ' +
     'Chrome/27.0.1453.93 Safari/537.36';
@@ -128,8 +168,10 @@ page.onError = function(msg, trace) {
 //
 
 page.onLoadFinished = function(status) {
-    if (status === "success")
-        probable_top_level_resources.push(page.url);
+    if (status === "success") {
+        if (/^https?:/.test(page.url))
+            probable_top_level_resources.push(page.url);
+    }
 
     // Look for <meta refresh> and <link rel="canonical">.
     // If we find either of them, and they aren't circular, immediately
@@ -158,6 +200,7 @@ page.onLoadFinished = function(status) {
 
     if (html_redir_target && html_redir_target !== page.url) {
         log_event({ what: "html-redir", url: html_redir_target });
+        redirs.html += 1;
         page.open(html_redir_target);
         return;
     }
@@ -202,6 +245,7 @@ page.onNavigationRequested = function(url, type, willNavigate, main) {
         clearTimeout(really_loaded_timeout);
         really_loaded_timeout = null;
         log_event({what: "nav", url: url });
+        redirs.js += 1;
     }
 };
 page.onLoadStarted = function () {
@@ -209,6 +253,7 @@ page.onLoadStarted = function () {
         clearTimeout(really_loaded_timeout);
         really_loaded_timeout = null;
         log_event({what: "bounce", url: page.url });
+        redirs.js += 1;
     }
 };
 
@@ -236,7 +281,8 @@ page.onResourceRequested = function(requestData, networkRequest) {
 
     // There is no _good_ way of telling whether this is a top-level page
     // load.  This looks for HTML page loads (which could be for (i)frames).
-    if (requestData.method === "GET" &&
+    // JavaScript might cause POSTs.
+    if (/^https?:/.test(requestData.url) &&
         hasHeader(requestData.headers, "Accept",
                   "text/html,application/xhtml+xml,"+
                   "application/xml;q=0.9,*/*;q=0.8")) {
@@ -332,6 +378,4 @@ page.onResourceError = function(resourceError) {
 
 page.open(address);
 
-// Local Variables:
-// js2-additional-externs: ("require" "console" "phantom" "setTimeout" "clearTimeout")
-// End:
+/*global require, console, phantom, setTimeout, clearTimeout */

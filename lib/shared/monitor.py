@@ -77,30 +77,30 @@ class Monitor:
            the overall process is about to be suspended, it will block,
            and if the overall process is about to be terminated, it will
            exit the thread."""
+        if self._stop_event.is_set():
+            self._do_pause_or_stop()
 
-        if not self._stop_event.is_set():
-            # Raising SystemExit on a thread only terminates that
-            # thread.  The worker wrapper routine will take care of
-            # signaling an exit when all threads are done.
-            self.report_status("\x00")
-            raise SystemExit
+    def idle(self, timeout):
+        """Worker threads should call this method if they have nothing to
+           do for some fixed amount of time.  It behaves as time.sleep(),
+           but responds immediately to a pause or stop signaled during the
+           idle period."""
+        if self._stop_event.wait(timeout):
+            self._do_pause_or_stop()
 
-        # Pausing doesn't map nicely onto any available primitive.
-        # The desired logic is: at time 0, a controller thread raises
-        # the "please pause soon" flag and blocks itself; when all the
-        # worker threads have blocked, the controller becomes
-        # unblocked; at some later time the controller releases the
-        # workers.  The best available way to do this seems to be two
-        # events and a counter.
-        if not self._pause_event.is_set():
-            with self._counters_lock:
-                self._active_work_threads -= 1
-                if not self._active_work_threads:
-                    self._tasks.put((self._DONE, True))
-            self.report_status("\x00")
-            self._pause_event.wait()
-            with self._counters_lock:
-                self._active_work_threads += 1
+    def register_event_queue(self, queue, desired_stop_message):
+        """Threads that take work from an event queue, and may block
+           indefinitely on that queue, should register it by calling
+           this function; all such queues will get posted a special
+           message whenever the thread needs to call
+           maybe_pause_or_stop() in a timely fashion.
+
+           The special message is simply whatever the application
+           provides as the desired_stop_message argument.  This is so
+           the message can be made to conform to whatever scheme is in
+           use for other messages.
+        """
+        self._worker_event_queues.append( (queue, desired_stop_message) )
 
     def __init__(self, main, *args, banner="", **kwargs):
         try:
@@ -125,10 +125,9 @@ class Monitor:
 
             self._tasks = queue.PriorityQueue()
             self._stop_event = threading.Event()
-            self._pause_event = threading.Event()
-            # pause_event and stop_event are active low
-            self._stop_event.set()
-            self._pause_event.set()
+            self._resume_event = threading.Event()
+            # pause_event is active low
+            self._resume_event.set()
 
             self._output_thread = threading.current_thread()
             self._input_thread  = threading.Thread(
@@ -139,6 +138,7 @@ class Monitor:
             self._counters_lock = threading.Lock()
             self._n_work_threads = 0
             self._active_work_threads = 0
+            self._worker_event_queues = []
             self._worker_exceptions = {}
 
             # Terminal-related state.
@@ -390,6 +390,35 @@ class Monitor:
             self._line_attrs[i] = curses.A_BOLD
         self._do_redraw()
 
+    def _do_pause_or_stop(self):
+        if not self._resume_event.is_set():
+            # If the stop event is set and the resume event is clear,
+            # that means pause.  Pausing doesn't map nicely onto any
+            # available primitive.  The desired logic is: at time 0, a
+            # controller thread raises the "please pause soon" flag
+            # and blocks itself; when all the worker threads have
+            # blocked, the controller becomes unblocked; at some later
+            # time the controller releases the workers.  The best
+            # available way to do this seems to be two events and a
+            # counter.
+            with self._counters_lock:
+                self._active_work_threads -= 1
+                if not self._active_work_threads:
+                    self._tasks.put((self._DONE, True))
+            self.report_status("\x00")
+            self._resume_event.wait()
+            with self._counters_lock:
+                self._active_work_threads += 1
+
+        else:
+            # If both the stop and resume events are set, that means stop.
+            # Raising SystemExit on a thread only terminates that
+            # thread.  The worker wrapper routine will take care of
+            # signaling an exit when all threads are done.
+            self.report_status("\x00")
+            raise SystemExit
+
+
     def _do_suspend(self, signo, old_addmsg):
         def drain_input(fd):
             try:
@@ -408,7 +437,7 @@ class Monitor:
         drain_input(0)
         drain_input(self._sigpipe[0])
 
-        self._pause_event.set()
+        self._resume_event.set()
         self._addmsg = old_addmsg
         self._do_redraw()
 
@@ -420,6 +449,11 @@ class Monitor:
         signal.pthread_sigmask(signal.SIG_UNBLOCK, [signo])
         signal.signal(signo, signal.SIG_DFL)
         os.kill(self._pid, signo)
+
+    def _broadcast_stop(self):
+        for q, m in self._worker_event_queues:
+            q.put(m)
+        self._stop_event.set()
 
     def _output_thread_fn(self):
         self._scr.clear()
@@ -439,7 +473,8 @@ class Monitor:
 
                 elif task[0] == self._SUSPEND:
                     exit_signal = task[1]
-                    self._pause_event.clear()
+                    self._resume_event.clear()
+                    self._broadcast_stop()
 
                     # a _DONE message will be posted to the queue as soon
                     # as all worker threads respond to the pause event
@@ -449,7 +484,7 @@ class Monitor:
 
                 elif task[0] == self._EXIT:
                     exit_signal = task[1]
-                    self._stop_event.clear()
+                    self._broadcast_stop()
                     # a _DONE message will be posted to the queue as soon
                     # as all worker threads respond to the stop event
                     if exit_signal:
@@ -475,10 +510,10 @@ class Monitor:
             # Allow them to do so if we are already trying to stop, or we
             # might get stuck forever.
             except BaseException as e:
-                if not self._stop_event.is_set():
+                if self._stop_event.is_set():
                     raise
 
-                self._stop_event.clear()
+                self._broadcast_stop()
                 self._addmsg = ("*** {}:{} *** Crashing."
                                 .format(type(e).__name__, str(e)))
                 self._do_redraw()

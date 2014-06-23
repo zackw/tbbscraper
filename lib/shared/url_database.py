@@ -151,16 +151,72 @@ def add_url_string(db, url):
         raise TypeError("'db' argument must be a connection or cursor, not "
                         + type(db))
 
-    # Theoretically this could be done in one query with WITH and
-    # INSERT ... RETURNING, but it is convoluted enough that I don't
-    # believe it will be faster.  Alas.
-    cur.execute("SELECT id FROM url_strings WHERE url = %s", (url,))
-    row = cur.fetchone()
-    if row is not None:
-        id = row[0]
-    else:
-        cur.execute("INSERT INTO url_strings(id, url) VALUES(DEFAULT, %s) "
-                    "RETURNING id", (url,))
-        id = cur.fetchone()[0]
+    # Wrap the operation below in a savepoint, so that if it aborts
+    # (for instance, if the URL is too long) any outer transaction is
+    # not ruined.
+    try:
+        cur.execute("SAVEPOINT url_string_insertion")
 
-    return (id, url)
+        # Theoretically this could be done in one query with WITH and
+        # INSERT ... RETURNING, but it is convoluted enough that I don't
+        # believe it will be faster.  Alas.
+        cur.execute("SELECT id FROM url_strings WHERE url = %s", (url,))
+        row = cur.fetchone()
+        if row is not None:
+            id = row[0]
+        else:
+            cur.execute("INSERT INTO url_strings(id, url) VALUES(DEFAULT, %s) "
+                        "RETURNING id", (url,))
+            id = cur.fetchone()[0]
+        return (id, url)
+
+    except:
+        cur.execute("ROLLBACK TO SAVEPOINT url_string_insertion")
+        raise
+
+    finally:
+        cur.execute("RELEASE SAVEPOINT url_string_insertion")
+
+def categorize_result(status, original_uid, canon_uid):
+    if not isinstance(status, int):
+        if status == "N301" or status == "invalid URL":
+            return False, "invalid URL"
+        elif status == "N3" or status == "hostname not found":
+            return False, "hostname not found"
+        elif status.startswith("N"):
+            return False, "network or protocol error"
+        elif status == "timeout":
+            return False, "timeout"
+        elif status == "crawler failure":
+            return False, "crawler failure"
+
+        status = int(status)
+
+    if status == 200:
+        if canon_uid is None:
+            return False, "invalid URL"
+        elif original_uid == canon_uid:
+            return True, "ok"
+        else:
+            return True, "ok (redirected)"
+
+    if status == 502 or status == 504 or 520 <= status <= 529:
+        return False, "proxy error (502/504/52x)"
+    elif status == 500:
+        return False, "server error (500)"
+    elif status == 503:
+        return False, "service unavailable (503)"
+    elif status == 400:
+        return False, "bad request (400)"
+    elif status == 401:
+        return False, "authentication required (401)"
+    elif status == 403:
+        return False, "forbidden (403)"
+    elif status == 404 or status == 410:
+        return False, "page not found (404/410)"
+    elif status in (301, 302, 303, 307, 308):
+        return False, "redirection loop"
+    elif canon_uid is None:
+        return False, "invalid URL"
+    else:
+        return False, "other HTTP response"
