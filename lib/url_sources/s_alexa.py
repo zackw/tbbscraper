@@ -75,10 +75,11 @@ class AlexaExtractor:
         self.summary = None
 
     def __call__(self, mon, thr):
-        datestamp = time.strftime("%Y%m%d", time.gmtime())
+        datestamp = time.strftime("%Y-%m-%d", time.gmtime())
         db        = url_database.ensure_database(self.args)
         sitelist  = self.download_sitelist(mon, datestamp)
         self.process_sitelist(mon, db, sitelist, datestamp)
+        self.update_canon_queue(mon, db)
 
     def download_sitelist(self, mon, datestamp):
         # We hardwire the knowledge that Alexa only updates this once a
@@ -87,8 +88,10 @@ class AlexaExtractor:
 
         cached_csv = os.path.join(self.args.cache,
                                   basename + "-" + datestamp + ext + ".gz")
-        if os.path.isfile(cached_csv):
-            return cached_csv
+        ci_csv = os.path.join(self.args.cache,
+                              "imported-" + datestamp + ext + ".gz")
+        if os.path.isfile(cached_csv) or os.path.isfile(ci_csv):
+            return cached_csv, ci_csv
 
         mon.report_status("Downloading list...")
         with contextlib.closing(io.BytesIO()) as mbuf:
@@ -102,6 +105,7 @@ class AlexaExtractor:
                     sofar += len(block)
                     mon.report_status("Downloading list: {1:>{0}}/{2} bytes..."
                                       .format(npad, sofar, total))
+                    mon.maybe_pause_or_stop()
 
             mbuf.seek(0)
             mon.report_status("Recompressing {}...".format(cached_csv))
@@ -117,10 +121,10 @@ class AlexaExtractor:
                     n += 1
 
         os.rename(cached_csv+".tmp", cached_csv)
-        return cached_csv
+        return cached_csv, ci_csv
 
     @staticmethod
-    def add_urls_from_site(cur, site, ordinal, oid, already_seen):
+    def add_urls_from_site(cur, site, rank, datestamp, batch, already_seen):
         # Subroutine of process_sitelist.
         #
         # Alexa's "site" list has two different kinds of
@@ -148,16 +152,11 @@ class AlexaExtractor:
         # expected to notice that the domain even exists.
         # But there's nothing we can do about that.
         #
-        # Because the database schema requires the ordinal+oid to be
-        # unique, we shift the ordinal left three bits to make room
-        # for a prefix index and an indication of whether or not there
-        # was a path component.
-        #
         # It does not make sense to prepend 'www.' if 'site' already
         # starts with 'www.' or if it is an IP address.
 
-        parsed = url_database.canon_url_syntax(
-            urllib.parse.urlsplit("http://" + site))
+        parsed = url_database.canon_url_syntax("http://" + site,
+                                               want_splitresult=True)
 
         assert parsed.path != ""
         if parsed.path != "/":
@@ -167,8 +166,8 @@ class AlexaExtractor:
             root = parsed
             need_path = False
 
-        urls = [ (0, root.geturl()),
-                 (1, to_https(root).geturl()) ]
+        urls = [ root.geturl(),
+                 to_https(root).geturl() ]
 
         host = root.hostname
         if no_www_re.match(host):
@@ -176,71 +175,78 @@ class AlexaExtractor:
         else:
             need_www = True
             with_www = add_www(root)
-            urls.extend([ (2, with_www.geturl()),
-                          (3, to_https(with_www).geturl()) ])
+            urls.extend([ with_www.geturl(),
+                          to_https(with_www).geturl() ])
 
 
         if need_path:
-            urls.extend([ (4, parsed.geturl()),
-                          (5, to_https(parsed).geturl()) ])
+            urls.extend([ parsed.geturl(),
+                          to_https(parsed).geturl() ])
 
             if need_www:
                 with_www = add_www(parsed)
-                urls.extend([ (6, with_www.geturl()),
-                              (7, to_https(with_www).geturl()) ])
+                urls.extend([ with_www.geturl(),
+                              to_https(with_www).geturl() ])
 
-        ordinal = int(ordinal) * 8
-
-        nnew = 0
-        for tag, url in urls:
+        for url in urls:
             (uid, url) = url_database.add_url_string(cur, url)
             if url in already_seen:
                 continue
+            batch.append( (uid, rank, datestamp) )
             already_seen.add(url)
 
-            # We want to add an url-table entry for this URL even if it's
-            # already there from some other source; we only drop them if
-            # they are redundant within this data set.  However, in case
-            # the database-loading operation got interrupted midway,
-            # do an INSERT OR IGNORE.
-            cur.execute("INSERT OR IGNORE INTO urls VALUES(?, ?, ?)",
-                        (oid, ordinal + tag, uid))
-            nnew += 1
+    def flush_batch(self, db, cur, batch):
+        batch_str = b",".join(cur.mogrify("(%s,%s,%s)", row) for row in batch)
+        cur.execute(b"INSERT INTO urls_alexa (url, rank, retrieval_date) "
+                    b"VALUES " + batch_str)
+        db.commit()
 
-        return nnew
-
-    def process_sitelist(self, mon, db, sitelist_name, datestamp):
+    def process_sitelist(self, mon, db, sitelist_names, datestamp):
         # sometimes the same site is on the list in several different guises
         already_seen = set()
 
+        todo_name, done_name = sitelist_names
+        if not os.path.isfile(todo_name):
+            assert os.path.isfile(done_name)
+            return
+
+        cur = db.cursor()
+        with gzip.GzipFile(todo_name, "r") as sitelist:
+            nurls = 0
+            batch = []
+            for line in sitelist:
+                rank, _, site = line.decode("ascii").partition(",")
+                site = site.rstrip()
+                self.add_urls_from_site(cur, site, rank, datestamp,
+                                        batch, already_seen)
+                n = len(batch)
+                if n > 10000:
+                    self.flush_batch(db, cur, batch)
+                    nurls += n
+                    mon.report_status("Loaded {:>8} URLs from {:>7} sites | {}"
+                                      .format(nurls, rank, site[:35]))
+                    mon.maybe_pause_or_stop()
+                    batch = []
+
+        db.commit()
+        os.rename(todo_name, done_name)
+
+    def update_canon_queue(self, mon, db):
         cur = db.cursor()
 
-        # First, create our entry in the origins table.  We don't need
-        # a metadata table; all of the available meta-information is
-        # captured by the source name (with its embedded date stamp)
-        # and the ordinal within Alexa's list, which is what we use
-        # for the origin_id.
-        label = ("alexa_" + datestamp,)
-        cur.execute("SELECT id FROM origins WHERE label = ?", label)
-        row = cur.fetchone()
-        if row is not None:
-            oid = row[0]
-        else:
-            cur.execute("INSERT INTO origins VALUES(NULL, ?)", label)
-            oid = cur.lastrowid
-            db.commit()
+        mon.report_status("Flushing duplicates...")
+        # The urls_alexa table doesn't have any uniquifier.
+        # Flush any duplicate rows that may have occurred.
+        cur.execute(
+            'DELETE FROM urls_alexa WHERE ctid IN (SELECT ctid FROM ('
+            '  SELECT ctid, row_number() OVER ('
+            '    PARTITION BY url,rank,retrieval_date'
+            '    ORDER BY ctid) AS rnum FROM urls_alexa) t'
+            '  WHERE t.rnum > 1)')
+        db.commit()
 
-        with gzip.GzipFile(sitelist_name, "r") as sitelist:
-            nurls = 0
-            last_commit = 0
-            for line in sitelist:
-                ordinal, _, site = line.decode("ascii").partition(",")
-                site = site.rstrip()
-                nurls += self.add_urls_from_site(cur, site, ordinal, oid,
-                                                 already_seen)
-                mon.report_status("Loaded {:>8} URLs from {:>7} sites | {}"
-                                 .format(nurls, ordinal, site[:35]))
-                mon.maybe_pause_or_stop()
-                if nurls - last_commit > 10000:
-                    db.commit()
-                    last_commit = nurls
+        mon.report_status("Adding URLs to be canonicalized...")
+        cur.execute("INSERT INTO canon_urls (url) "
+                    "  SELECT DISTINCT url FROM urls_alexa"
+                    "  EXCEPT SELECT url FROM canon_urls")
+        db.commit()

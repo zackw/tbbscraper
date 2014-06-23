@@ -24,7 +24,7 @@ import requests.exceptions
 import sys
 import time
 
-from shared.url_database import ensure_database
+from shared import url_database
 from shared.monitor import Monitor
 
 class HerdictExtractor:
@@ -34,7 +34,7 @@ class HerdictExtractor:
         self.summary = None
 
     def __call__(self, mon, thr):
-        db, oid, start_date, end_date = self.prepare_database()
+        db, start_date, end_date = self.prepare_database()
         self.db = db
         cur = db.cursor()
         pageq = queue.Queue()
@@ -49,8 +49,8 @@ class HerdictExtractor:
         while True:
             page = pageq.get()
             if not page:
-                db.commit()
                 break
+            batch = []
             for row in page:
                 if ("url" not in row or
                     "reportDate" not in row or
@@ -70,29 +70,17 @@ class HerdictExtractor:
                     url = "HTTP://" + url
                 else:
                     url = row["protocol"] + "://" + url
+
+                # Herdict reports have several more keys than this,
+                # but none of them appear to be terribly trustworthy.
                 accessible = (row["reportType"] != "INACCESSIBLE")
                 if "country" in row and "shortName" in row["country"]:
                     country = row["country"]["shortName"]
                 else:
                     country = "??"
 
-                # It is a damned shame that there is no way to do this
-                # in one SQL operation.
-                cur.execute("SELECT id FROM url_strings WHERE url = ?",
-                            (url,))
-                uid = cur.fetchone()
-                if uid is not None:
-                    uid = uid[0]
-                else:
-                    cur.execute("INSERT INTO url_strings VALUES(NULL, ?)",
-                                (url,))
-                    uid = cur.lastrowid
-
-                rid = cur.execute("INSERT INTO herdict_reports "
-                                  "VALUES (NULL,?,?,?)",
-                                  (timestamp, accessible, country)).lastrowid
-                cur.execute("INSERT INTO urls VALUES(?,?,?)",
-                            (oid, rid, uid))
+                (uid, url) = url_database.add_url_string(cur, url)
+                batch.append((uid, timestamp, accessible, country))
 
                 n_total += 1
                 if accessible: n_accessible += 1
@@ -106,9 +94,30 @@ class HerdictExtractor:
                               "{} accessible, {} inaccessible; checkpointing"
                               .format(n_total, n_accessible,
                                       n_inaccessible))
+
+            cur.execute(b"INSERT INTO urls_herdict "
+                        b"(url, \"timestamp\", accessible, country) VALUES "
+                        + b",".join(cur.mogrify("(%s,%s,%s,%s)", row)
+                                    for row in batch))
             db.commit()
             mon.maybe_pause_or_stop()
 
+        mon.report_status("Flushing duplicates...")
+        # The urls_herdict table doesn't have any uniquifier.
+        # Flush any duplicate rows that may have occurred.
+        cur.execute(
+            'DELETE FROM urls_herdict WHERE ctid IN (SELECT ctid FROM ('
+            '  SELECT ctid, row_number() OVER ('
+            '    PARTITION BY url,"timestamp",accessible,country'
+            '    ORDER BY ctid) AS rnum FROM urls_herdict) t'
+            '  WHERE t.rnum > 1)')
+        db.commit()
+
+        mon.report_status("Adding URLs to be canonicalized...")
+        cur.execute("INSERT INTO canon_urls (url) "
+                    "  SELECT DISTINCT url FROM urls_herdict"
+                    "  EXCEPT SELECT url FROM canon_urls")
+        db.commit()
         self.summary = (lo_timestamp, hi_timestamp,
                         n_total, n_accessible, n_inaccessible)
 
@@ -116,79 +125,27 @@ class HerdictExtractor:
         if not self.summary: return
         f = sys.stdout
         s = self.summary
-        f.write("Earliest report: {}\n".format(time.ctime(s[0])))
-        f.write("Latest report:   {}\n".format(time.ctime(s[1])))
+        f.write("Earliest report: {}\n".format(time.ctime(s[1])))
+        f.write("Latest report:   {}\n".format(time.ctime(s[0])))
         f.write("Processed {} urls; {} accessible, {} inaccessible\n"
                 .format(s[2], s[3], s[4]))
 
     def prepare_database(self):
-        # Herdict reports have several more keys than this, but none
-        # of them appear to be terribly trustworthy.
-        herdict_schema = """\
-CREATE TABLE herdict_reports (
-    uid         INTEGER PRIMARY KEY,
-    timestamp   INTEGER,
-    accessible  INTEGER, -- (boolean)
-    country     TEXT
-);
-CREATE INDEX herdict_reports__timestamp ON herdict_reports(timestamp);
-"""
-        db = ensure_database(self.args)
-        with db:
-            # FIXME: More sophisticated way of detecting presence of our
-            # ancillary schema.
-            s_tables = frozenset(re.findall("(?m)(?<=^CREATE TABLE )[a-z_]+",
-                                            herdict_schema))
-            s_indices = frozenset(re.findall("(?m)(?<=^CREATE INDEX )[a-z_]+",
-                                             herdict_schema))
-            d_tables = frozenset(r[0] for r in db.execute(
-                    "SELECT name FROM sqlite_master WHERE "
-                    "  type = 'table' AND name LIKE 'herdict_%'"))
-            d_indices = frozenset(r[0] for r in db.execute(
-                    "SELECT name FROM sqlite_master WHERE "
-                    "  type = 'index' AND name LIKE 'herdict_%'"))
+        db = url_database.ensure_database(self.args)
+        cur = db.cursor()
+        # Find the latest date already in the table.  We don't
+        # need to process dates before that point.
+        cur.execute("SELECT coalesce(max(timestamp), 0) "
+                    "FROM urls_herdict")
+        start_date = cur.fetchone()[0];
+        if start_date == 0:
+            start_date = None
+        else:
+            start_date = (datetime.date.fromtimestamp(start_date)
+                          .strftime("%Y-%m-%d"))
 
-            if not d_tables and not d_indices:
-                db.executescript(herdict_schema)
-                db.commit()
-            elif d_tables != s_tables or d_indices != s_indices:
-                raise RuntimeError("ancillary schema mismatch - "
-                                   "migration needed")
-
-            oid = db.execute("SELECT id FROM origins"
-                             "  WHERE label = 'herdict'").fetchone()
-            if oid is None:
-                oid = db.execute("INSERT INTO origins"
-                                 "  VALUES(NULL, 'herdict')").lastrowid
-            else:
-                oid = oid[0]
-
-            # Find the latest date already in the table.  We don't
-            # need to process dates before that point.  Note that
-            # Herdict's fsd= and fed= parameters are both inclusive, so
-            # we need to step to the next day.
-            db.execute("ANALYZE");
-            start_date = db.execute("SELECT COALESCE(MIN(timestamp), 0) "
-                                    "FROM herdict_reports").fetchone()[0];
-            if start_date == 0:
-                start_date = None
-            else:
-                start_date = ((datetime.date.fromtimestamp(start_date)
-                               + datetime.timedelta(days=1))
-                              .strftime("%Y-%m-%d"))
-
-        # Herdict raw reports do not have serial numbers, and the API
-        # only lets you ask for reports up to a certain _date_, not a
-        # date and time.  So, to avoid ever getting duplicate dates
-        # upon requerying the API, ask for reports up to and including
-        # yesterday (UTC).  Note that datetime.date seems to be
-        # unaware that "today (local)" and "today (UTC)" are not the
-        # same thing, feh.
-        end_date = ((datetime.datetime.utcnow()
-                     - datetime.timedelta(days=1))
-                    .strftime("%Y-%m-%d"))
-
-        return db, oid, start_date, end_date
+        end_date = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        return db, start_date, end_date
 
 class HerdictReader:
     def __init__(self, pageq, start_date, end_date):

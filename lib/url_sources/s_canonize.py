@@ -15,10 +15,6 @@ def setup_argp(ap):
     ap.add_argument("-p", "--parallel",
                     action="store", dest="parallel", type=int, default=10,
                     help="number of simultaneous HTTP requests to issue")
-    ap.add_argument("-w", "--work-queue",
-                    action="store", dest="work_queue",
-                    help="File to read the work queue from "
-                    "(instead of taking it directly from the database)")
 
 def run(args):
     os.environ["PYTHONPATH"] = sys.path[0]
@@ -26,6 +22,7 @@ def run(args):
     curses.wrapper(cw)
     cw.report_final_statistics()
 
+import contextlib
 import curses
 import json
 import os
@@ -37,6 +34,7 @@ import sys
 import tempfile
 import time
 
+from psycopg2 import DatabaseError
 from shared import url_database
 
 pj_trace_redir = os.path.realpath(os.path.join(
@@ -249,6 +247,7 @@ class CanonizeWorker:
         self.in_progress = {}
 
         # Statistics counters.
+        self.total       = 0
         self.processed   = 0
         self.successes   = 0
         self.failures    = 0
@@ -256,10 +255,8 @@ class CanonizeWorker:
 
     def __exit__(self, *_):
         for job in self.in_progress.values():
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 job.terminate()
-            except ProcessLookupError:
-                pass
         self.db.commit()
 
     def __call__(self, screen):
@@ -287,11 +284,11 @@ class CanonizeWorker:
 
     def report_overall_progress(self):
         if self.processed == 0:
-            self.report_progress("Processing URLs...")
+            self.report_progress("Processing {} URLs...".format(self.total))
         else:
-            msg = (("Processed {} URLs: {} canonized, "
+            msg = (("Processed {} of {} URLs: {} canonized, "
                     "{} failures, {} anomalies")
-                   .format(self.processed,
+                   .format(self.processed, self.total,
                            self.successes, self.failures, self.anomalies))
             self.report_progress(msg)
 
@@ -335,24 +332,16 @@ class CanonizeWorker:
         self.report_progress("Loading database...")
         self.db = url_database.ensure_database(self.args)
 
-        cr = self.db.cursor()
-        # Cache the status table in memory; it's reasonably small.
-        self.report_progress("Loading database... (canon statuses)")
-        cr.execute("SELECT detail, id FROM canon_statuses;")
-        self.canon_statuses = { row.detail: row.id for row in cr }
+        with self.db, self.db.cursor() as cr:
+            # Cache the status table in memory; it's reasonably small.
+            self.report_progress("Loading database... (canon statuses)")
+            cr.execute("SELECT detail, id FROM canon_statuses")
+            self.canon_statuses = { row.detail: row.id for row in cr }
 
-        if self.args.work_queue:
-            self.todo = open(self.args.work_queue, "rb")
-        else:
-            self.report_progress("Loading database... (work queue)")
-            self.todo = tempfile.TemporaryFile("w+b")
-            cr.copy_expert(
-                "COPY (SELECT u.url, v.url"
-                "  FROM canon_urls u JOIN url_strings v ON u.url = v.id"
-                "  WHERE u.result IS NULL"
-                ") TO STDOUT (DELIMITER '|')",
-                self.todo)
-            self.todo.seek(0)
+            self.report_progress("Loading database... (sizing queue)")
+            cr.execute("SELECT COUNT(*) FROM canon_urls"
+                       "  WHERE result IS NULL")
+            self.total = cr.fetchone()[0]
 
     def record_anomaly(self, result, exc=None):
         self.anomalies += 1
@@ -365,63 +354,9 @@ class CanonizeWorker:
                         "_6_anomaly": result.anomaly
                         })))
 
-    def categorize_result(self, result, canon_id):
-        if not isinstance(result.status, int):
-            if result.status == "N301" or result.status == "invalid URL":
-                return False, "invalid URL"
-            elif result.status == "N3" or result.status == "hostname not found":
-                return False, "hostname not found"
-            elif result.status.startswith("N"):
-                return False, "network or protocol error"
-            elif result.status == "timeout":
-                return False, "timeout"
-            elif result.status == "crawler failure":
-                return False, "crawler failure"
-
-            result.status = int(result.status)
-
-        s = result.status
-        if s == 200:
-            if canon_id is None:
-                return False, "invalid URL"
-            elif result.original_uid == canon_id:
-                return True, "ok"
-            else:
-                return True, "ok (redirected)"
-
-        if s == 502 or s == 504 or 520 <= s <= 529:
-            return False, "proxy error (502/504/52x)"
-        elif s == 500:
-            return False, "server error (500)"
-        elif s == 503:
-            return False, "service unavailable (503)"
-        elif s == 400:
-            return False, "bad request (400)"
-        elif s == 401:
-            return False, "authentication required (401)"
-        elif s == 403:
-            return False, "forbidden (403)"
-        elif s == 404 or s == 410:
-            return False, "page not found (404/410)"
-        elif s in (301, 302, 303, 307, 308):
-            return False, "redirection loop"
-        elif canon_id is None:
-            return False, "invalid URL"
-        else:
-            return False, "other HTTP response"
-
     def record_canonized(self, result):
-        try:
-            self.processed += 1
-            cr = self.db.cursor()
-            status_id = self.canon_statuses.get(result.detail)
-            if status_id is None and result.detail is not None:
-                cr.execute("INSERT INTO canon_statuses(id, detail) "
-                           "  VALUES(DEFAULT, %s)"
-                           "  RETURNING id", (result.detail,))
-                status_id = cr.fetchone()[0]
-                self.canon_statuses[result.detail] = status_id
-
+        self.processed += 1
+        with self.db, self.db.cursor() as cr:
             canon_id = None
             if result.canon_url is not None:
                 try:
@@ -432,7 +367,24 @@ class CanonizeWorker:
                     # ill-formed, like "httpons://host" or "http:/".
                     pass
 
-            success, hlresult = self.categorize_result(result, canon_id)
+                except DatabaseError as e:
+                    # This happens, for instance, when the canon URL is
+                    # so long that postgres refuses to index it.
+                    result.status = "crawler failure"
+                    result.detail = str(e)
+
+            status_id = self.canon_statuses.get(result.detail)
+            if status_id is None and result.detail is not None:
+                cr.execute("INSERT INTO canon_statuses(id, detail) "
+                           "  VALUES(DEFAULT, %s)"
+                           "  RETURNING id", (result.detail,))
+                status_id = cr.fetchone()[0]
+                self.canon_statuses[result.detail] = status_id
+
+            success, hlresult = \
+                url_database.categorize_result(result.status,
+                                               result.original_uid,
+                                               canon_id)
 
             if success:
                 self.successes += 1
@@ -456,39 +408,31 @@ class CanonizeWorker:
                          'result': hlresult,
                          'detail': status_id })
 
-            if self.processed % 1000 == 0:
-                self.db.commit()
+    def next_batch(self):
+        with self.db, self.db.cursor() as cr:
+            cr.execute("SELECT u.url AS uid, v.url AS url"
+                       "  FROM canon_urls u, url_strings v"
+                       " WHERE u.url = v.id"
+                       "   AND u.result IS NULL"
+                       " LIMIT 500")
+            return cr.fetchall()
 
-        except Exception as e:
-            self.report_result(result, "bogus")
-            self.record_anomaly(result, e)
+    def urls_todo(self):
+        while True:
+            batch = self.next_batch()
+            if not batch: break
+            for b in batch: yield b
 
     def main_loop(self):
         self.report_overall_progress()
 
         all_read = False
+        urls_todo = self.urls_todo()
 
         while self.in_progress or not all_read:
             while not all_read and len(self.in_progress) < self.args.parallel:
 
-                try:
-                    raw_line = self.todo.readline()
-                    if not raw_line:
-                        all_read = True
-                        break
-
-                    uid, url = raw_line.split(b'|', 1)
-                    uid = int(uid)
-                    url = url.strip().decode("unicode_escape")
-
-                except Exception as e:
-                    self.anomalies += 1
-                    self.bogus_results.write("{}\n".format(json.dumps({
-                        "exception": repr(e),
-                        "raw_line": repr(raw_line)
-                    })))
-                    continue
-
+                uid, url = next(urls_todo)
                 task = CanonTask(uid, url)
                 task.idx = self.assign_display_index(task.original_url)
                 if task.pid is None:
@@ -503,7 +447,9 @@ class CanonizeWorker:
 
             task = self.in_progress.pop(pid)
             task.pickup_results(status)
-            self.record_canonized(task)
 
-        self.db.commit()
-
+            try:
+                self.record_canonized(task)
+            except Exception as e:
+                self.report_result(result, "bogus")
+                self.record_anomaly(result, e)

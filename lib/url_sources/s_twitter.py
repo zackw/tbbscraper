@@ -65,9 +65,9 @@ def run(args):
         'resume':   resume_extraction
     }
     args.seed = " ".join(args.seed)
-    db, oid = ensure_database(args)
+    db = url_database.ensure_database(args)
     twi = connect_to_twitter_api()
-    extractor = extractors[args.mode](args, db, oid, twi)
+    extractor = extractors[args.mode](args, db, twi)
     extractor.run()
 
 import calendar
@@ -83,19 +83,7 @@ import time
 import twython
 import urllib.parse
 
-# debugging
-#import requests
-#import logging
-#import http.client
-#http.client.HTTPConnection.debuglevel = 1
-
-#logging.basicConfig() # you need to initialize logging, otherwise you will not see anything from requests
-#logging.getLogger().setLevel(logging.DEBUG)
-#requests_log = logging.getLogger("requests.packages.urllib3")
-#requests_log.setLevel(logging.DEBUG)
-#requests_log.propagate = True
-
-import shared.url_database
+from shared import url_database
 
 def fatal(message, *args, **kwargs):
     import os.path
@@ -110,87 +98,13 @@ def connect_to_twitter_api():
     (app_key, app_secret, oauth_token, oauth_secret) = cred.split()
     return twython.Twython(app_key, app_secret, oauth_token, oauth_secret)
 
-def ensure_database(args):
-    twitter_schema = """\
-CREATE TABLE twitter_users (
-    uid                 INTEGER PRIMARY KEY,
-    created_at          INTEGER,
-    verified            INTEGER,
-    protected           INTEGER,
-    highest_tweet_seen  INTEGER,
-    screen_name         TEXT,
-    full_name           TEXT,
-    lang                TEXT,
-    location            TEXT,
-    description         TEXT
-);
-CREATE INDEX twitter_users__sn ON twitter_users(screen_name);
 
-CREATE TABLE twitter_relations (
-    follow_from INTEGER NOT NULL REFERENCES twitter_users(uid),
-    follow_to   INTEGER NOT NULL REFERENCES twitter_users(uid)
-);
-CREATE INDEX twitter_relations__from ON twitter_relations(follow_from);
-CREATE INDEX twitter_relations__to ON twitter_relations(follow_to);
-
-CREATE TABLE twitter_tweets (
-    tid                INTEGER PRIMARY KEY,
-    uid                INTEGER NOT NULL REFERENCES twitter_users(uid),
-    timestamp          INTEGER,
-    retweets           INTEGER,
-    possibly_sensitive INTEGER,
-    lang               TEXT,
-    withheld           TEXT,
-    hashtags           TEXT
-);
-
-CREATE TABLE twitter_scans (
-    scan               INTEGER PRIMARY KEY,
-    mode               TEXT    NOT NULL,
-    limit_             INTEGER NOT NULL,
-    parallel           INTEGER NOT NULL,
-    seed               TEXT,
-    state              BLOB
-);
-"""
-
-    db = shared.url_database.ensure_database(args)
-    with db:
-        # FIXME: More sophisticated way of detecting presence of our
-        # ancillary schema.
-        s_tables = frozenset(re.findall("(?m)(?<=^CREATE TABLE )[a-z_]+",
-                                        twitter_schema))
-        s_indices = frozenset(re.findall("(?m)(?<=^CREATE INDEX )[a-z_]+",
-                                         twitter_schema))
-        d_tables = frozenset(r[0] for r in db.execute(
-                "SELECT name FROM sqlite_master WHERE "
-                "  type = 'table' AND name LIKE 'twitter_%'"))
-        d_indices = frozenset(r[0] for r in db.execute(
-                "SELECT name FROM sqlite_master WHERE "
-                "  type = 'index' AND name LIKE 'twitter_%'"))
-
-        if not d_tables and not d_indices:
-            db.executescript(twitter_schema)
-            db.commit()
-
-        elif d_tables != s_tables or d_indices != s_indices:
-            raise RuntimeError("ancillary schema mismatch - migration needed")
-
-        oid = db.execute("SELECT id FROM origins"
-                         "  WHERE label = 'twitter'").fetchone()
-        if oid is None:
-            oid = db.execute("INSERT INTO origins"
-                             "  VALUES(NULL, 'twitter')").lastrowid
-        else:
-            oid = oid[0]
-
-        return db, oid
-
-def dump_resumables_and_exit(db):
-    resumable = db.execute("SELECT scan, mode, limit_, parallel, seed "
-                           "FROM twitter_scans "
-                           "WHERE state NOT NULL "
-                           "ORDER BY mode").fetchall()
+def dump_resumables_and_exit(cur):
+    cur.execute("SELECT scan, mode, limit_, parallel, seed "
+                "FROM twitter_scans "
+                "WHERE state NOT NULL "
+                "ORDER BY mode")
+    resumable = cur.fetchall()
     if not resumable:
         fatal("{prog}: No scans can be resumed.")
 
@@ -222,22 +136,23 @@ def dump_resumables_and_exit(db):
     fatal("Use '{prog} twitter resume SCAN' to resume an "
           "interrupted scan.")
 
-def resume_extraction(args, db, oid, twi):
+def resume_extraction(args, cur, twi):
     if not args.seed:
         dump_resumables_and_exit(db)
 
     if len(args.seed) > 1:
         fatal("{prog}: too many arguments for 'twitter resume' mode")
 
-    state = db.execute("SELECT * FROM twitter_scans WHERE scan = ?",
-                       (args.seed[0],)).fetchall()
+    cur.execute("SELECT * FROM twitter_scans WHERE scan = ?",
+                (args.seed[0],))
+    state = cur.fetchall()
     assert len(state) <= 1
     if not state:
         fatal("{prog}: no scan '{scan}' to resume.\n"
               "Use '{prog} twitter resume' with no further arguments "
               "for a list of resumable scans.", scan=args.seed[0])
 
-    extractor = Extractor.reload(args, db, oid, twi, *state[0])
+    extractor = Extractor.reload(args, db, twi, *state[0])
     return extractor
 
 class Extractor:
@@ -245,10 +160,10 @@ class Extractor:
        call Extractor.__init__ at the _end_ of their own __init__
        (if they need one), because it does an immediate checkpoint
        (via set_scan_number)."""
-    def __init__(self, args, db, oid, twi):
+    def __init__(self, args, db, twi):
         self.twi      = twi
         self.db       = db
-        self.oid      = oid
+        self.cr       = db.cursor()
         self.db_name  = args.database
         self.mode     = args.mode
         self.limit    = args.limit
@@ -261,7 +176,7 @@ class Extractor:
         # Don't attempt to pickle the database handle, the Twitter API
         # handle, or anything that is stored in the database already.
         state = self.__dict__.copy()
-        for k in ('twi', 'db', 'db_name', 'oid',
+        for k in ('twi', 'db', 'db_name',
                   'mode', 'limit', 'parallel', 'seed',
                   'scanno', 'last_checkpoint'):
             try: del state[k]
@@ -270,14 +185,13 @@ class Extractor:
         return state
 
     @classmethod
-    def reload(cls, args, db, oid, twi,
+    def reload(cls, args, db, twi,
                scan, mode, limit, parallel, seed, state):
         this = pickle.loads(state)
         assert isinstance(this, cls)
 
         this.twi      = twi
         this.db       = db
-        this.oid      = oid
         this.db_name  = args.database
         this.scanno   = scan
         this.mode     = mode
@@ -296,71 +210,51 @@ class Extractor:
         return this
 
     def set_scanno(self):
-        cur = self.db.execute("INSERT INTO twitter_scans "
-                              "VALUES (NULL, ?, ?, ?, ?, ?)",
-                              (self.mode, self.limit, self.parallel, self.seed,
-                               pickletools.optimize(pickle.dumps(self))))
-        self.scanno = cur.lastrowid
+        self.cur.execute("INSERT INTO twitter_scans "
+                         "VALUES (DEFAULT, %s, %s, %s, %s, %s)"
+                         "RETURNING scan",
+                         (self.mode, self.limit, self.parallel, self.seed,
+                          pickletools.optimize(pickle.dumps(self))))
+        self.scanno = self.cur.fetchone()[0]
         self.db.commit()
 
     def checkpoint(self):
-        self.db.execute("UPDATE twitter_scans SET state = ? WHERE scan = ?",
-                        (pickletools.optimize(pickle.dumps(self)), self.scanno))
+        self.cur.execute("UPDATE twitter_scans SET state = %s WHERE scan = %s",
+                         (pickletools.optimize(pickle.dumps(self)),
+                          self.scanno))
         self.db.commit()
 
     def complete(self):
-        self.db.execute("UPDATE twitter_scans SET state = NULL WHERE scan = ?",
-                        (self.scanno,))
+        self.cur.execute(
+            "UPDATE twitter_scans SET state = NULL WHERE scan = %s",
+            (self.scanno,))
         self.db.commit()
 
     def abandon(self, message, *args, **kwargs):
-        self.db.execute("DELETE FROM twitter_scans WHERE scan = ?",
+        self.cur.execute("DELETE FROM twitter_scans WHERE scan = %s",
                         (self.scanno,))
         self.db.commit()
         fatal(message, *args, **kwargs)
 
-    def note_url(self, url, source, sid):
-        """Record one URL in the database."""
+    def ensure_user(self, *, uid=None, screen_name=None, row=None):
+        """Make sure the user with the given UID (or screen name, or
+           preloaded row vector, but no more than one of these) has an
+           entry in the twitter_users table.  Does NOT load this
+           user's relations.  Returns the row vector for the user."""
+
+        assert (uid is None) + (screen_name is None) + (row is None) == 2
         cur = self.db.cursor()
-        # It is a damned shame that there is no way to do this
-        # in one SQL operation.
-        cur.execute("SELECT id FROM url_strings WHERE url = ?",
-                    (url,))
-        row = cur.fetchone()
-        if row is not None:
-            uid = row[0]
-        else:
-            cur.execute("INSERT INTO url_strings VALUES(NULL, ?)",
-                        (url,))
-            uid = cur.lastrowid
 
-        # We currently only have two sources: 'user' and 'tweet'.
-        # Leave number space for a few more, though.
-        assert source == 'tweet' or source == 'user'
-        if source == 'tweet': stag = 0
-        else: stag = 1
-        sid = (sid << 4) | stag
-
-        # We may well encounter the same URL triplet multiple times, e.g.
-        # due to retweeting.
-        cur.execute("INSERT OR IGNORE INTO urls VALUES(?, ?, ?)",
-                    (self.oid, sid, uid))
-
-    def ensure_user(self, uid=None, screen_name=None):
-        """Make sure the user with the given UID (or screen name, but
-           not both) has an entry in the twitter_users table.
-           Does NOT load this user's relations.
-           Returns the row vector for the user."""
-
-        assert ((uid is not None and screen_name is None) or
-                (uid is None and screen_name is not None))
         if uid is not None:
             row = self.db.execute("SELECT * FROM twitter_users"
                                   "  WHERE uid = ?", (uid,)).fetchone()
-        else:
+        elif screen_name is not None:
             row = self.db.execute("SELECT * FROM twitter_users"
                                   "  WHERE screen_name = ?",
                                   (screen_name,)).fetchone()
+        else:
+            pass
+            
         if row is not None:
             return row
 
@@ -395,7 +289,6 @@ class Extractor:
            they contain URLs."""
 
         entities = t.get("entities", {})
-
         urls = entities.get("urls", [])
         if not urls:
             return
@@ -452,7 +345,7 @@ class Extractor:
         raise NotImplementedError
 
 class SingleExtractor(Extractor):
-    def __init__(self, args, db, oid, twi):
+    def __init__(self, args, db, twi):
         if not args.seed:
             fatal("{prog}: Must specify a Twitter handle from which to begin.")
 
@@ -460,7 +353,6 @@ class SingleExtractor(Extractor):
             # replicated from Extractor.__init__ to allow ensure_user to work
             self.db = db
             self.twi = twi
-            self.oid = oid
             user = self.ensure_user(screen_name=args.seed)
         except twython.TwythonError as e:
             # most likely scenario:
@@ -471,7 +363,7 @@ class SingleExtractor(Extractor):
         self.since_id     = user[4]
         self.new_since_id = 0
         self.max_id       = None
-        Extractor.__init__(self, args, db, oid, twi)
+        Extractor.__init__(self, args, db, twi)
 
     def run(self):
         while True:
@@ -499,10 +391,10 @@ class SingleExtractor(Extractor):
 
 
 class SnowballExtractor(Extractor):
-    def __init__(self, args, db, oid, twi):
+    def __init__(self, args, db, twi):
         if not args.seed:
             fatal("{prog}: Must specify a Twitter handle from which to begin.")
-        Extractor.__init__(self, args, db, oid, twi)
+        Extractor.__init__(self, args, db, twi)
 
 class FrontierExtractor(Extractor):
     pass
