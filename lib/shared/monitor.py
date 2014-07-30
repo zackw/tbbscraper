@@ -72,20 +72,24 @@ class Monitor:
         with self._counters_lock:
             return self._active_work_threads == 1
 
-    def maybe_pause_or_stop(self):
+    def maybe_pause_or_stop(self, before_stopping=None):
         """Worker threads must call this method in between jobs; if
            the overall process is about to be suspended, it will block,
            and if the overall process is about to be terminated, it will
-           exit the thread."""
+           exit the thread.  The optional callback allows workers to
+           carry out any cleanup actions that may be necessary before
+           they suspend or stop."""
         if self._stop_event.is_set():
+            if before_stopping is not None: before_stopping()
             self._do_pause_or_stop()
 
-    def idle(self, timeout):
+    def idle(self, timeout, before_stopping=None):
         """Worker threads should call this method if they have nothing to
            do for some fixed amount of time.  It behaves as time.sleep(),
            but responds immediately to a pause or stop signaled during the
            idle period."""
         if self._stop_event.wait(timeout):
+            if before_stopping is not None: before_stopping()
             self._do_pause_or_stop()
 
     def register_event_queue(self, queue, desired_stop_message):

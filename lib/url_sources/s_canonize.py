@@ -36,37 +36,12 @@ import time
 
 from psycopg2 import DatabaseError
 from shared import url_database
+from shared.strsignal import strsignal
 
 pj_trace_redir = os.path.realpath(os.path.join(
         os.path.dirname(__file__),
         "../../scripts/pj-trace-redir.js"))
 
-# Python does not provide strsignal() even in the very latest 3.x.
-# This is a reasonable fake.
-_sigtbl = []
-def fake_strsignal(n):
-    global _sigtbl
-    if not _sigtbl:
-        # signal numbers run 0 through NSIG-1; an array with NSIG members
-        # has exactly that many slots
-        _sigtbl = [None]*signal.NSIG
-        for k in dir(signal):
-            if (k.startswith("SIG") and not k.startswith("SIG_")
-                # exclude obsolete aliases
-                and k != "SIGCLD" and k != "SIGPOLL"):
-              _sigtbl[getattr(signal, k)] = k
-        # realtime signals mostly have no names
-        if hasattr(signal, "SIGRTMIN") and hasattr(signal, "SIGRTMAX"):
-            for r in range(signal.SIGRTMIN+1, signal.SIGRTMAX+1):
-                _sigtbl[r] = "SIGRTMIN+" + str(r - signal.SIGRTMIN)
-        # fill in any remaining gaps
-        for i in range(signal.NSIG):
-            if _sigtbl[i] is None:
-                _sigtbl[i] = "unrecognized signal, number " + str(i)
-
-    if n < 0 or n >= signal.NSIG:
-        return "out-of-range signal, number "+str(n)
-    return _sigtbl[n]
 
 _stdout_junk_re = re.compile(
     r"^(?:"
@@ -235,7 +210,7 @@ class CanonTask:
 
         elif os.WIFSIGNALED(status):
             self.status = "crawler failure"
-            self.detail = "Killed by " + fake_strsignal(os.WTERMSIG(status))
+            self.detail = "Killed by " + strsignal(os.WTERMSIG(status))
 
         else:
             self.status = "crawler failure"

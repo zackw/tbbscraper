@@ -39,35 +39,6 @@ import zipfile
 from shared import url_database
 from shared.monitor import Monitor
 
-def to_https(spliturl):
-    return urllib.parse.SplitResult("https",
-                                    spliturl.netloc,
-                                    spliturl.path,
-                                    spliturl.query,
-                                    spliturl.fragment)
-
-def to_siteroot(spliturl):
-    return urllib.parse.SplitResult(spliturl.scheme,
-                                    spliturl.netloc,
-                                    "/",
-                                    spliturl.query,
-                                    spliturl.fragment)
-
-def add_www(spliturl):
-    if "@" in spliturl.netloc:
-        (auth, rest) = spliturl.netloc.split("@", 1)
-        netloc = auth + "@www." + rest
-    else:
-        netloc = "www." + spliturl.netloc
-
-    return urllib.parse.SplitResult(spliturl.scheme,
-                                    netloc,
-                                    spliturl.path,
-                                    spliturl.query,
-                                    spliturl.fragment)
-
-no_www_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+$|\[[\dA-Fa-f:]+\]$|www\.)")
-
 class AlexaExtractor:
     def __init__(self, args):
         # Do not open the database until we are on the correct thread.
@@ -125,71 +96,7 @@ class AlexaExtractor:
 
     @staticmethod
     def add_urls_from_site(cur, site, rank, datestamp, batch, already_seen):
-        # Subroutine of process_sitelist.
-        #
-        # Alexa's "site" list has two different kinds of
-        # addresses on it: with and without a URL path.
-        # Also, most but not all of the sites are second-level
-        # domains: any third-level piece (such as "www.") has
-        # been stripped.  In no case is there a scheme; in
-        # particular we have no idea whether the site prefers
-        # http: or https:.  So we expand each entry to four:
-        #
-        #   http://       site
-        #   https://      site
-        #   http://  www. site
-        #   https:// www. site
-        #
-        # If there was a path, we include all of the above
-        # both with and without the path.  This scheme won't
-        # do us any good if the actual content people are
-        # loading is neither at the name in the list nor at
-        # www. the name in the list; for instance,
-        # akamaihd.net is site #68, but neither akamaihd.net
-        # nor www.akamaihd.net has any A records, because,
-        # being a CDN, all of the actual content is on servers
-        # named SOMETHINGELSE.akamaihd.net, and you're not
-        # expected to notice that the domain even exists.
-        # But there's nothing we can do about that.
-        #
-        # It does not make sense to prepend 'www.' if 'site' already
-        # starts with 'www.' or if it is an IP address.
-
-        parsed = url_database.canon_url_syntax("http://" + site,
-                                               want_splitresult=True)
-
-        assert parsed.path != ""
-        if parsed.path != "/":
-            root = to_siteroot(parsed)
-            need_path = True
-        else:
-            root = parsed
-            need_path = False
-
-        urls = [ root.geturl(),
-                 to_https(root).geturl() ]
-
-        host = root.hostname
-        if no_www_re.match(host):
-            need_www = False
-        else:
-            need_www = True
-            with_www = add_www(root)
-            urls.extend([ with_www.geturl(),
-                          to_https(with_www).geturl() ])
-
-
-        if need_path:
-            urls.extend([ parsed.geturl(),
-                          to_https(parsed).geturl() ])
-
-            if need_www:
-                with_www = add_www(parsed)
-                urls.extend([ with_www.geturl(),
-                              to_https(with_www).geturl() ])
-
-        for url in urls:
-            (uid, url) = url_database.add_url_string(cur, url)
+        for (uid, url) in url_database.add_site(cur, site):
             if url in already_seen:
                 continue
             batch.append( (uid, rank, datestamp) )

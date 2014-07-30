@@ -177,6 +177,108 @@ def add_url_string(db, url):
     finally:
         cur.execute("RELEASE SAVEPOINT url_string_insertion")
 
+# Subroutines and REs for add_site:
+
+def to_https(spliturl):
+    return urllib.parse.SplitResult("https",
+                                    spliturl.netloc,
+                                    spliturl.path,
+                                    spliturl.query,
+                                    spliturl.fragment)
+
+def to_siteroot(spliturl):
+    return urllib.parse.SplitResult(spliturl.scheme,
+                                    spliturl.netloc,
+                                    "/",
+                                    spliturl.query,
+                                    spliturl.fragment)
+
+def add_www(spliturl):
+    if "@" in spliturl.netloc:
+        (auth, rest) = spliturl.netloc.split("@", 1)
+        netloc = auth + "@www." + rest
+    else:
+        netloc = "www." + spliturl.netloc
+
+    return urllib.parse.SplitResult(spliturl.scheme,
+                                    netloc,
+                                    spliturl.path,
+                                    spliturl.query,
+                                    spliturl.fragment)
+
+no_www_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+$|\[[\dA-Fa-f:]+\]$|www\.)")
+
+def add_site(db, site):
+    """Add a site to the url_strings table for DB, if it is not already
+       there.  Returns a list of pairs [(id1, url1), (id2, url2), ...]
+       comprising all URLs chosen to represent the site.
+
+       A "site" is a partial URL, from which the scheme and possibly a
+       leading "www." have been stripped.  There may or may not be a
+       path component. We reconstruct up to eight possible URLs from
+       this partial URL:
+
+         http://       site (/path)
+         https://      site (/path)
+         http://  www. site (/path)
+         https:// www. site (/path)
+
+       If there was a path component, we consider URLs both with and
+       without that path.  If 'site' already starts with 'www.', or if
+       it is an IP address, we do not prepend 'www.'
+
+       This scheme won't do us any good if the actual content people
+       are loading is neither at the name in the list nor at www. the
+       name in the list; for instance, akamaihd.net appears highly in
+       Alexa's site ranking, but neither akamaihd.net nor www.akamaihd.net
+       has any A records, because, being a CDN, all of the actual
+       content is on servers named SOMETHINGELSE.akamaihd.net, and
+       you're not expected to notice that the domain even exists.
+       But there's nothing we can do about that.
+    """
+
+    parsed = canon_url_syntax("http://" + site, want_splitresult=True)
+
+    assert parsed.path != ""
+    if parsed.path != "/":
+        root = to_siteroot(parsed)
+        need_path = True
+    else:
+        root = parsed
+        need_path = False
+
+    urls = [ root.geturl(),
+             to_https(root).geturl() ]
+
+    host = root.hostname
+    if no_www_re.match(host):
+        need_www = False
+    else:
+        need_www = True
+        with_www = add_www(root)
+        urls.extend([ with_www.geturl(),
+                      to_https(with_www).geturl() ])
+
+
+    if need_path:
+        urls.extend([ parsed.geturl(),
+                      to_https(parsed).geturl() ])
+
+        if need_www:
+            with_www = add_www(parsed)
+            urls.extend([ with_www.geturl(),
+                          to_https(with_www).geturl() ])
+
+    return [ add_url_string(db, url) for url in urls ]
+
+    for url in urls:
+        (uid, url) = url_database.add_url_string(cur, url)
+        if url in already_seen:
+            continue
+        batch.append( (uid, rank, datestamp) )
+        already_seen.add(url)
+
+
 def categorize_result(status, original_uid, canon_uid):
     if not isinstance(status, int):
         if status == "N301" or status == "invalid URL":
