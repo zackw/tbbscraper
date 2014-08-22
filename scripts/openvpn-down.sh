@@ -5,9 +5,10 @@ export PATH
 
 set -ex
 
-tun_netns=vpn${dev#tun}
+tun_netns=tns${dev#tun}
+
 case "$tun_netns" in
-     (vpn[0-9] | vpn[0-9][0-9] | vpn[0-9][0-9][0-9]) ;;
+     (tns[0-9] | tns[0-9][0-9] | tns[0-9][0-9][0-9]) ;;
      (*) exit 1;;
 esac
 
@@ -23,7 +24,6 @@ if [ -n "$pids" ]; then
     fi
 fi
 
-# this automatically cleans up the the routes and device as well
+# this automatically cleans up the routes and tunnel device
 ip netns delete "$tun_netns"
-
 rm -rf /etc/netns/$tun_netns

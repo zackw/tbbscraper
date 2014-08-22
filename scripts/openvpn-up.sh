@@ -68,17 +68,14 @@ config_inside_netns () {
     ifconfig_cidr=$(mask2cidr $ifconfig_netmask)
     ifconfig_network=$(mask2network $ifconfig_local $ifconfig_netmask)
 
+    # lo is automatically assigned the expected address by the kernel.
     ip link set dev lo up
-    ip link set dev $dev mtu $tun_mtu
-    ip link set dev $dev up
 
-    ip addr add dev $dev \
+    ip addr add dev $tun_tundv \
         local $ifconfig_local/$ifconfig_cidr \
-        broadcast $ifconfig_broadcast \
-        scope link
-
-    #ip route add $ifconfig_network/$ifconfig_cidr dev $dev
-    ip route add default via $route_vpn_gateway dev $dev
+        broadcast $ifconfig_broadcast
+    ip link set dev $tun_tundv mtu $tun_mtu up
+    ip route add default via $route_vpn_gateway dev $tun_tundv
 }
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
@@ -86,9 +83,11 @@ export PATH
 
 set -ex
 
-tun_netns=vpn${dev#tun}
+tun_tundv=$dev
+tun_netns=tns${dev#tun}
+
 case "$tun_netns" in
-     (vpn[0-9] | vpn[0-9][0-9] | vpn[0-9][0-9][0-9]) ;;
+     (tns[0-9] | tns[0-9][0-9] | tns[0-9][0-9][0-9]) ;;
      (*) exit 1;;
 esac
 
@@ -97,13 +96,15 @@ if [ $# -eq 1 ] && [ $1 = "INSIDE_NETNS" ]; then
     config_inside_netns
 else
 
-    trap "rm -rf /etc/netns/$tun_netns ||:; ip netns del $tun_netns ||:" 0
+    trap "rm -rf /etc/netns/$tun_netns ||:
+          ip netns del $tun_netns      ||:
+         " 0
+
     mkdir /etc/netns/$tun_netns
     maybe_config_dns
 
     ip netns add $tun_netns
-    ip link set dev $dev netns $tun_netns
-
+    ip link set dev $tun_tundv netns $tun_netns
     ip netns exec $tun_netns $0 INSIDE_NETNS
 
     trap "" 0
