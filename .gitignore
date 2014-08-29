@@ -23,6 +23,7 @@ __pycache__/
 /lib/url_sources/twitter_credential.txt
 
 /scripts/isolate
+/scripts/openvpn-netns
 
 /pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
