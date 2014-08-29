@@ -609,7 +609,7 @@ prepare_homedir(child_state *cs)
     cs->logname = xasprintf("iso-%u", cs->uid);
   if (!cs->shell)
     cs->shell = "/bin/sh";
-  if (!cs->gid)
+  if (cs->gid == (gid_t)-1)
     cs->gid = cs->uid;
 
   if (lchown(h, cs->uid, cs->gid))
@@ -684,7 +684,7 @@ process_isol_varval(child_state *cs, const char *arg)
   for (int i = 0; i < N_RLIMITS; i++) {
     const struct rlimit_def_entry *def = &rlimit_defaults[i];
     if ((val = extract_isol_val(def->var, def->vareq, def->vareqlen, arg))) {
-      if (!strcmp(arg, "unlimited"))
+      if (!strcmp(val, "unlimited"))
         cs->rlimits[i] = RLIM_INFINITY;
       else {
         /* The value of RLIM_INFINITY is unspecified, as is the signedness
@@ -695,8 +695,8 @@ process_isol_varval(child_state *cs, const char *arg)
             (rlim_t)rv == RLIM_INFINITY)
           fatal_printf("%s: rlimit value out of range", arg);
         cs->rlimits[i] = (rlim_t)rv;
-        return;
       }
+      return;
     }
   }
 
@@ -772,10 +772,14 @@ finish_child_argv_envp(child_state *cs, const char *const *envp)
   tmpdir = xasprintf("%s/.tmp", cs->homedir);
   if (mkdir(tmpdir, 0700))
     fatal_eprintf("mkdir: %s", tmpdir);
+  if (lchown(tmpdir, cs->uid, cs->gid))
+    fatal_eprintf("lchown: %s", tmpdir);
 
   envc = 0;
-  do {} while (nenvp[envc++]);
-  aenvc = envc--; /* close enough */
+  if (nenvp) {
+    do {} while (nenvp[envc++]);
+    aenvc = envc--; /* close enough */
+  }
 
   for (i = 0; envp[i]; i++)
     if (should_copy_envvar(envp[i]))
@@ -812,8 +816,8 @@ maybe_switch_network_namespace(int argc, char **argv, char **envp)
   return;
 
  found:
-  for (i++; i < argc; i++)
-    if (!startswith(argv[i], "ISOL_NETNS="))
+  for (i++; argv[i]; i++)
+    if (startswith(argv[i], "ISOL_NETNS="))
       fatal("ISOL_NETNS may not be used twice");
 
   /* { "ip", "netns", "exec", val, argv[0], ... argv[argc] }
@@ -825,7 +829,7 @@ maybe_switch_network_namespace(int argc, char **argv, char **envp)
   nargv[2] = "exec";
   nargv[3] = val;
   for (i = 0, j = 4; i <= argc; i++)
-    if (!startswith(argv[i], "ISOL_NETNS="))
+    if (!argv[i] || !startswith(argv[i], "ISOL_NETNS="))
       nargv[j++] = argv[i];
 
   execvpe(nargv[0], (char *const *)nargv, (char *const *)envp);
@@ -999,6 +1003,11 @@ main(int argc, char **argv, char **envp)
     progname++;
   else
     progname = argv[0];
+
+  if (argc < 2) {
+    fprintf(stderr, "usage: %s [VAR=val...] program [args...]\n", progname);
+    return 2;
+  }
 
   /* Line-buffer stderr so that any error messages we emit are
      atomically written (all of our messages are exactly one line).
