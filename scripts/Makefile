@@ -8,7 +8,7 @@ ALL = isolate openvpn-netns
 CPPFLAGS = -D_FORTIFY_SOURCE=2
 CFLAGS   = -std=c11 -g -O2 -pie -fPIE -fwhole-program -fstack-protector-strong \
            -Werror -Wall -Wextra -Wpedantic -Wformat=2 -Wstrict-overflow \
-           -Wundef -Wshadow -Wbad-function-cast -Wwrite-strings \
+           -Wundef -Wshadow -Wwrite-strings \
            -Wconversion -Wlogical-op -Wstrict-prototypes -Wstack-protector
 LDFLAGS  = -Wl,-z,relro,-z,now
 

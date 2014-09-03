@@ -16,13 +16,12 @@
  * command line.
  *
  * This program expects to be run with both stdin and stdout connected
- * to pipes.  It will never write anything to its stdout, but it will
- * close its stdout when it detects that the namespace is ready for
- * use.  Similarly, it expects that nothing will be written to its
- * stdin (anything that *is* written will be read and discarded), but
- * when stdin is closed, it will terminate the OpenVPN client, tear
- * down the network namespace (and terminate all processes still in
- * there), and exit.
+ * to pipes.  When it detects that the namespace is ready for use, it
+ * will write the string "READY\n" to its stdout and then close it.
+ * It expects that nothing will be written to its stdin (anything that
+ * *is* written will be read and discarded), but when stdin is closed,
+ * it will terminate the OpenVPN client, tear down the network
+ * namespace (and terminate all processes still in there), and exit.
  *
  * Error messages, and any output from the OpenVPN client, will be
  * written to stderr.  One may wish to include "--verb 0" in ARGS to
@@ -35,7 +34,8 @@
  * rewrite.  Apart from that, C99 and POSIX.1-2001 features are used
  * throughout.  It also requires dirfd, strdup, and strsignal, from
  * POSIX.1-2008; execvpe and vasprintf, from the shared BSD/GNU
- * extension set; and the currently Linux-specific pipe2 and signalfd.
+ * extension set; and the currently Linux-specific pipe2, signalfd,
+ * and getauxval.
  */
 
 #define _GNU_SOURCE 1
@@ -44,6 +44,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
+
+#include <sys/auxv.h>
 #include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
@@ -939,8 +941,10 @@ controller_process_signals(int sigfd, pid_t ovpn_pid)
     switch (ssi.ssi_signo) {
     case SIGUSR1:
       /* Up-script reports completion.  We pass this onward by
-         closing stdout. */
+         writing a sentinel value to stdout and then closing it. */
       if (!already_closed_stdout) {
+        if (write(1, "READY\n", 6) != 6)
+          fatal_perror("write");
         if (close(1))
           fatal_perror("close");
         /* for great defensiveness */
@@ -1130,9 +1134,12 @@ main(int argc, char **argv, char **envp)
   else
     progname = argv[0];
 
-  full_progname = realpath(argv[0], 0);
-  if (!full_progname)
-    fatal_perror("realpath");
+  full_progname = (const char *)getauxval(AT_EXECFN);
+  if (!full_progname) {
+    full_progname = realpath(argv[0], 0);
+    if (!full_progname)
+      fatal_eprintf("unable to determine full pathname of executable (argv[0]=%s)", argv[0]);
+  }
 
   /* Because of the way we get openvpn to reexecute this program, argv[0]
      must not contain shell metacharacters. */
