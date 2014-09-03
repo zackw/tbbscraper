@@ -102,22 +102,6 @@ class HerdictExtractor:
             db.commit()
             mon.maybe_pause_or_stop()
 
-        mon.report_status("Flushing duplicates...")
-        # The urls_herdict table doesn't have any uniquifier.
-        # Flush any duplicate rows that may have occurred.
-        cur.execute(
-            'DELETE FROM urls_herdict WHERE ctid IN (SELECT ctid FROM ('
-            '  SELECT ctid, row_number() OVER ('
-            '    PARTITION BY url,"timestamp",accessible,country'
-            '    ORDER BY ctid) AS rnum FROM urls_herdict) t'
-            '  WHERE t.rnum > 1)')
-        db.commit()
-
-        mon.report_status("Adding URLs to be canonicalized...")
-        cur.execute("INSERT INTO canon_urls (url) "
-                    "  SELECT DISTINCT url FROM urls_herdict"
-                    "  EXCEPT SELECT url FROM canon_urls")
-        db.commit()
         self.summary = (lo_timestamp, hi_timestamp,
                         n_total, n_accessible, n_inaccessible)
 

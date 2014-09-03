@@ -40,8 +40,8 @@ class CitizenLabExtractor:
         datestamp = time.strftime("%Y-%m-%d", time.gmtime())
         db        = url_database.ensure_database(self.args)
         to_import = self.update_srcdir(db, self.args.source, self.args.repo)
+        self.ensure_category_codes(db, self.args.source)
         self.process_imports(db, datestamp, to_import)
-        self.update_canon_queue(db)
         if self.delayed_failure:
             raise SystemExit(1)
 
@@ -106,6 +106,31 @@ class CitizenLabExtractor:
 
         return to_import
 
+    def ensure_category_codes(self, db, source):
+        f = os.path.join(source, "csv", "00-LEGEND-category_codes.csv")
+        with open(f, newline='', encoding='utf-8') as fp:
+            reader = csv.DictReader(fp)
+            if reader.fieldnames != ['CategoryCode', 'CategoryName']:
+                sys.stderr.write("{!r}: field names {!r} not as expected\n"
+                                 .format(f, reader.fieldnames))
+                raise SystemExit(1)
+            with db, db.cursor() as cur:
+                values = []
+                for row in reader:
+                    values.append(cur.mogrify("(%s,%s)",
+                                              (row['CategoryCode'],
+                                               row['CategoryName'])))
+                cur.execute(
+                    "CREATE TEMP TABLE clab_categories_new ("
+                    "  code TEXT, description TEXT)")
+                cur.execute(
+                    b"INSERT INTO clab_categories_new "
+                    b"VALUES " + b",".join(values))
+                cur.execute(
+                    "INSERT INTO clab_categories"
+                    " SELECT DISTINCT code,description FROM clab_categories_new"
+                    " EXCEPT SELECT code,description FROM clab_categories")
+
     def process_imports(self, db, datestamp, to_import):
         for f, country_code in to_import:
             with open(f, newline='', encoding='utf-8') as fp:
@@ -137,23 +162,3 @@ class CitizenLabExtractor:
 
         sys.stderr.write(" (commit)")
         sys.stderr.flush()
-
-    def update_canon_queue(self, db):
-        cur = db.cursor()
-
-        sys.stderr.write("Flushing duplicates...\n")
-        # The urls_citizenlab table doesn't have any uniquifier.
-        # Flush any duplicate rows that may have occurred.
-        cur.execute(
-            'DELETE FROM urls_citizenlab WHERE ctid IN (SELECT ctid FROM ('
-            '  SELECT ctid, row_number() OVER ('
-            '    PARTITION BY url,country,category,retrieval_date'
-            '    ORDER BY ctid) AS rnum FROM urls_citizenlab) t'
-            '  WHERE t.rnum > 1)')
-        db.commit()
-
-        sys.stderr.write("Adding URLs to be canonicalized...\n")
-        cur.execute("INSERT INTO canon_urls (url) "
-                    "  SELECT DISTINCT url FROM urls_citizenlab"
-                    "  EXCEPT SELECT url FROM canon_urls")
-        db.commit()

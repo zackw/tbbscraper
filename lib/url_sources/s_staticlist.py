@@ -42,7 +42,6 @@ class StaticListExtractor:
             self.load_metadata(db, fp)
             self.load_urls(db, fp)
 
-        self.update_canon_queue(db)
         if self.delayed_failure:
             raise SystemExit(1)
 
