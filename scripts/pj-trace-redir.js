@@ -77,9 +77,10 @@ function report() {
             status: status.code,
             detail: status.detail,
             canon:  final_url,
-            redirs: redirs
+            redirs: redirs,
+            log:    event_log
         };
-        if (capture && status.code === 200) {
+        if (capture) {
             output.content = page.content.replace(/\s+/g, " ");
             output.render = page.renderBase64("PNG");
         }
@@ -127,15 +128,22 @@ setTimeout(function () {
 
 // Our modified user agent should not be _too_ much of a lie; in particular
 // if the PhantomJS embedded Webkit changes too much we should change ours
-// to match.
-if (!/ AppleWebKit\/534\.34 /.test(page.settings.userAgent)) {
+// to match.  Unfortunately, neither of the AppleWebKit/xxx.yy strings
+// corresponding to PhantomJS's *actual* WebKit are common in real browsers.
+if (/ AppleWebKit\/534\.34 /.test(page.settings.userAgent)) {
+    // PhantomJS 1.9. Pretend to be Safari 5.1 on OSX.
+    page.settings.userAgent =
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7) AppleWebKit/534.34.4 ' +
+        '(KHTML, like Gecko) Version/5.1 Safari/534.34.4';
+} else if (/ AppleWebKit\/538.1 /.test(page.settings.userAgent)) {
+    // PhantomJS 2.0. Pretend to be Safari 6.0.5 on OSX.
+    page.settings.userAgent =
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_4) AppleWebKit/538.1+ ' +
+        '(KHTML, like Gecko) Version/6.0.5 Safari/536.30.1';
+} else {
     console.error("Unexpected stock user agent: " + page.settings.userAgent);
     phantom.exit(1);
 }
-// Pretend to be Chrome 27 on Windows 7.
-page.settings.userAgent =
-    'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/27.0.1453.93 Safari/537.36';
 
 //
 // These are here mostly for logging.
@@ -168,6 +176,7 @@ page.onError = function(msg, trace) {
 //
 
 page.onLoadFinished = function(status) {
+    log_event({what: "onLoadFinished", url: page.url, data: status});
     if (status === "success") {
         if (/^https?:/.test(page.url))
             probable_top_level_resources.push(page.url);
