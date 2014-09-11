@@ -39,11 +39,19 @@ def setup_argp(ap):
     ap.add_argument("-b", "--batch-size",
                     action="store", dest="batch_size", type=int, default=20,
                     help="Number of URLs to feed to each worker at once.")
+    ap.add_argument("-w", "--workers",
+                    action="store", dest="n_workers", type=int, default=3,
+                    help="Number of concurrent workers per location.")
     ap.add_argument("-p", "--min-proxy-port",
                     action="store", dest="min_proxy_port", type=int,
                     default=9100,
                     help="Low end of range of TCP ports to use for "
                     "local proxy listeners.")
+    ap.add_argument("-t", "--tables",
+                    action="store", dest="tables",
+                    help="Comma-separated list of url-source tables to "
+                    "process, without the 'urls_' prefix. (default: all "
+                    "of them)")
 
 def run(args):
     # must do this before creating threads
@@ -81,6 +89,10 @@ from psycopg2 import IntegrityError
 from shared import url_database
 from shared.monitor import Monitor
 from shared.strsignal import strsignal
+
+pj_trace_redir = os.path.realpath(os.path.join(
+        os.path.dirname(__file__),
+        "../../scripts/pj-trace-redir.js"))
 
 # Utilities
 
@@ -270,16 +282,15 @@ def recompress_image(img):
 class Proxy:
     """Helper thread which runs and supervises a proxy mechanism that
        tunnels network traffic to another machine.  Events are posted
-       to the queue provided to the constructor, whenever the proxy
-       becomes available or unavailable."""
+       whenever the proxy becomes available or unavailable."""
 
     # Event status codes.  Events are 1-tuples of the status code.
     OFFLINE = 0
     ONLINE  = 1
 
-    def __init__(self, label, queue):
+    def __init__(self, label):
         self._label  = label
-        self._queue  = queue
+        self._queues = []
         self._mon    = None
         self._proc   = None
         self._done   = False
@@ -299,6 +310,17 @@ class Proxy:
         self._done = True
         if self._proc:
             self._stop_proxy()
+
+    def add_queue(self, q):
+        self._queues.append(q)
+
+    def _post_online(self):
+        for q in self._queues:
+            q.put((Proxy.ONLINE,))
+
+    def _post_offline(self):
+        for q in self._queues:
+            q.put((Proxy.OFFLINE,))
 
     def _start_proxy(self):
         """Start the proxy.  Must assign a subprocess.Popen object to
@@ -326,7 +348,7 @@ class Proxy:
 
         def online_hook():
             self.report_status("online.")
-            self._queue.put((Proxy.ONLINE,))
+            self._post_online()
             backoff = 0
 
         def disconnect_hook():
@@ -350,7 +372,7 @@ class Proxy:
             # EOF on both pipes indicates the proxy has exited.
             rc = self._proc.wait()
             self._proc = None
-            self._queue.put((Proxy.OFFLINE,))
+            self._post_offline()
 
             # If self._done is true at this point we should just exit as
             # quickly as possible.
@@ -405,10 +427,10 @@ class DirectProxy(Proxy):
 
     def stop(self):
         self._done = True
-        self._queue.put((Proxy.OFFLINE,))
+        self._post_offline()
 
     def __call__(self, mon, thr):
-        self._queue.put((Proxy.ONLINE,))
+        self._post_online()
 
 class SshProxy(Proxy):
     """Helper thread which runs and supervises an ssh-based local SOCKS
@@ -422,7 +444,7 @@ class SshProxy(Proxy):
     def set_min_local_port(cls, port):
         cls._next_local_port = port
 
-    def __init__(self, label, queue, host_and_user):
+    def __init__(self, label, host_and_user):
         if SshProxy._next_local_port is None:
             raise RuntimeError("SshProxy.set_min_local_port wasn't called")
 
@@ -430,7 +452,7 @@ class SshProxy(Proxy):
         self._local_port  = SshProxy._next_local_port
         SshProxy._next_local_port += 1
 
-        Proxy.__init__(self, label, queue)
+        Proxy.__init__(self, label)
 
     def adjust_command(self, cmd):
         assert cmd[0] == "isolate"
@@ -478,11 +500,11 @@ class OpenVPNProxy(Proxy):
 
     TYPE = 'ovpn'
 
-    def __init__(self, label, queue, *openvpn_args):
+    def __init__(self, label, *openvpn_args):
         if len(openvpn_args) < 1:
             raise RuntimeError("need at least an OpenVPN config file")
 
-        Proxy.__init__(self, label, queue)
+        Proxy.__init__(self, label)
         self._namespace         = "ns_" + label
         self._tried_gentle_stop = False
         self._openvpn_cmd       = [
@@ -545,22 +567,6 @@ class CaptureBatchError(subprocess.SubprocessError):
             text += "\nstderr:\n"
             text += textwrap.indent(self.stderr, "| ", lambda line: True)
         return text
-
-# note: very similar to code in s_canonize.py (should be collapsed together)
-
-pj_trace_redir = os.path.realpath(os.path.join(
-        os.path.dirname(__file__),
-        "../../scripts/pj-trace-redir.js"))
-
-# _stdout_junk_re = re.compile(
-#     r"^(?:"
-#     r"|[A-Z][a-z]+Error: .*"
-#     r"|[A-Z_]+?_ERR: .*"
-#     r"|Cannot init XMLHttpRequest object!"
-#     r"|Error requesting /.*"
-#     r"|Current location: https?://.*"
-#     r"|  (?:https?://.*?|undefined)?:[0-9]+(?: in \S+)?"
-#     r")$")
 
 class CaptureTask:
     """Representation of one capture job."""
@@ -632,9 +638,6 @@ class CaptureTask:
 
         anomalous_stdout = []
         for line in stdout.strip().split("\n"):
-            # if _stdout_junk_re.match(line):
-            #     continue
-
             try:
                 results = json.loads(line)
 
@@ -659,7 +662,7 @@ class CaptureTask:
         return True
 
     def parse_stderr(self, stderr, valid_result):
-        status = "unexplained unsuccessful exit"
+        status = ""
         detail = ""
         anomalous_stderr = []
 
@@ -699,6 +702,10 @@ class CaptureTask:
         # Don't count a crash on exit as a failure if it happened
         # after a valid result was printed.
         if not valid_result:
+            if not status:
+                status = "crawler failure"
+                detail = "unexplained unsuccessful exit"
+
             self.status = status
             self.detail = detail
 
@@ -751,14 +758,14 @@ class CaptureTask:
         return r
 
 class CaptureWorker:
-    def __init__(self, disp, locale, proxy_class, proxy_args):
+    def __init__(self, disp, locale, proxy):
         self.disp = disp
         self.args = disp.args
         self.locale = locale
-        self.proxy_class = proxy_class
-        self.proxy_args = proxy_args
+        self.proxy = proxy
         self.batch_queue = queue.PriorityQueue()
         self.batch_queue_serializer = 0
+        self.proxy.add_queue(self.batch_queue)
 
         self.online = False
         self.nsuccess = 0
@@ -769,7 +776,7 @@ class CaptureWorker:
 
     def report_status(self, msg):
         status = ("{}: {} | {} captured, {} failures"
-                  .format(self.locale, self.proxy_class.TYPE,
+                  .format(self.locale, self.proxy.TYPE,
                           self.nsuccess, self.nfailure))
 
         if self.batch_time is not None:
@@ -807,10 +814,6 @@ class CaptureWorker:
     def __call__(self, mon, thr):
         self.mon = mon
         self.mon.register_event_queue(self.batch_queue, (self._MON_SAYS_STOP,))
-
-        self.proxy = self.proxy_class(self.locale, self.batch_queue,
-                                      *self.proxy_args)
-        self.mon.add_work_thread(self.proxy)
 
         self.report_status("waiting for proxy...")
         while True:
@@ -888,7 +891,6 @@ class CaptureWorker:
 class CaptureDispatcher:
     def __init__(self, args):
         self.args = args
-        self.read_locations()
         self.error_log = open("capture-errors.txt", "wt")
         # defer further setup till we're on the right thread
 
@@ -904,12 +906,19 @@ class CaptureDispatcher:
         # We can safely start the workers and get them connecting
         # before we go on to warm up the database.
         SshProxy.set_min_local_port(self.args.min_proxy_port)
+        self.read_locations()
         self.workers = {}
-        for loc, worker in self.locales.items():
-            wt = CaptureWorker(self, loc, worker[0], worker[1])
-            self.mon.add_work_thread(wt)
-            self.workers[loc] = [wt]
+        for loc, proxy in self.locales.items():
+            self.workers[loc] = []
             self.prepared_batches[loc] = collections.deque()
+            for _ in range(self.args.n_workers):
+                wt = CaptureWorker(self, loc, proxy)
+                self.mon.add_work_thread(wt)
+                self.workers[loc].append(wt)
+
+        # Only start the proxies after we've started all the workers.
+        for proxy in self.locales.values():
+            self.mon.add_work_thread(proxy)
 
         self.prepare_database()
         self.dispatcher_loop()
@@ -936,7 +945,7 @@ class CaptureDispatcher:
                 else:
                     raise RuntimeError("unrecognized method: " + " ".join(w))
 
-                locales[loc] = (method, args)
+                locales[loc] = method(loc, *args)
 
         self.locales = locales
         self.locale_list = sorted(self.locales.keys())
@@ -1019,7 +1028,7 @@ class CaptureDispatcher:
                 prepared.append([])
                 return
 
-            blocksize = self.args.batch_size * len(self.locales[locale])
+            blocksize = self.args.batch_size * len(self.workers[locale])
 
             # Special case: all locales except 'us' draw from the pool of
             # URLs already processed in 'us'.
@@ -1058,11 +1067,15 @@ class CaptureDispatcher:
                     if redir_url == surl or redir_url == r['ourl']:
                         redir_url_id = url_id
                     elif redir_url is not None:
-                        (redir_url_id, _) = \
-                            url_database.add_url_string(cr, r['canon'])
+                        try:
+                            (redir_url_id, _) = \
+                                url_database.add_url_string(cr, r['canon'])
+                        except ValueError:
+                            r['detail'] += " | invalid redir url: " + redir_url
 
                 detail_id = self.capture_detail.get(r['detail'])
-                if detail_id is None and r['detail'] is not None:
+                if detail_id is None and (r['detail'] is not None and
+                                          r['detail'] != ''):
                     cr.execute("INSERT INTO capture_detail(id, detail) "
                                "  VALUES(DEFAULT, %s)"
                                "  RETURNING id", (r['detail'],))
@@ -1109,7 +1122,7 @@ class CaptureDispatcher:
                         "  Original URL: {}\n"
                         "  Redir URL: {}\n"
                         "  Offending row:\n{}\n"
-                        .format("", r['ourl'], redir_url, repr(to_insert)))
+                        .format(e, r['ourl'], redir_url, repr(to_insert)))
                     self.error_log.flush()
                     cr.execute("ROLLBACK TO SAVEPOINT ins1")
                 else:
@@ -1129,13 +1142,11 @@ class CaptureDispatcher:
             cr.execute("SELECT detail, id FROM capture_detail;")
             self.capture_detail = { row.detail: row.id for row in cr }
 
-            # Make sure the capture_progress table contains every known URL.
+            # Flush and regenerate the capture-progress table.
             self.mon.maybe_pause_or_stop()
             self.mon.report_status("Preparing database... "
-                                   "(capture progress rows)")
-            cr.execute("INSERT INTO capture_progress (url) "
-                       "        SELECT url FROM urls"
-                       " EXCEPT SELECT url FROM capture_progress")
+                                   "(capture progress)")
+            cr.execute("DELETE FROM capture_progress")
 
             # Make sure there is an indexed column in the capture_progress
             # table for every locale. The least horrible way to do this is
@@ -1154,6 +1165,50 @@ class CaptureDispatcher:
                         WHEN duplicate_column THEN NULL;
                     END;
                 $$;""".format(loc))
+
+            # Determine the set of URLs yet to be captured from the selected
+            # tables.
+            self.mon.maybe_pause_or_stop()
+            self.mon.report_status("Preparing database... "
+                                   "(capture progress rows)")
+
+            cr.execute("SELECT table_name FROM information_schema.tables"
+                       " WHERE table_schema = 'tbbscraper'"
+                       "   AND table_type = 'BASE TABLE'"
+                       "   AND table_name LIKE 'urls_%'")
+            all_url_tables = set(row[0] for row in cr)
+
+            if self.args.tables is None:
+                want_url_tables = all_url_tables
+            else:
+                want_url_tables = set("urls_"+t.strip()
+                                      for t in self.args.tables.split(","))
+                if not want_url_tables.issubset(all_url_tables):
+                    raise RuntimeError("Requested URL tables do not exist: "
+                                       + ", ".join(
+                                           t[5:] for t in
+                                           want_url_tables - all_url_tables))
+
+            for tbl in want_url_tables:
+                self.mon.maybe_pause_or_stop()
+                self.mon.report_status("Preparing database... "
+                                       "(capture progress rows: {})"
+                                       .format(tbl))
+
+                cr.execute("INSERT INTO capture_progress (url) "
+                           "        SELECT url FROM "+tbl+
+                           " EXCEPT SELECT url FROM capture_progress")
+
+            for loc in self.locale_list:
+                self.mon.maybe_pause_or_stop()
+                self.mon.report_status("Preparing database... "
+                                       "(capture progress values: {})"
+                                       .format(loc))
+
+                cr.execute('UPDATE capture_progress c SET "l_{0}" = TRUE'
+                           '  FROM captured_pages p'
+                           ' WHERE c.url = p.url AND p.locale = \'{0}\''
+                           .format(loc))
 
             self.mon.maybe_pause_or_stop()
             self.mon.report_status("Preparing database... (analyzing)")
