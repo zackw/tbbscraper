@@ -100,14 +100,15 @@ CREATE TABLE urls_twitter_user_profiles (
     UNIQUE (uid, url)
 );
 
-CREATE VIEW urls AS
-        SELECT DISTINCT url FROM urls_alexa
-  UNION SELECT DISTINCT url FROM urls_citizenlab
-  UNION SELECT DISTINCT url FROM urls_herdict
-  UNION SELECT DISTINCT url FROM urls_staticlist
-  UNION SELECT DISTINCT url FROM urls_tweeted
-  UNION SELECT DISTINCT url FROM urls_twitter_user_profiles
-;
+CREATE TABLE urls_pinboard (
+    username     TEXT NOT NULL,
+    url          INTEGER NOT NULL REFERENCES url_strings(id),
+    access_time  TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    title        TEXT NOT NULL DEFAULT(''),
+    annotation   TEXT NOT NULL DEFAULT(''),
+    tags         TEXT NOT NULL DEFAULT(''),
+    UNIQUE (username, url)
+);
 
 -- Capture results
 CREATE TYPE capture_result AS ENUM (
