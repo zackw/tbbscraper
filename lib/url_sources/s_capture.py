@@ -29,7 +29,12 @@ currently three supported methods:
 
   ovpn:   HTTP requests will be proxied via openvpn.
           One or more arguments are passed to the 'openvpn-netns'
-          helper program (see scripts/openvpn-netns.c).
+          helper program (see scripts/openvpn-netns.c).  The initial
+          argument is treated as a glob pattern which should expand to
+          one or more OpenVPN config files; if there's more than one,
+          they are placed in a random order and then used round-robin
+          (i.e. if connection with one config file fails or drops, the
+          next one is tried).
 """
 
 def setup_argp(ap):
@@ -64,6 +69,7 @@ import base64
 import collections
 import contextlib
 import fcntl
+import glob
 import io
 import itertools
 import json
@@ -500,18 +506,15 @@ class OpenVPNProxy(Proxy):
 
     TYPE = 'ovpn'
 
-    def __init__(self, label, *openvpn_args):
-        if len(openvpn_args) < 1:
-            raise RuntimeError("need at least an OpenVPN config file")
-
+    def __init__(self, label, openvpn_cfg, *openvpn_args):
         Proxy.__init__(self, label)
         self._namespace         = "ns_" + label
         self._tried_gentle_stop = False
-        self._openvpn_cmd       = [
-            "openvpn-netns", self._namespace
-        ]
-        self._openvpn_cmd.extend(openvpn_args)
         self._state = 0
+        openvpn_cfg = glob.glob(openvpn_cfg)
+        random.shuffle(openvpn_cfg)
+        self._openvpn_cfgs = collections.deque(openvpn_cfg)
+        self._openvpn_args = openvpn_args
 
     def adjust_command(self, cmd):
         assert cmd[0] == "isolate"
@@ -519,7 +522,14 @@ class OpenVPNProxy(Proxy):
         return cmd
 
     def _start_proxy(self):
-        self._proc = subprocess.Popen(self._openvpn_cmd,
+
+        cfg = self._openvpn_cfgs[0]
+        self._openvpn_cfgs.rotate(-1)
+
+        openvpn_cmd = [ "openvpn-netns", self._namespace, cfg ]
+        openvpn_cmd.extend(self._openvpn_args)
+
+        self._proc = subprocess.Popen(openvpn_cmd,
                                       stdin  = subprocess.PIPE,
                                       stdout = subprocess.PIPE,
                                       stderr = subprocess.PIPE)
