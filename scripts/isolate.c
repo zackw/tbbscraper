@@ -703,8 +703,10 @@ process_isol_varval(child_state *cs, const char *arg)
   fatal_printf("unrecognized command line argument: %s", arg);
 }
 
+/* These are the only environment variables that we accept as safe to
+   receive from our parent. */
 static inline bool
-should_copy_envvar(const char *envvar)
+preserve_envvar(const char *envvar)
 {
   return (startswith(envvar, "PATH=") ||
           startswith(envvar, "TZ=") ||
@@ -713,16 +715,31 @@ should_copy_envvar(const char *envvar)
           startswith(envvar, "LC_"));
 }
 
+/* These environment variables may not be set for children on the
+   command line, either because we're going to set them ourselves, or
+   because they should've been set in the parent environment instead. */
 static inline bool
 not_allowed_on_cmdline_envvar(const char *envvar)
 {
-  return (should_copy_envvar(envvar) ||
+  return (preserve_envvar(envvar) ||
           startswith(envvar, "HOME=") ||
           startswith(envvar, "PWD=") ||
           startswith(envvar, "TMPDIR=") ||
           startswith(envvar, "USER=") ||
           startswith(envvar, "LOGNAME=") ||
           startswith(envvar, "SHELL="));
+}
+
+static void
+prune_environment(char **envp)
+{
+    size_t i, j;
+
+    for (i = 0, j = 0; envp[i]; i++)
+        if (preserve_envvar(envp[i]))
+            envp[j++] = envp[i];
+
+    envp[j] = 0;
 }
 
 static void
@@ -782,7 +799,7 @@ finish_child_argv_envp(child_state *cs, const char *const *envp)
   }
 
   for (i = 0; envp[i]; i++)
-    if (should_copy_envvar(envp[i]))
+    if (preserve_envvar(envp[i]))
       x_append_strvec(&nenvp, &aenvc, &envc, envp[i]);
 
 
@@ -1004,16 +1021,19 @@ main(int argc, char **argv, char **envp)
   else
     progname = argv[0];
 
+  /* Line-buffer stderr so that any error messages we emit are
+     atomically written (all of our messages are exactly one line).
+     Then close all unnecessary file descriptors and prune the
+     environment variables; both of these sanitization tasks must
+     happen before any I/O or subprocess invocation can occur.  */
+  setvbuf(stderr, stderr_buffer, _IOLBF, BUFSIZ);
+  prepare_fds();
+  prune_environment(envp);
+
   if (argc < 2) {
     fprintf(stderr, "usage: %s [VAR=val...] program [args...]\n", progname);
     return 2;
   }
-
-  /* Line-buffer stderr so that any error messages we emit are
-     atomically written (all of our messages are exactly one line).
-     Then close all unnecessary file descriptors.  */
-  setvbuf(stderr, stderr_buffer, _IOLBF, BUFSIZ);
-  prepare_fds();
 
   if (geteuid())
     fatal("must be run as root");
