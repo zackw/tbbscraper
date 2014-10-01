@@ -879,7 +879,7 @@ class CaptureWorker:
             self.report_status("processing batch ({}/{})..."
                                .format(len(completed), batchsize))
 
-            report = CaptureTask(todo.popleft(), self.proxy).report()
+            report = CaptureTask(todo.popleft()[1], self.proxy).report()
             completed.append(report)
             if 'content' in report:
                 self.nsuccess += 1
@@ -907,7 +907,6 @@ class CaptureDispatcher:
     def __call__(self, mon, thr):
         self.mon = mon
         self.db = url_database.ensure_database(self.args)
-        self.prepared_batches = {}
         self.status_queue = queue.PriorityQueue()
         self.status_queue_serializer = 0
         self.mon.register_event_queue(self.status_queue,
@@ -918,9 +917,10 @@ class CaptureDispatcher:
         SshProxy.set_min_local_port(self.args.min_proxy_port)
         self.read_locations()
         self.workers = {}
+        self.in_progress = {}
         for loc, proxy in self.locales.items():
             self.workers[loc] = []
-            self.prepared_batches[loc] = collections.deque()
+            self.in_progress[loc] = set()
             for _ in range(self.args.n_workers):
                 wt = CaptureWorker(self, loc, proxy)
                 self.mon.add_work_thread(wt)
@@ -1013,54 +1013,47 @@ class CaptureDispatcher:
         self.mon.maybe_pause_or_stop()
 
     def handle_failed_batch(self, cmd, serial, locale, batch):
-        self.prepared_batches[locale].append(batch)
+        self.in_progress[locale].difference_update(row[0] for row in batch)
 
     def handle_request_batch(self, cmd, serial, locale, callback):
-        prepared = self.prepared_batches[locale]
-        if not prepared:
-            self.refill_prepared(locale, prepared)
-
-        batch = prepared.pop()
-        # If this batch is empty, that means we're done with this locale,
-        # and we should push a finish message to every worker for this locale.
-        # (If we don't do this, workers that are stuck trying to connect to
-        # their proxy will never terminate.)
-        if not batch:
+        if not self.locale_todo[locale]:
+            # We're done with this locale, and we should push a finish
+            # message to every worker for this locale.  (If we don't
+            # do this, workers that are stuck trying to connect to
+            # their proxy will never terminate.)
             for w in self.workers[locale]:
-                w.queue_batch(batch)
-        else:
-            callback(batch)
+                w.queue_batch([])
+            return
 
-    def refill_prepared(self, locale, prepared):
         with self.db, self.db.cursor() as cr:
 
-            if not self.locale_todo[locale]:
-                prepared.append([])
-                return
-
-            blocksize = self.args.batch_size * len(self.workers[locale])
+            query = ('SELECT c.url as uid, s.url as url'
+                     '  FROM capture_progress c, url_strings s'
+                     ' WHERE c.url = s.id')
 
             # Special case: all locales except 'us' draw from the pool of
             # URLs already processed in 'us'.
-            if locale == 'us':
-                cr.execute('SELECT s.url FROM capture_progress c, url_strings s'
-                           '  WHERE c.url = s.id'
-                           '  AND NOT c."l_{0}" LIMIT {1}'
-                           .format(locale, blocksize))
+            if locale == 'us' or 'us' not in self.locale_list:
+                query += ' AND NOT c."l_{0}"'.format(locale)
             else:
-                cr.execute('SELECT s.url FROM capture_progress c, url_strings s'
-                           '  WHERE c.url = s.id'
-                           '  AND c."l_us" AND NOT c."l_{0}" LIMIT {1}'
-                           .format(locale, blocksize))
-            block = [row[0] for row in cr]
+                query += ' AND c."l_us" AND NOT c."l_{0}"'.format(locale)
 
-            if not block:
-                # [None] is a special message that means "I don't have
-                # anything for you _now_, wait a while and ask again".
-                prepared.append([None])
-                return
+            if self.in_progress[locale]:
+                query += ' AND c.url NOT IN ('
+                query += ','.join(str(u) for u in self.in_progress[locale])
+                query += ')'
 
-            prepared.extend(chunked(block, self.args.batch_size))
+            query += ' LIMIT {0}'.format(self.args.batch_size)
+            cr.execute(query)
+            batch = cr.fetchall()
+
+        self.in_progress[locale].update(row[0] for row in batch)
+        if not batch:
+            # [None] is a special message that means "I don't have
+            # anything for you _now_, wait a while and ask again".
+            callback([None])
+        else:
+            callback(batch)
 
     def handle_complete_batch(self, cmd, serial, locale, results):
         self.locale_todo[locale] -= len(results)
@@ -1069,6 +1062,7 @@ class CaptureDispatcher:
             for r in results:
 
                 (url_id, surl) = url_database.add_url_string(cr, r['ourl'])
+                self.in_progress[locale].remove(url_id)
 
                 redir_url = None
                 redir_url_id = None
