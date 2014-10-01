@@ -51,13 +51,16 @@ def driver():
                             help=desc.partition("\n\n")[0],
                             description=desc)
 
-        # The -d option is common to all commands, but we cannot just
-        # add it to the parent parser, because that would be too simple.
-        # (If you try that, the -d option has to come before the command,
-        # and is only mentioned for --help with no command...)
+        # The -d and -s options are common to all commands, but we cannot
+        # just add them to the parent parser, because that would be
+        # too simple.  (If you do it that way, they have to come before the
+        # command, and are only mentioned for --help with no command...)
         cp.add_argument("-d", "--database", metavar="DB",
-                        help="The database to update.",
-                        default="urls.db")
+                        help="Connection string for the database.",
+                        default="ts_collection")
+        cp.add_argument("-S", "--schema", metavar="SCHEMA",
+                        help="The schema to work with.",
+                        default="ts_run_1")
 
         setup(cp)
 

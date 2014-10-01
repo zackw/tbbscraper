@@ -16,28 +16,27 @@ import time
 import urllib.parse
 
 def ensure_database(args):
-    """Ensure that the database specified by args.database exists and
-       has an up-to-date schema.  `args` would normally be an
+    """Ensure that the database specified by args.database exists and has
+       an up-to-date schema.  `args` would normally be an
        argparse.Namespace object, but we don't care as long as
-       "database" is an attribute (nor do we care how the argument
-       actually shows up on the command line).
-       args.database is expected to be a "libpq connection string";
-       if it has no equals signs in it, it is taken as just the name
-       of the database.
-       """
+       "database" and "schema" are attributes (nor do we care how the
+       argument actually shows up on the command line).
+
+       args.database is expected to be a "libpq connection string" or
+       postgres:// URL.  If it appears to be neither of those, it is
+       taken as just the name of the database.
+    """
 
     dbstr = args.database
-    if '=' not in dbstr:
+    if '=' not in dbstr and '://' not in dbstr:
         dbstr = "dbname="+dbstr
 
     db = psycopg2.connect(dbstr,
                           cursor_factory=psycopg2.extras.NamedTupleCursor)
 
-    # Select the 'tbbscraper' schema.
-    with db:
-        c = db.cursor()
-        c.execute("SET search_path TO tbbscraper")
-        c.close()
+    # Select the appropriate schema.
+    with db, db.cursor() as c:
+        c.execute("SET search_path TO " + args.schema)
 
     return db
 
