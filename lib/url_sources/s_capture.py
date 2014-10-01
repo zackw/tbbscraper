@@ -552,7 +552,7 @@ class OpenVPNProxy(Proxy):
             elif line is None and self._state == 1:
                 self._state += 1
                 online_cb()
-            else:
+            elif line is not None:
                 self.report_status("[stdout] " + repr(line))
 
 class CaptureBatchError(subprocess.SubprocessError):
@@ -624,7 +624,9 @@ class CaptureTask:
         self.proc = subprocess.Popen(
             proxy.adjust_command([
                 "isolate",
-                "ISOL_RL_MEM=3221225472",
+                #"ISOL_RL_MEM=3221225472",
+                "ISOL_RL_MEM=unlimited",
+                "ISOL_RL_STACK=8388608",
                 "PHANTOMJS_DISABLE_CRASH_DUMPS=1",
                 "MALLOC_CHECK_=0",
                 "phantomjs",
@@ -647,7 +649,9 @@ class CaptureTask:
             return False
 
         anomalous_stdout = []
-        for line in stdout.strip().split("\n"):
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line: continue
             try:
                 results = json.loads(line)
 
@@ -667,7 +671,9 @@ class CaptureTask:
         if anomalous_stdout:
             self.log["stdout"] = anomalous_stdout
         if not self.status:
-            self.status = "garbage output from tracer"
+            self.status = "crawler failure"
+            if not self.detail:
+                self.detail = "garbage output from tracer"
             return False
         return True
 
@@ -1073,9 +1079,13 @@ class CaptureDispatcher:
                     elif redir_url is not None:
                         try:
                             (redir_url_id, _) = \
-                                url_database.add_url_string(cr, r['canon'])
+                                url_database.add_url_string(cr, redir_url)
                         except ValueError:
-                            r['detail'] += " | invalid redir url: " + redir_url
+                            addendum = "invalid redir url: " + redir_url
+                            if ('detail' not in r or r['detail'] is None):
+                                r['detail'] = addendum
+                            else:
+                                r['detail'] += " | " + addendum
 
                 detail_id = self.capture_detail.get(r['detail'])
                 if detail_id is None and (r['detail'] is not None and
