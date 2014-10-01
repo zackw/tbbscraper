@@ -1142,29 +1142,20 @@ class CaptureDispatcher:
             cr.execute("SELECT detail, id FROM capture_detail;")
             self.capture_detail = { row.detail: row.id for row in cr }
 
-            # Flush and regenerate the capture-progress table.
+            # The capture_progress table tracks what we've done so far.
+            # It is regenerated from scratch each time this program is run,
+            # based on the contents of the urls_* and captured_pages tables.
             self.mon.maybe_pause_or_stop()
             self.mon.report_status("Preparing database... "
                                    "(capture progress)")
-            cr.execute("DELETE FROM capture_progress")
 
-            # Make sure there is an indexed column in the capture_progress
-            # table for every locale. The least horrible way to do this is
-            # with a glob of PL/SQL.
-            self.mon.maybe_pause_or_stop()
-            self.mon.report_status("Preparing database... "
-                                   "(capture progress columns)")
-            for loc in self.locale_list:
-                cr.execute("""DO $$
-                    BEGIN
-                        ALTER TABLE capture_progress
-                            ADD COLUMN "l_{0}" BOOLEAN NOT NULL DEFAULT FALSE;
-                        CREATE INDEX "capture_progress_l_{0}_idx"
-                            ON capture_progress("l_{0}");
-                    EXCEPTION
-                        WHEN duplicate_column THEN NULL;
-                    END;
-                $$;""".format(loc))
+            l_columns = ",\n  ".join(
+                "\"l_{0}\" BOOLEAN NOT NULL DEFAULT FALSE"
+                .format(loc) for loc in self.locale_list)
+
+            cr.execute("CREATE TEMPORARY TABLE capture_progress ("
+                       "  url INTEGER PRIMARY KEY,"
+                       + l_columns + ");")
 
             # Determine the set of URLs yet to be captured from the selected
             # tables.
@@ -1173,9 +1164,10 @@ class CaptureDispatcher:
                                    "(capture progress rows)")
 
             cr.execute("SELECT table_name FROM information_schema.tables"
-                       " WHERE table_schema = 'tbbscraper'"
+                       " WHERE table_schema = %s"
                        "   AND table_type = 'BASE TABLE'"
-                       "   AND table_name LIKE 'urls_%'")
+                       "   AND table_name LIKE 'urls_%%'",
+                       (self.args.schema,))
             all_url_tables = set(row[0] for row in cr)
 
             if self.args.tables is None:
@@ -1195,9 +1187,15 @@ class CaptureDispatcher:
                                        "(capture progress rows: {})"
                                        .format(tbl))
 
+                # Only one row per URL, even if it appears in more than one
+                # source table.
                 cr.execute("INSERT INTO capture_progress (url) "
                            "        SELECT url FROM "+tbl+
                            " EXCEPT SELECT url FROM capture_progress")
+
+            self.mon.maybe_pause_or_stop()
+            self.mon.report_status("Preparing database... (analyzing)")
+            cr.execute("ANALYZE captured_pages")
 
             for loc in self.locale_list:
                 self.mon.maybe_pause_or_stop()
@@ -1210,10 +1208,17 @@ class CaptureDispatcher:
                            ' WHERE c.url = p.url AND p.locale = \'{0}\''
                            .format(loc))
 
+            for loc in self.locale_list:
+                self.mon.maybe_pause_or_stop()
+                self.mon.report_status("Preparing database... (indexing: {})"
+                                       .format(loc))
+                cr.execute("CREATE INDEX \"capture_progress_l_{0}_idx\""
+                           "  ON capture_progress(\"l_{0}\");"
+                           .format(loc))
+
             self.mon.maybe_pause_or_stop()
             self.mon.report_status("Preparing database... (analyzing)")
             cr.execute("ANALYZE capture_progress")
-            cr.execute("ANALYZE captured_pages")
 
             self.mon.maybe_pause_or_stop()
             self.mon.report_status("Preparing database... (statistics)")

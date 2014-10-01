@@ -149,9 +149,3 @@ CREATE TABLE captured_pages (
 );
 CREATE INDEX captured_pages_url_idx ON captured_pages(url);
 CREATE INDEX captured_pages_result_idx ON captured_pages(result);
-
-CREATE TABLE capture_progress (
-    url  INTEGER PRIMARY KEY REFERENCES url_strings(id),
-    l_us BOOLEAN NOT NULL DEFAULT(false)
-);
-CREATE INDEX capture_progress_l_us_idx ON capture_progress(l_us);
