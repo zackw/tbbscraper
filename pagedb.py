@@ -5,6 +5,7 @@
 import psycopg2
 import zlib
 import json
+from html_extractor import ExtractedContent
 
 class CapturedPage:
     """A page as captured from a particular locale.  Corresponds to one
@@ -32,6 +33,14 @@ class CapturedPage:
         self._html_content = html_content
         self._html_content_unpacked = False
 
+        # Derived values.
+        self._extracted = None
+
+    def _do_extraction(self):
+        if self._extracted is None:
+            self._extracted = ExtractedContent(self.redir_url,
+                                               self.html_content)
+
     @property
     def capture_log(self):
         if not self._capture_log_unpacked:
@@ -48,8 +57,27 @@ class CapturedPage:
             self._html_content_unpacked = True
         return self._html_content
 
+    @property
+    def text_content(self):
+        self._do_extraction()
+        return self._extracted.text_content
 
-    def dump(self, fp, html_content=False, capture_log=False):
+    @property
+    def resources(self):
+        self._do_extraction()
+        return self._extracted.resources
+
+    @property
+    def links(self):
+        self._do_extraction()
+        return self._extracted.links
+
+    def dump(self, fp, *,
+             capture_log=False,
+             html_content=False,
+             text_content=False,
+             resources=False,
+             links=False):
         val = {
             "0_url": self.url,
             "1_locale": self.locale,
@@ -57,15 +85,21 @@ class CapturedPage:
             "3_result": self.result,
             "4_detail": self.detail,
             "5_redir": None,
-            "6_html": None,
-            "7_log": None
+            "6_log": None,
+            "7_html": None,
+            "7_text": None,
+            "7_rsrcs": None,
+            "7_links": None
         }
         if self.redir_url != self.url:
             val["5_redir"] = self.redir_url
-        if html_content:
-            val["6_html"] = self.html_content
-        if capture_log:
-            val["7_log"] = self.capture_log
+
+        if capture_log:  val["6_log"]   = self.capture_log
+        if html_content: val["7_html"]  = self.html_content
+        if text_content: val["7_text"]  = self.text_content
+        if resources:    val["7_rsrcs"] = self.resources
+        if links:        val["7_links"] = self.links
+
         fp.write(json.dumps(val, sort_keys=True).encode("utf-8"))
         fp.write(b'\n')
 
@@ -121,6 +155,12 @@ if __name__ == '__main__':
                         default=None)
         ap.add_argument("--html", help="also dump the captured HTML",
                         action="store_true")
+        ap.add_argument("--links", help="also dump extracted hyperlinks",
+                        action="store_true")
+        ap.add_argument("--resources", help="also dump extracted resource URLs",
+                        action="store_true")
+        ap.add_argument("--text", help="also dump extracted text",
+                        action="store_true")
         ap.add_argument("--capture-log", help="also dump the capture log",
                         action="store_true")
         ap.add_argument("--ordered", help="sort pages by URL and then locale",
@@ -143,7 +183,10 @@ if __name__ == '__main__':
                                  ordered      = args.ordered):
             page.dump(prettifier.stdin,
                       html_content = args.html,
-                      capture_log = args.capture_log)
+                      text_content = args.text,
+                      links        = args.links,
+                      resources    = args.resources,
+                      capture_log  = args.capture_log)
             prettifier.stdin.write(b',')
             prettifier.stdin.flush()
 
