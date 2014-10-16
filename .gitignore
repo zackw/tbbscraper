@@ -1,4 +1,7 @@
 *~
+*.x
+*.o
+*.mod
 *.pyc
 *.pyo
 __pycache__/
