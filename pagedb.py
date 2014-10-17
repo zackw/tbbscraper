@@ -115,6 +115,8 @@ class PageDB:
        interesting material (add queries as they become useful!)"""
 
     def __init__(self, connstr):
+        if "=" not in connstr:
+            connstr = "dbname="+connstr
         self.db = psycopg2.connect(connstr)
 
     def get_pages(self, *,
@@ -179,9 +181,6 @@ if __name__ == '__main__':
 
         args = ap.parse_args()
         args.where = " ".join(args.where)
-
-        if "=" not in args.database:
-            args.database = "dbname="+args.database
 
         db = PageDB(args.database)
         prettifier = subprocess.Popen(["underscore", "pretty"],
