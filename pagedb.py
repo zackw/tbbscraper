@@ -2,6 +2,7 @@
 
 # Extract captured pages from the database.
 
+import os
 import psycopg2
 import zlib
 import json
@@ -135,7 +136,11 @@ class PageDB:
         if limit is not None:
             query += "  LIMIT {}".format(limit)
 
-        with self.db, self.db.cursor() as cur:
+        # This must be a named cursor, otherwise psycopg2 helpfully fetches
+        # ALL THE ROWS AT ONCE, and they don't fit in RAM and it crashes.
+        with self.db, \
+             self.db.cursor("pagedb_qtmp_{}".format(os.getpid())) as cur:
+            cur.itersize = 100
             cur.execute(query)
             for row in cur:
                 yield CapturedPage(*row)
