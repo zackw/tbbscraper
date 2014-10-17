@@ -45,17 +45,23 @@ class CapturedPage:
     @property
     def capture_log(self):
         if not self._capture_log_unpacked:
-            self._capture_log = json.loads(
-                zlib.decompress(self._capture_log).decode("utf-8"))
             self._capture_log_unpacked = True
+            if self._capture_log is None:
+                self._capture_log = ''
+            else:
+                self._capture_log = json.loads(
+                    zlib.decompress(self._capture_log).decode("utf-8"))
         return self._capture_log
 
     @property
     def html_content(self):
         if not self._html_content_unpacked:
-            self._html_content = (
-                zlib.decompress(self._html_content).decode("utf-8"))
             self._html_content_unpacked = True
+            if self._html_content is None:
+                self._html_content = ''
+            else:
+                self._html_content = (
+                    zlib.decompress(self._html_content).decode("utf-8"))
         return self._html_content
 
     @property
