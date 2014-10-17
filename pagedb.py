@@ -13,9 +13,10 @@ class CapturedPage:
        row of the .captured_pages table.  Not tied to the database.
     """
 
-    def __init__(self, locale, url, access_time, result, detail,
+    def __init__(self, locale, url_id, url, access_time, result, detail,
                  redir_url, capture_log, html_content, screenshot):
 
+        self.page_id     = (locale, url_id)
         self.locale      = locale
         self.url         = url
         self.access_time = access_time
@@ -86,6 +87,7 @@ class CapturedPage:
              resources=False,
              links=False):
         val = {
+            "0_id": self.page_id,
             "0_url": self.url,
             "1_locale": self.locale,
             "2_access_time": self.access_time.isoformat(' '),
@@ -128,7 +130,7 @@ class PageDB:
            per row.
         """
 
-        query = ("SELECT c.locale, u.url, c.access_time, c.result, d.detail,"
+        query = ("SELECT c.locale, c.url, u.url, c.access_time, c.result, d.detail,"
                  "       r.url, c.capture_log, c.html_content, c.screenshot"
                  "       FROM captured_pages c"
                  "  LEFT JOIN url_strings u    ON c.url = u.id"
