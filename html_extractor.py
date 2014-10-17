@@ -5,6 +5,7 @@
 # attempt to produce Markdown; just extracts the text, and lists of
 # outbound links and resource references.
 
+import collections
 import html5lib
 import urllib.parse
 import re
@@ -148,6 +149,15 @@ _discards = frozenset((
     "video",
 ))
 
+class DomStatistics:
+    def __init__(self):
+        self.tags = collections.Counter()
+        self.tags_at_depth = collections.Counter()
+
+    def to_json(self):
+        return { "tags"          : self.tags,
+                 "tags_at_depth" : self.tags_at_depth }
+
 class ExtractedContent:
     def __init__(self, url, page):
         document = html5lib.parse(page)
@@ -163,6 +173,7 @@ class ExtractedContent:
         self.text_content = []
         self.links = []
         self.resources = []
+        self.dom_stats = DomStatistics()
 
         self._process_document(walker)
 
@@ -173,6 +184,7 @@ class ExtractedContent:
     def _process_document(self, walker):
 
         discard = 0
+        depth = 0
 
         for token in walker:
             t = token["type"]
@@ -180,8 +192,13 @@ class ExtractedContent:
                 pass
             elif t in ("StartTag", "EmptyTag"):
                 name = token["name"]
-                if name in _discards and t != "EmptyTag":
-                    discard += 1
+                self.dom_stats.tags[name] += 1
+                self.dom_stats.tags_at_depth[depth] += 1
+
+                if t == "StartTag":
+                    depth += 1
+                    if name in _discards:
+                        discard += 1
 
                 extractor = _links.get(name)
                 if extractor is not None:
@@ -201,6 +218,7 @@ class ExtractedContent:
                 name = token["name"]
                 if name in _discards:
                     discard -= 1
+                depth -= 1
 
             elif t in ("Characters", "SpaceCharacters"):
                 if not discard:

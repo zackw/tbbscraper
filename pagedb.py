@@ -80,9 +80,15 @@ class CapturedPage:
         self._do_extraction()
         return self._extracted.links
 
+    @property
+    def dom_stats(self):
+        self._do_extraction()
+        return self._extracted.dom_stats
+
     def dump(self, fp, *,
              capture_log=False,
              html_content=False,
+             dom_stats=False,
              text_content=False,
              resources=False,
              links=False):
@@ -98,7 +104,8 @@ class CapturedPage:
             "7_html": None,
             "7_text": None,
             "7_rsrcs": None,
-            "7_links": None
+            "7_links": None,
+            "7_dom_stats": None
         }
         if self.redir_url != self.url:
             val["5_redir"] = self.redir_url
@@ -108,6 +115,7 @@ class CapturedPage:
         if text_content: val["7_text"]  = self.text_content
         if resources:    val["7_rsrcs"] = self.resources
         if links:        val["7_links"] = self.links
+        if dom_stats:    val["7_dom_stats"] = self.dom_stats.to_json()
 
         fp.write(json.dumps(val, sort_keys=True).encode("utf-8"))
         fp.write(b'\n')
@@ -176,6 +184,9 @@ if __name__ == '__main__':
                         action="store_true")
         ap.add_argument("--text", help="also dump extracted text",
                         action="store_true")
+        ap.add_argument("--dom-stats",
+                        help="also dump statistics about the DOM structure",
+                        action="store_true")
         ap.add_argument("--capture-log", help="also dump the capture log",
                         action="store_true")
         ap.add_argument("--ordered", help="sort pages by URL and then locale",
@@ -196,6 +207,7 @@ if __name__ == '__main__':
             page.dump(prettifier.stdin,
                       html_content = args.html,
                       text_content = args.text,
+                      dom_stats    = args.dom_stats,
                       links        = args.links,
                       resources    = args.resources,
                       capture_log  = args.capture_log)
