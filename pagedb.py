@@ -128,6 +128,20 @@ class PageDB:
         if "=" not in connstr:
             connstr = "dbname="+connstr
         self.db = psycopg2.connect(connstr)
+        self._locales = None
+
+    @property
+    def locales(self):
+        """Retrieve a list of all available locales.  This involves a
+           moderately expensive query so it's memoized.
+        """
+        if self._locales is None:
+            with self.db, self.db.cursor() as cur:
+                cur.execute("SELECT DISTINCT locale FROM captured_pages")
+                self._locales = sorted([
+                    row[0] for row in cur
+                ])
+        return self._locales
 
     def get_pages(self, *,
                   ordered=False,
