@@ -1,19 +1,47 @@
 #! /usr/bin/python3
 
-# Extract content from HTML pages.  Inspired by html2text.py, but this
-# is a from-scratch implementation based on html5lib.  Does not
-# attempt to produce Markdown; just extracts the text, and lists of
-# outbound links and resource references.
+# Extract content from HTML pages.
 
 import collections
-import html5lib
 import urllib.parse
 import re
 import sys
+from gumbo import gumboc
 
-_HTML_NS = "http://www.w3.org/1999/xhtml"
+# Core logic of next function from
+# https://www.daniweb.com/software-development/python/code/395270/generic-non-recursive-tree-traversal
 
-_Walker = html5lib.getTreeWalker("etree")
+def walk_gumbo(output):
+    root = output.contents.root.contents
+    todo = collections.deque((iter((root,)),))
+    path = collections.deque()
+
+    while todo:
+        sequence = todo[-1]
+        try:
+            node = next(sequence)
+        except StopIteration:
+            todo.pop()
+            if path:
+                last = path.pop()
+                yield ("END", last, [], path)
+        else:
+            ty = node.type.value
+            data = node.contents
+            if ty == 0 or ty == 4:
+                # <!doctype> or <!-- -->
+                pass
+            elif ty == 2 or ty == 3 or ty == 5:
+                # TEXT or CDATA or WHITESPACE
+                yield ("TEXT", data.text, [], path)
+            elif ty == 1:
+                if len(data.children) == 0:
+                    yield ("EMPTY", data.tag_name, data.attributes, path)
+                else:
+                    yield ("START", data.tag_name, data.attributes, path)
+                    path.append(data.tag_name)
+                    todo.append(iter(data.children))
+
 
 # The HTML spec makes a distinction between "space characters" and
 # "White_Space characters".  Only "space characters" are stripped
@@ -37,12 +65,9 @@ def _within_this_document(docurl, url):
 # hyperlinks or "r" for resources.
 
 def _get_htmlattr(attrs, name):
-    v = attrs.get(name)
-    if v: return v
-    v = attrs.get((None, name))
-    if v: return v
-    v = attrs.get((_HTML_NS, name))
-    if v: return v
+    for attr in attrs:
+        if attr.name == name:
+            return attr.value.decode("utf-8")
     return None
 
 def _X_(mode, attrs, a):
@@ -52,15 +77,15 @@ def _X_(mode, attrs, a):
         if v is not None: urls.append(_Sstrip(v))
     return (mode, urls)
 
-def _X_src(a):        return _X_("r", ["src"],           a)
-def _X_src_poster(a): return _X_("r", ["src", "poster"], a)
-def _X_data(a):       return _X_("r", ["data"],          a)
-def _X_icon(a):       return _X_("r", ["icon"],          a)
+def _X_src(a):        return _X_("r", [b"src"],           a)
+def _X_src_poster(a): return _X_("r", [b"src", b"poster"], a)
+def _X_data(a):       return _X_("r", [b"data"],          a)
+def _X_icon(a):       return _X_("r", [b"icon"],          a)
 
-def _X_href(a):       return _X_("h", ["href"],          a)
-def _X_action(a):     return _X_("h", ["action"],        a)
-def _X_formaction(a): return _X_("h", ["formaction"],    a)
-def _X_cite(a):       return _X_("h", ["cite"],          a)
+def _X_href(a):       return _X_("h", [b"href"],          a)
+def _X_action(a):     return _X_("h", [b"action"],        a)
+def _X_formaction(a): return _X_("h", [b"formaction"],    a)
+def _X_cite(a):       return _X_("h", [b"cite"],          a)
 
 # srcset is a comma-separated list of "image candidate strings", each
 # consisting of a URL possibly followed by spaces and then "width" or
@@ -69,9 +94,9 @@ def _X_cite(a):       return _X_("h", ["cite"],          a)
 # "1x" is the URL, not a descriptor.
 def _X_src_srcset(a):
     urls = []
-    v = _get_htmlattr(a, "src")
+    v = _get_htmlattr(a, b"src")
     if v is not None: urls.append(_Sstrip(v))
-    v = _get_htmlattr(a, "srcset")
+    v = _get_htmlattr(a, b"srcset")
     if v is not None:
         for ic in v.split(","):
             ic = _SRE.split(_Sstrip(ic))
@@ -83,8 +108,8 @@ def _X_src_srcset(a):
 # link[href] is either "r", "h", or to be ignored depending on the value of
 # the rel= property.
 def _X_link_href(a):
-    href = _get_htmlattr(a, "href")
-    rel  = _get_htmlattr(a, "rel")
+    href = _get_htmlattr(a, b"href")
+    rel  = _get_htmlattr(a, b"rel")
     if not href or not rel:
         return ("r", [])
 
@@ -149,6 +174,57 @@ _discards = frozenset((
     "video",
 ))
 
+# All elements that should NOT force a word break.
+# For instance, "con<i>sis</i>tent" should produce "consistent", but
+# "con<p>sis</p>tent" should produce "con sis tent".
+_no_word_break = frozenset((
+    "a",
+    "abbr",
+    "b",
+    "basefont",
+    "bdi",
+    "bdo",
+    "big",
+    "blink",
+    "cite",
+    "code",
+    "data",
+    "del",
+    "dfn",
+    "em",
+    "font",
+    "i",
+    "ins",
+    "kbd",
+    "malignmark",
+    "mark",
+    "mglyph",
+    "mi",
+    "mn",
+    "mo",
+    "ms",
+    "mtext",
+    "nobr",
+    "plaintext",
+    "q",
+    "rb",
+    "rp",
+    "rt",
+    "ruby",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "sup",
+    "time",
+    "tt",
+    "u",
+    "var",
+))
+
 class DomStatistics:
     def __init__(self):
         self.tags = collections.Counter()
@@ -160,69 +236,76 @@ class DomStatistics:
 
 class ExtractedContent:
     def __init__(self, url, page):
-        document = html5lib.parse(page)
-        walker = _Walker(document)
-        base = document.find("./h:head/h:base[@href]",
-                             namespaces={'h':_HTML_NS})
-        if base:
-            href = _SRE.sub("", base.get("href", ""))
-            self.url = urllib.parse.urljoin(url, href)
-        else:
-            self.url = url
-
+        self.url = url
+        self.saw_base_href = False
         self.text_content = []
         self.links = []
         self.resources = []
         self.dom_stats = DomStatistics()
 
-        self._process_document(walker)
+        with gumboc.parse(page) as output:
+            self._process_document(walk_gumbo(output))
 
         self.text_content = _WSRE.sub(" ", "".join(self.text_content))
         self.links = sorted(set(self.links))
         self.resources = sorted(set(self.resources))
 
-    def _process_document(self, walker):
+    def _process_document(self, contents):
 
         discard = 0
         depth = 0
+        for what, name, attrs, path in contents:
+            if what == "TEXT":
+                if not discard:
+                    self.text_content.append(name.decode('utf-8'))
+                continue
 
-        for token in walker:
-            t = token["type"]
-            if t in ("Doctype", "Comment"):
-                pass
-            elif t in ("StartTag", "EmptyTag"):
-                name = token["name"]
-                self.dom_stats.tags[name] += 1
-                self.dom_stats.tags_at_depth[depth] += 1
+            if hasattr(name, 'decode'):
+                name = name.decode('utf-8')
+            if name not in _no_word_break:
+                self.text_content.append(' ')
+            if what == "EMPTY":
+                self._process_element(name, attrs, depth, path)
 
-                if t == "StartTag":
-                    depth += 1
-                    if name in _discards:
-                        discard += 1
+            elif what == "START":
+                self._process_element(name, attrs, depth, path)
+                depth += 1
+                if name in _discards:
+                    discard += 1
 
-                extractor = _links.get(name)
-                if extractor is not None:
-                    ltype, urls = extractor(token["data"])
-                    if urls:
-                        urls = [urllib.parse.urljoin(self.url, u)
-                                for u in urls]
-                        urls = [u for u in urls
-                                if not _within_this_document(self.url, u)]
-                        if ltype == "r":
-                            self.resources.extend(urls)
-                        else:
-                            assert ltype == "h"
-                            self.links.extend(urls)
 
-            elif t == "EndTag":
-                name = token["name"]
+            elif what == "END":
                 if name in _discards:
                     discard -= 1
                 depth -= 1
 
-            elif t in ("Characters", "SpaceCharacters"):
-                if not discard:
-                    self.text_content.append(token["data"])
-
             else:
-                raise RuntimeError("Unexpected token: {!r}".format(token))
+                raise RuntimeError("Unexpected token: {!r}".format((
+                    what, name, attrs, path
+                )))
+
+
+    def _process_element(self, name, attrs, depth, path):
+        self.dom_stats.tags[name] += 1
+        self.dom_stats.tags_at_depth[depth] += 1
+
+        extractor = _links.get(name)
+        if extractor is not None:
+            ltype, urls = extractor(attrs)
+            if urls:
+                urls = [urllib.parse.urljoin(self.url, u)
+                        for u in urls]
+                urls = [u for u in urls
+                        if not _within_this_document(self.url, u)]
+                if ltype == "r":
+                    self.resources.extend(urls)
+                else:
+                    assert ltype == "h"
+                    self.links.extend(urls)
+
+        # very special case for /html/head/base the first time it's seen
+        if (name == "base" and depth == 2 and not self.saw_base_href
+            and path[-1] == b"head" and path[-2] == b"html"):
+            href = _get_htmlattr(attrs, b"href")
+            if href:
+                self.url = urllib.parse.urljoin(self.url, href)
