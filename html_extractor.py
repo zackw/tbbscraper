@@ -8,41 +8,6 @@ import re
 import sys
 from gumbo import gumboc
 
-# Core logic of next function from
-# https://www.daniweb.com/software-development/python/code/395270/generic-non-recursive-tree-traversal
-
-def walk_gumbo(output):
-    root = output.contents.root.contents
-    todo = collections.deque((iter((root,)),))
-    path = collections.deque()
-
-    while todo:
-        sequence = todo[-1]
-        try:
-            node = next(sequence)
-        except StopIteration:
-            todo.pop()
-            if path:
-                last = path.pop()
-                yield ("END", last, [], path)
-        else:
-            ty = node.type.value
-            data = node.contents
-            if ty == 0 or ty == 4:
-                # <!doctype> or <!-- -->
-                pass
-            elif ty == 2 or ty == 3 or ty == 5:
-                # TEXT or CDATA or WHITESPACE
-                yield ("TEXT", data.text, [], path)
-            elif ty == 1:
-                if len(data.children) == 0:
-                    yield ("EMPTY", data.tag_name, data.attributes, path)
-                else:
-                    yield ("START", data.tag_name, data.attributes, path)
-                    path.append(data.tag_name)
-                    todo.append(iter(data.children))
-
-
 # The HTML spec makes a distinction between "space characters" and
 # "White_Space characters".  Only "space characters" are stripped
 # from URL attributes.
@@ -77,15 +42,15 @@ def _X_(mode, attrs, a):
         if v is not None: urls.append(_Sstrip(v))
     return (mode, urls)
 
-def _X_src(a):        return _X_("r", [b"src"],           a)
+def _X_src(a):        return _X_("r", [b"src"],            a)
 def _X_src_poster(a): return _X_("r", [b"src", b"poster"], a)
-def _X_data(a):       return _X_("r", [b"data"],          a)
-def _X_icon(a):       return _X_("r", [b"icon"],          a)
+def _X_data(a):       return _X_("r", [b"data"],           a)
+def _X_icon(a):       return _X_("r", [b"icon"],           a)
 
-def _X_href(a):       return _X_("h", [b"href"],          a)
-def _X_action(a):     return _X_("h", [b"action"],        a)
-def _X_formaction(a): return _X_("h", [b"formaction"],    a)
-def _X_cite(a):       return _X_("h", [b"cite"],          a)
+def _X_href(a):       return _X_("h", [b"href"],           a)
+def _X_action(a):     return _X_("h", [b"action"],         a)
+def _X_formaction(a): return _X_("h", [b"formaction"],     a)
+def _X_cite(a):       return _X_("h", [b"cite"],           a)
 
 # srcset is a comma-separated list of "image candidate strings", each
 # consisting of a URL possibly followed by spaces and then "width" or
@@ -244,68 +209,88 @@ class ExtractedContent:
         self.dom_stats = DomStatistics()
 
         with gumboc.parse(page) as output:
-            self._process_document(walk_gumbo(output))
+            self._process_document(output)
 
         self.text_content = _WSRE.sub(" ", "".join(self.text_content))
         self.links = sorted(set(self.links))
         self.resources = sorted(set(self.resources))
 
-    def _process_document(self, contents):
+    def _process_document(self, output):
 
+        root = output.contents.root.contents
+        todo = collections.deque((iter((root,)),))
+        path = collections.deque()
         discard = 0
         depth = 0
-        for what, name, attrs, path in contents:
-            if what == "TEXT":
-                if not discard:
-                    self.text_content.append(name.decode('utf-8'))
-                continue
 
-            if hasattr(name, 'decode'):
-                name = name.decode('utf-8')
-            if name not in _no_word_break:
-                self.text_content.append(' ')
-            if what == "EMPTY":
-                self._process_element(name, attrs, depth, path)
+        while todo:
+            sequence = todo[-1]
+            try:
+                node = next(sequence)
 
-            elif what == "START":
-                self._process_element(name, attrs, depth, path)
-                depth += 1
-                if name in _discards:
-                    discard += 1
-
-
-            elif what == "END":
-                if name in _discards:
-                    discard -= 1
-                depth -= 1
+            except StopIteration:
+                todo.pop()
+                if path:
+                    # close-tag
+                    name = path.pop()
+                    if name not in _no_word_break:
+                        self.text_content.append(' ')
+                    if name in _discards:
+                        discard -= 1
+                    depth -= 1
 
             else:
-                raise RuntimeError("Unexpected token: {!r}".format((
-                    what, name, attrs, path
-                )))
+                ty = node.type.value
+                data = node.contents
 
+                if ty == 2 or ty == 3 or ty == 5:
+                    # TEXT or CDATA or WHITESPACE
+                    if not discard:
+                        self.text_content.append(data.text.decode('utf-8'))
 
-    def _process_element(self, name, attrs, depth, path):
-        self.dom_stats.tags[name] += 1
-        self.dom_stats.tags_at_depth[depth] += 1
+                elif ty == 1:
+                    # element
+                    name = data.tag_name
+                    # Gumbo isn't really Py3K-safe
+                    if hasattr(name, 'decode'):
+                        name = name.decode('utf-8')
 
-        extractor = _links.get(name)
-        if extractor is not None:
-            ltype, urls = extractor(attrs)
-            if urls:
-                urls = [urllib.parse.urljoin(self.url, u)
-                        for u in urls]
-                urls = [u for u in urls
-                        if not _within_this_document(self.url, u)]
-                if ltype == "r":
-                    self.resources.extend(urls)
+                    if name not in _no_word_break:
+                        self.text_content.append(' ')
+
+                    self.dom_stats.tags[name] += 1
+                    self.dom_stats.tags_at_depth[depth] += 1
+
+                    extractor = _links.get(name)
+                    if extractor is not None:
+                        ltype, targets = extractor(data.attributes)
+                        if targets:
+                            urls = [u for u in (urllib.parse.urljoin(self.url, t)
+                                                for t in targets)
+                                    if not _within_this_document(self.url, u)]
+                            if ltype == "r":
+                                self.resources.extend(urls)
+                            else:
+                                assert ltype == "h"
+                                self.links.extend(urls)
+
+                    # very special case for /html/head/base the first time it's seen
+                    # (ignoring second and subsequent instances of <base href> is
+                    # specified in HTML5)
+                    if (name == "base" and depth == 2 and not self.saw_base_href
+                        and path[-1] == "head" and path[-2] == "html"):
+                        href = _get_htmlattr(data.attributes, b"href")
+                        if href:
+                            self.url = urllib.parse.urljoin(self.url, href)
+                            self.saw_base_href = True
+
+                    if data.children:
+                        todo.append(iter(data.children))
+                        path.append(name)
+                        depth += 1
+                        if name in _discards:
+                            discard += 1
+
                 else:
-                    assert ltype == "h"
-                    self.links.extend(urls)
-
-        # very special case for /html/head/base the first time it's seen
-        if (name == "base" and depth == 2 and not self.saw_base_href
-            and path[-1] == b"head" and path[-2] == b"html"):
-            href = _get_htmlattr(attrs, b"href")
-            if href:
-                self.url = urllib.parse.urljoin(self.url, href)
+                    # <!doctype> or <!-- --> should be the only other things encountered
+                    assert ty == 0 or ty == 4
