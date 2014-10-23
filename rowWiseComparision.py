@@ -178,10 +178,27 @@ for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
 	# userContentFeatures, domFeatures = getHtmlFeatures(html)
 	redirURL = page.redir_url
 	originalDomain, redirDomain, isRedir = getDomainRedir(originalURL, redirURL)
-
+	if(detail is None):
+		detail = ''
+	if(url_id not in pages):
+		pages[url_id] = {}
+	if(locale not in pages[url_id]):
+		pages[url_id][locale] = result + ',' + detail + ',' + str(isRedir) + ',' + redirDomain + ',' + str(depth)# + ',' + str(len(userContent)) + ',' + str(len(html))
+		# print(pages[url_id][locale])
+	else:
+		print('**** ID ERROR ****')
+		print('**************** ID ERROR ****************')
+		print('**** ID ERROR ****')
 	print(len(pages))
-
 	
+for url_id in pages:
+	comparision = {}
+	for locale in pages[url_id]:
+		if(pages[url_id][locale] not in comparision):
+			comparision[pages[url_id][locale]] = 0
+		comparision[pages[url_id][locale]] += 1
+	print(len(comparision))
+		
 	# print(originalURL + ' - ' + redirURL + ' - ' + locale + ' - ' + result)
 	# print(originalDomain + ' - ' + redirDomain + ' - ' + str(isRedir))
 	# print(depth)
