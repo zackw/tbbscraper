@@ -171,34 +171,54 @@ for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
 	url_id = page.page_id[1]
 	result = page.result
 	detail = page.detail
-	html = page.html_content
-	userContent =  page.text_content
+	# html = page.html_content
+	# userContent =  page.text_content
 	dom_stats = page.dom_stats
 	depth = len(dom_stats.tags_at_depth)
+	NumberOfTagTypes = len(dom_stats.tags)
+	numberOfTags = 0
+	for tag in dom_stats.tags:
+		numberOfTags += dom_stats.tags[tag]
 	# userContentFeatures, domFeatures = getHtmlFeatures(html)
 	redirURL = page.redir_url
 	originalDomain, redirDomain, isRedir = getDomainRedir(originalURL, redirURL)
 	if(detail is None):
 		detail = ''
+	if(isRedir is None):
+		print('isRedir')
+	if(result is None):
+		print('result')
+	if(redirDomain is None):
+		redirDomain = ''
+		
 	if(url_id not in pages):
 		pages[url_id] = {}
 	if(locale not in pages[url_id]):
-		pages[url_id][locale] = result + ',' + detail + ',' + str(isRedir) + ',' + redirDomain + ',' + str(depth)# + ',' + str(len(userContent)) + ',' + str(len(html))
+		pages[url_id][locale] = result + ',' + detail + ',' + str(isRedir) + ',' + redirDomain + ',' + str(depth) + ',' + str(NumberOfTagTypes)# + ',' + str(numberOfTags)# + ',' + str(len(userContent)) + ',' + str(len(html))
 		# print(pages[url_id][locale])
 	else:
 		print('**** ID ERROR ****')
 		print('**************** ID ERROR ****************')
 		print('**** ID ERROR ****')
 	print(len(pages))
-	
+
+rowClusterNumbers = {}
 for url_id in pages:
 	comparision = {}
 	for locale in pages[url_id]:
 		if(pages[url_id][locale] not in comparision):
 			comparision[pages[url_id][locale]] = 0
 		comparision[pages[url_id][locale]] += 1
-	print(len(comparision))
-		
+	noClusters = len(comparision)
+	if(noClusters not in  rowClusterNumbers):
+		rowClusterNumbers[noClusters] = 0
+	rowClusterNumbers[noClusters] += 1
+	# print(pages[url_id])
+	
+f = open('results/rowwiseTest.csv', mode ='w')
+for noClusters in rowClusterNumbers:
+	f.write(str(noClusters) + ',' + str(rowClusterNumbers[noClusters]) + '\n')
+f.close()
 	# print(originalURL + ' - ' + redirURL + ' - ' + locale + ' - ' + result)
 	# print(originalDomain + ' - ' + redirDomain + ' - ' + str(isRedir))
 	# print(depth)
