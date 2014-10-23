@@ -200,9 +200,10 @@ class DomStatistics:
                  "tags_at_depth" : self.tags_at_depth }
 
 class ExtractedContent:
-    def __init__(self, url, page):
+    def __init__(self, url, page, extract_links=True):
         self.url = url
         self.saw_base_href = False
+        self.extracted_links = extract_links
         self.text_content = []
         self.links = []
         self.resources = []
@@ -212,8 +213,9 @@ class ExtractedContent:
             self._process_document(output)
 
         self.text_content = _WSRE.sub(" ", "".join(self.text_content))
-        self.links = sorted(set(self.links))
-        self.resources = sorted(set(self.resources))
+        if extract_links:
+            self.links = sorted(set(self.links))
+            self.resources = sorted(set(self.resources))
 
     def _process_document(self, output):
 
@@ -261,18 +263,19 @@ class ExtractedContent:
                     self.dom_stats.tags[name] += 1
                     self.dom_stats.tags_at_depth[depth] += 1
 
-                    extractor = _links.get(name)
-                    if extractor is not None:
-                        ltype, targets = extractor(data.attributes)
-                        if targets:
-                            urls = [u for u in (urllib.parse.urljoin(self.url, t)
-                                                for t in targets)
-                                    if not _within_this_document(self.url, u)]
-                            if ltype == "r":
-                                self.resources.extend(urls)
-                            else:
-                                assert ltype == "h"
-                                self.links.extend(urls)
+                    if self.extracted_links:
+                        extractor = _links.get(name)
+                        if extractor is not None:
+                            ltype, targets = extractor(data.attributes)
+                            if targets:
+                                urls = [u for u in (urllib.parse.urljoin(self.url, t)
+                                                    for t in targets)
+                                        if not _within_this_document(self.url, u)]
+                                if ltype == "r":
+                                    self.resources.extend(urls)
+                                else:
+                                    assert ltype == "h"
+                                    self.links.extend(urls)
 
                     # very special case for /html/head/base the first time it's seen
                     # (ignoring second and subsequent instances of <base href> is
