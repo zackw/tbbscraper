@@ -128,6 +128,20 @@ class PageDB:
         if "=" not in connstr:
             connstr = "dbname="+connstr
         self.db = psycopg2.connect(connstr)
+        self._locales = None
+
+    @property
+    def locales(self):
+        """Retrieve a list of all available locales.  This involves a
+           moderately expensive query so it's memoized.
+        """
+        if self._locales is None:
+            with self.db, self.db.cursor() as cur:
+                cur.execute("SELECT DISTINCT locale FROM captured_pages")
+                self._locales = sorted([
+                    row[0] for row in cur
+                ])
+        return self._locales
 
     def get_pages(self, *,
                   ordered=False,
@@ -141,7 +155,7 @@ class PageDB:
         query = ("SELECT c.locale, c.url, u.url, c.access_time, c.result, d.detail,"
                  "       r.url, c.capture_log, c.html_content, c.screenshot"
                  "       FROM captured_pages c"
-                 "  LEFT JOIN url_strings u    ON c.url = u.id"
+                 "       JOIN url_strings u    ON c.url = u.id"
                  "  LEFT JOIN url_strings r    ON c.redir_url = r.id"
                  "  LEFT JOIN capture_detail d ON c.detail = d.id")
 
@@ -149,7 +163,18 @@ class PageDB:
             query += "  WHERE {}".format(where_clause)
 
         if ordered:
-            query += "  ORDER BY u.url, c.locale"
+            # Note: these ordering options do not require the database server to
+            # sort the entire result set before returning it.  If you add another
+            # option, use EXPLAIN SELECT in the psql command-line tool and make
+            # sure there are no "Sort" steps.
+            if ordered == "locale":
+                query += "  ORDER BY c.locale"
+            elif ordered == "url":
+                query += "  ORDER BY u.url"
+            elif ordered == True or ordered == "both":
+                query += "  ORDER BY c.locale, c.url"
+            else:
+                raise ValueError("invalid argument: ordered={!r}".format(ordered))
 
         if limit is not None:
             query += "  LIMIT {}".format(limit)
@@ -189,8 +214,8 @@ if __name__ == '__main__':
                         action="store_true")
         ap.add_argument("--capture-log", help="also dump the capture log",
                         action="store_true")
-        ap.add_argument("--ordered", help="sort pages by URL and then locale",
-                        action="store_true")
+        ap.add_argument("--ordered", help="sort returned results",
+                        choices=('url', 'locale', 'both'))
 
         args = ap.parse_args()
         args.where = " ".join(args.where)
