@@ -6,6 +6,7 @@ import os
 import psycopg2
 import zlib
 import json
+import random
 from html_extractor import ExtractedContent
 
 class CapturedPage:
@@ -191,6 +192,18 @@ class PageDB:
             for row in cur:
                 yield CapturedPage(*row, want_links=want_links)
 
+    def get_random_pages(self, count, seed, **kwargs):
+        rng = random.Random(seed)
+
+        with self.db, self.db.cursor() as cur:
+            cur.execute("select min(url), max(url) from captured_pages");
+            lo_url, hi_url = cur.fetchone()
+
+        sample = rng.sample(range(lo_url, hi_url + 1), count)
+        where = "c.url IN (" + ",".join(str(n) for n in sample) + ")"
+
+        return self.get_pages(where_clause=where, **kwargs)
+
 if __name__ == '__main__':
     def main():
         import argparse
@@ -203,7 +216,7 @@ if __name__ == '__main__':
         ap.add_argument("database", help="Database to connect to")
         ap.add_argument("where", help="WHERE clause for query", nargs='*')
         ap.add_argument("--limit", help="maximum number of results",
-                        default=None)
+                        default=None, type=int)
         ap.add_argument("--html", help="also dump the captured HTML",
                         action="store_true")
         ap.add_argument("--links", help="also dump extracted hyperlinks",
@@ -219,19 +232,27 @@ if __name__ == '__main__':
                         action="store_true")
         ap.add_argument("--ordered", help="sort returned results",
                         choices=('url', 'locale', 'both'))
+        ap.add_argument("--random", help="select pages at random", type=int, metavar="seed",
+                        default=None)
 
         args = ap.parse_args()
         args.where = " ".join(args.where)
 
         db = PageDB(args.database)
+
+        if args.random is not None:
+            if args.limit is None:
+                ap.error("--random must be used with --limit")
+            pages = db.get_random_pages(args.random, args.limit, ordered=args.ordered)
+        else:
+            pages = db.get_pages(where_clause = args.where,
+                                 limit        = args.limit,
+                                 ordered      = args.ordered)
+
         prettifier = subprocess.Popen(["underscore", "pretty"],
                                       stdin=subprocess.PIPE)
-
         prettifier.stdin.write(b'[')
-
-        for page in db.get_pages(where_clause = args.where,
-                                 limit        = args.limit,
-                                 ordered      = args.ordered):
+        for page in pages:
             page.dump(prettifier.stdin,
                       html_content = args.html,
                       text_content = args.text,
@@ -241,7 +262,6 @@ if __name__ == '__main__':
                       capture_log  = args.capture_log)
             prettifier.stdin.write(b',')
             prettifier.stdin.flush()
-
         prettifier.stdin.write(b']')
         prettifier.stdin.close()
 
