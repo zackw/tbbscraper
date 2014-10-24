@@ -13,16 +13,16 @@ def dump_one_log(locale, url, result, detail, logbits):
     else:
         decoded_log = json.loads(zlib.decompress(logbits).decode("utf-8"))
 
-    if 'stderr' in decoded_log or 'stdout' in decoded_log:
-        print(locale+": "+url)
-        print("  "+result+": "+detail)
-        pprint.pprint({ 'stdout': decoded_log.get('stdout'),
-                        'stderr': decoded_log.get('stderr') })
-
-    #print(locale+": "+url)
-    #print("  "+result+": "+detail)
-    #pprint.pprint(decoded_log, indent=2, depth=3,
-    #              width=os.environ.get("COLUMNS", 80)-1)
+    #if 'stderr' in decoded_log or 'stdout' in decoded_log:
+    #    print(locale+": "+url)
+    #    print("  "+result+": "+detail)
+    #    pprint.pprint({ 'stdout': decoded_log.get('stdout'),
+    #                    'stderr': decoded_log.get('stderr') })
+    #
+    print(locale+": "+url)
+    print("  "+result+": "+detail)
+    pprint.pprint(decoded_log, indent=2, depth=3,
+                  width=os.environ.get("COLUMNS", 80)-1)
 
 def dump_many_logs(dbname, where=""):
     query = """
@@ -32,13 +32,14 @@ def dump_many_logs(dbname, where=""):
            capture_detail d
      WHERE c.url = s.id
        AND c.detail = d.id
+     LIMIT 10
     """
     if where:
         query += " AND " + where
 
     db = psycopg2.connect(database=dbname)
     with db, db.cursor() as cur:
-        cur.execute("SET search_path TO tbbscraper")
+        cur.execute("SET search_path TO ts_run_1")
         cur.execute(query)
         for row in cur:
             dump_one_log(*row)
