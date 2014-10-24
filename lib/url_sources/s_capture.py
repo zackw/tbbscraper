@@ -320,6 +320,11 @@ class Proxy:
     def add_queue(self, q):
         self._queues.append(q)
 
+    def remove_queue(self, q):
+        self._queues.remove(q)
+        if not self._queues:
+            self.stop()
+
     def _post_online(self):
         for q in self._queues:
             q.put((Proxy.ONLINE,))
@@ -360,6 +365,13 @@ class Proxy:
         def disconnect_hook():
             self._stop_proxy()
             forced_disconnect = True
+
+        # On startup, idle for a few seconds before actually
+        # attempting the first connection; this should avoid
+        # problems where the VPN provider decides we're making
+        # too many connections at once.
+        self.report_status("startup delay...")
+        self._mon.idle(random.randrange(30))
 
         while True:
             self.report_status("connecting...")
@@ -655,10 +667,12 @@ class CaptureTask:
             try:
                 results = json.loads(line)
 
-                self.canon_url = results["canon"]
-                self.status    = results["status"]
-                self.detail    = results.get("detail", None)
-                self.log['events'] = results.get("log", [])
+                self.canon_url     = results["canon"]
+                self.status        = results["status"]
+                self.detail        = results.get("detail", None)
+                self.log['events'] = results.get("log",    [])
+                self.log['chain']  = results.get("chain",  [])
+                self.log['redirs'] = results.get("redirs", None)
                 if 'content' in results:
                     self.content = zlib.compress(results['content']
                                                  .encode('utf-8'))
@@ -802,8 +816,10 @@ class CaptureWorker:
                 self.batch_avg = \
                     self.batch_avg * (1-self.alpha) + \
                     self.batch_time * self.alpha
-            status += (" | last batch {:.2f} sec/URL; avg: {:.2f} sec/URL"
-                       .format(self.batch_time, self.batch_avg))
+            bt_per_hr = 3600/self.batch_time
+            ba_per_hr = 3600/self.batch_avg
+            status += (" | last batch {:.2f} URLs/hr; avg: {:.2f} URLs/hr"
+                       .format(bt_per_hr, ba_per_hr))
 
         self.mon.report_status(status + " | " + msg)
 
@@ -849,9 +865,10 @@ class CaptureWorker:
                 if len(msg[2]) == 0:
                     # No more work to do.
                     self.report_status("done")
-                    self.proxy.stop()
+                    self.online = False
+                    self.proxy.remove_queue(self.batch_queue)
                     self.disp.complete_batch(self.locale, [])
-                    break
+                    return
 
                 if msg[2] == [None]:
                     # No more work to do right now.
