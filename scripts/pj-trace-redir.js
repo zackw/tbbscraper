@@ -54,6 +54,28 @@ var window_serial = 0;
 var really_loaded_timeout = null;
 var navPending = false;
 
+function redirection_chain_last() {
+    if (redirection_chain.length > 0)
+        return redirection_chain[redirection_chain.length - 1];
+    else
+        return "";
+}
+
+function in_redirection_chain(url) {
+    var i;
+    for (i = 0; i < redirection_chain.length; i++)
+        // It is not unheard of for sites to redirect e.g.
+        // "http://company.example/" to "http://company.example" with
+        // <link rel="canonical"> and simultaneously redirect the
+        // latter to the former with HTTP, which will put us into an
+        // infinite loop.
+        if (   url       === redirection_chain[i]
+            || url + "/" === redirection_chain[i]
+            || url       === redirection_chain[i] + "/")
+            return true;
+    return false;
+}
+
 function log_event(evt) {
     //console.log(JSON.stringify(evt));
     event_log.push(evt);
@@ -140,8 +162,8 @@ function p_onLoadFinished(status) {
     // redirection loop) this.url will be "", in which case
     // we actually want to pay attention to the most recent
     // thing pushed on the redirection chain.
-    if (url === "" && redirection_chain.length > 0)
-        url = redirection_chain[redirection_chain.length - 1];
+    if (url === "")
+        url = redirection_chain_last();
 
     log_event({e: "onLoadFinished", w: serial, u: url,
                d: { status: status,
@@ -190,7 +212,7 @@ function p_onLoadFinished(status) {
         return null;
     });
 
-    if (html_redir_target && html_redir_target !== url) {
+    if (html_redir_target && !in_redirection_chain(html_redir_target)) {
         log_event({e: "html-redir", w: serial, u: url,
                    d: html_redir_target});
         redirs.html += 1;
@@ -250,7 +272,7 @@ function p_onNavigationRequested(url, type, willNavigate, main) {
         if (!navPending) {
             navPending = url;
             redirs.js += 1;
-        } else if (navPending === redirection_chain[redirection_chain.length-1])
+        } else if (navPending === redirection_chain_last())
             navPending = url;
 
         redirection_chain.push(url);
@@ -326,9 +348,7 @@ function p_onResourceReceived(response) {
             d: status
         });
 
-        if (this.serial === 0 &&
-            origUrl === redirection_chain[redirection_chain.length-1]) {
-
+        if (this.serial === 0 && origUrl === redirection_chain_last()) {
             if (status.headers.hasOwnProperty("location") &&
                 (status.code === 301 ||
                  status.code === 302 ||
@@ -364,10 +384,9 @@ function p_onResourceTimeout(request) {
             u: origUrl,
             d: status
         });
-        if (this.serial === 0 &&
-            origUrl === redirection_chain[redirection_chain.length-1]) {
+        if (this.serial === 0 && origUrl === redirection_chain_last())
             navPending = false;
-        }
+
         pending_resources[request.id] = false;
     }
 };
@@ -409,10 +428,9 @@ function p_onResourceError(resourceError) {
             u: origUrl,
             d: status
         });
-        if (this.serial === 0 &&
-            origUrl === redirection_chain[redirection_chain.length-1]) {
+        if (this.serial === 0 && origUrl === redirection_chain_last())
             navPending = false;
-        }
+
         pending_resources[resourceError.id] = false;
     }
 };
