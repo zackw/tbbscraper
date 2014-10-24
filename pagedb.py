@@ -243,7 +243,7 @@ if __name__ == '__main__':
         if args.random is not None:
             if args.limit is None:
                 ap.error("--random must be used with --limit")
-            pages = db.get_random_pages(args.random, args.limit, ordered=args.ordered)
+            pages = db.get_random_pages(args.limit, args.random, ordered=args.ordered)
         else:
             pages = db.get_pages(where_clause = args.where,
                                  limit        = args.limit,
