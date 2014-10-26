@@ -1,6 +1,6 @@
-CREATE TABLE features (
-	locale TEXT NOT NULL CHECK (locale <> ''),
-	url INTEGER NOT NULL REFERENCES url_strings(id),
+CREATE TABLE features_test (
+	locale TEXT NOT NULL,
+	url INTEGER NOT NULL,
 	tfidf TEXT,
 	tfidf_row TEXT,
 	tfidf_column TEXT,

@@ -17,6 +17,7 @@ db = PageDB(scheme)
 limit = 100000
 seed = 1234
 
+# TODO need tf global row and tf global column also.
 #tf global for selecting overall features
 tfGlobal = {}
 # entire country vs page matrix
