@@ -62,30 +62,30 @@ def getRegisteredDomain(fqdn,publicSuffixes):
 			return '-1'
 		secondLevel = domains[-2]
 		if(('*' in publicSuffixes[TLD]) and (('!' + secondLevel) not in publicSuffixes[TLD])):
-			return ".".join(domains[-3])
+			return (domains[-3])
 		if(secondLevel not in publicSuffixes[TLD]):
-			return ".".join(domains[-2])
+			return (domains[-2])
 		else:
 			if(len(domains) < 3):
 				print('***ERROR domain should be longer or not in public suffixes: ' + str(domains))
 				return '-1'
 			thirdLevel = domains[-3]
 			if(('*' in publicSuffixes[TLD][secondLevel]) and (('!' + thirdLevel) not in publicSuffixes[TLD][secondLevel])):
-				return ".".join(domains[-4])
+				return (domains[-4])
 			if(thirdLevel not in publicSuffixes[TLD][secondLevel]):
-				return ".".join(domains[-3])
+				return (domains[-3])
 			else:
 				if(len(domains) < 4):
 					print('***ERROR domain should be longer or not in public suffixes: ' + str(domains))
 					return '-1'
 				fourthLevel = domains[-4]
 				if(fourthLevel not in publicSuffixes[TLD][secondLevel][thirdLevel]):
-					return ".".join(domains[-4])
+					return (domains[-4])
 				else:
 					if(len(domains) < 5):
 						print('***ERROR domain should be longer or not in public suffixes: ' + str(domains))
 						return '-1'
-					return ".".join(domains[-5])
+					return (domains[-5])
 
 def getDomainFromURL(url):
 	# QUESTION-TODO added .split('\\')[0], because sometime URL looked like: http://domain\
@@ -105,40 +105,12 @@ def isIP(string):
 		if((i < 0) or (i > 255)):
 			return False
 	return True
-
-# def getTF(visible_texts):
-	# wordList = visible_texts.split(' ')
-	# wordDict = {}
-	# for word in wordList:
-		# if(word not in wordDict):
-			# wordDict[word] = 0
-		# wordDict[word] += 1
-	# return wordDict
-	
-# Hongyu's code depreciated
-# def _visible(element):
-	# if element.parent.name in ['style', 'script', '[document]', 'head', 'title']:
-		# return False
-	# elif re.match('<!--.*-->', str(element.encode('utf-8','replace'))):
-		# return False
-	# return True
-# def getHtmlFeatures(html):
-	# soup = BeautifulSoup(html)
-	# print(len(list(soup.descendants)))
-	# if(len(list(soup.descendants)) == 306):
-		# print(list(soup.descendants))
-	# texts = soup.findAll(text=True)
-	# visible_list = filter(_visible,texts)
-	# visible_texts = re.sub('[^0-9a-zA-Z]+', ' ',' '.join(visible_list))
-	# tfDict = getTF(visible_texts)
-	# print(tfDict)
-	# return tfDict, None
 	
 def getDomainRedir(originalURL, redirURL):
 	isRedir = False
 	originalDomain = getDomainFromURL(originalURL)
 	redirDomain = '-1'
-	if(redirURL is not None):
+	if(redirURL != ''):
 		redirDomain = getDomainFromURL(redirURL)
 	else:
 		return originalDomain, redirURL, isRedir
@@ -156,52 +128,55 @@ def getDomainRedir(originalURL, redirURL):
 	
 	return originalDomain, redirDomain, isRedir
 	
+def isNone(variable):
+	if(variable is None):
+		variable = ''
+	return variable
+	
 publicSuffixFile = 'publicsuffix.txt'		
 scheme = "dbname=ts_analysis"
 fileName = "test.txt"
-limit = "1000"
+limit = 10000
+seed = 1234
 
 pages = {}
 publicSuffixes = loadPublicSuffixes(publicSuffixFile)	
 
 db = PageDB(scheme)
-for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
-	originalURL = page.url
+for page in db.get_random_pages(limit, seed, ordered = True, want_links = False):
+	originalURL = page.url.lower()
+	redirURL = isNone(page.redir_url).lower()
 	locale = page.locale
 	url_id = page.page_id[1]
-	result = page.result
-	detail = page.detail
-	# html = page.html_content
-	# userContent =  page.text_content
+	result = isNone(page.result).lower()
+	detail = isNone(page.detail)
+	html = page.html_content
+	userContent =  page.text_content
 	dom_stats = page.dom_stats
 	depth = len(dom_stats.tags_at_depth)
 	NumberOfTagTypes = len(dom_stats.tags)
 	numberOfTags = 0
 	for tag in dom_stats.tags:
 		numberOfTags += dom_stats.tags[tag]
-	# userContentFeatures, domFeatures = getHtmlFeatures(html)
-	redirURL = page.redir_url
-	originalDomain, redirDomain, isRedir = getDomainRedir(originalURL, redirURL)
-	if(detail is None):
-		detail = ''
-	if(isRedir is None):
-		print('isRedir')
-	if(result is None):
-		print('result')
-	if(redirDomain is None):
-		redirDomain = ''
+	originalDomain, redirDomain, isRedir = getDomainRedir(originalURL.lower(), redirURL.lower())
+
+	print(locale)
+	print(originalURL)
 		
 	if(url_id not in pages):
 		pages[url_id] = {}
 	if(locale not in pages[url_id]):
-		pages[url_id][locale] = result + ',' + detail + ',' + str(isRedir) + ',' + redirDomain + ',' + str(depth) + ',' + str(NumberOfTagTypes)# + ',' + str(numberOfTags)# + ',' + str(len(userContent)) + ',' + str(len(html))
+		pages[url_id][locale] = result + ',' + str(isRedir) + ',' + redirDomain + ',' + str(depth) + ',' + str(NumberOfTagTypes) + ',' + str(numberOfTags) + ',' + detail  + ',' + str(len(userContent)) + ',' + str(len(html))
 		# print(pages[url_id][locale])
 	else:
 		print('**** ID ERROR ****')
 		print('**************** ID ERROR ****************')
 		print('**** ID ERROR ****')
-	print(len(pages))
 
+	# print(len(pages))
+
+log = open('results/testLog.txt', mode = 'a')
+log.write("pages[url_id][locale] = result + ',' + str(isRedir) + ',' + redirDomain + ',' + str(depth) + ',' + str(NumberOfTagTypes) + ',' + str(numberOfTags) + ',' + detail  + ',' + str(len(userContent)) + ',' + str(len(html))\n")
 rowClusterNumbers = {}
 for url_id in pages:
 	comparision = {}
@@ -213,9 +188,12 @@ for url_id in pages:
 	if(noClusters not in  rowClusterNumbers):
 		rowClusterNumbers[noClusters] = 0
 	rowClusterNumbers[noClusters] += 1
-	# print(pages[url_id])
-	
-f = open('results/rowwiseTest.csv', mode ='w')
+	if(noClusters > 1):
+		log.write(str(noClusters) + '\n')
+		log.write(str(pages[url_id]) + '\n')
+log.close()
+		
+f = open('results/rowwiseTest4.csv', mode ='w')
 for noClusters in rowClusterNumbers:
 	f.write(str(noClusters) + ',' + str(rowClusterNumbers[noClusters]) + '\n')
 f.close()

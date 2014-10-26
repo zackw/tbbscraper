@@ -1,9 +1,11 @@
 from pagedb import PageDB
 import time
 import json
+import os
 
 
 tfFileName = 'tfidf/tf.json'
+tfGlobalFileName = 'tfidf/tfGlobal.json'
 idfRowFileName = 'tfidf/idfRow.json'
 idfColumnFileName = 'tfidf/idfColumn.json'
 idfFileName = 'tfidf/idf.json'
@@ -12,8 +14,11 @@ start_time = time.time()
 counter = 0
 scheme = "dbname=ts_analysis"
 db = PageDB(scheme)
-limit = 1000
+limit = 100000
+seed = 1234
 
+#tf global for selecting overall features
+tfGlobal = {}
 # entire country vs page matrix
 idfGlobal = {}
 # same page different countries
@@ -26,9 +31,9 @@ def jsonDump(fileName,dictionary):
     f.write(json.dumps(dictionary))
     f.close()
 
-
+# os.remove(tfFileName)
 tfFile = open(tfFileName, mode = 'a')
-for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
+for page in db.get_random_pages(limit, seed, ordered = True, want_links = False):
     originalURL = page.url
     url_id = page.page_id[1]
     locale = page.locale
@@ -47,9 +52,13 @@ for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
     if(locale not in idfColumn):
         idfColumn[locale] = {}
     for word in content:
+        word = word.lower()
         if(word not in tf):
             tf[word] = 0
         tf[word] += 1
+        if(word not in tfGlobal):
+            tfGlobal[word] = 0
+        tfGlobal[word] += 1
                 
     # didn't make a function for the same code for speed issues - probably not important
     for word in tf.keys():
@@ -66,11 +75,12 @@ for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
     tfFile.write(locale + ';' + str(url_id) + ';' + json.dumps(tf) + '\n')
     counter = counter + 1
     print(counter)
-tfFile.close()   
 
+tfFile.close()   
 jsonDump(idfRowFileName,idfRow)
 jsonDump(idfColumnFileName,idfColumn)
 jsonDump(idfFileName,idfGlobal)
+jsonDump(tfGlobalFileName,tfGlobal)
 
 print("--- " + str(time.time() - start_time) + " seconds ---")
 
