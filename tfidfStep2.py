@@ -3,6 +3,8 @@ import math
 import time
 import copy
 from collections import OrderedDict
+import psycopg2
+from sparse import SparseList
 
 def getJSON(fileName):
 	f = open(fileName, mode = 'r')
@@ -42,27 +44,19 @@ def getTF(fileName):
 	f.close()
 	return tf, noDocs
 	
-class SparseList(list):
-  def __setitem__(self, index, value):
-    missing = index - len(self) + 1
-    if missing > 0:
-      self.extend(['0'] * missing)
-    list.__setitem__(self, index, value)
-  # def __getitem__(self, index):
-    # try: return list.__getitem__(self, index)
-    # except IndexError: return None
-	
 def getTFIDF(tf, idfRow, idfColumn, idf, noDocs, stopWords, tfGlobal, outputFileName):
-	keys  = list(tfGlobal.keys())
-	
-		
+	db = psycopg2.connect("dbname=ts_analysis")
+	cursor = db.cursor()
+
+
+	keys  = list(tfGlobal.keys())	
 	# dictScheme = OrderedDict.fromkeys(tfGlobal.keys(),0)
 	# dictScheme = dict.fromkeys(tfGlobal.keys(),0)
 	indexDict = {}
 	for i in range(0,len(keys)):
 		indexDict[keys[i]] = i
 	counter = 0
-	f = open(outputFileName, mode = 'a')
+	# f = open(outputFileName, mode = 'a')
 	for locale in tf:
 		for url_id in tf[locale]:
 			counter += 1
@@ -97,12 +91,20 @@ def getTFIDF(tf, idfRow, idfColumn, idf, noDocs, stopWords, tfGlobal, outputFile
 					tfidf[indexDict[word]] = str(wFrequency * math.log(noDocs['total']/idfFrequency))
 					tfidfRow[indexDict[word]] = str(wFrequency * math.log(noDocs['url_id'][url_id]/idfRowFrequency))
 					tfidfColumn[indexDict[word]] = str(wFrequency * math.log(noDocs['locale'][locale]/idfColumnFrequency))
-			f.write(locale + ';' + url_id + ';' + 'idf' + ';' + ','.join(tfidf) + '\n')
-			f.write(locale + ';' + url_id + ';' + 'idfRow' + ';' + ','.join(tfidfRow)  + '\n')
-			f.write(locale + ';' + url_id + ';' + 'idfColumn' + ';' + ','.join(tfidfColumn)  + '\n')
+			# Need this to have same length features
+			tfidf[50001] = '0'
+			tfidfRow[50001] = '0'
+			tfidfColumn[50001] = '0'
+			query = 'INSERT INTO features_test (locale, url, tfidf, tfidf_row, tfidf_column) VALUES (%s, %s, %s, %s, %s);'
+			data = (locale, url_id, ','.join(tfidf), ','.join(tfidfRow), ','.join(tfidfColumn))
+			cursor.execute(query, data)
+			# f.write(locale + ';' + url_id + ';' + 'idf' + ';' + ','.join(tfidf) + '\n')
+			# f.write(locale + ';' + url_id + ';' + 'idfRow' + ';' + ','.join(tfidfRow)  + '\n')
+			# f.write(locale + ';' + url_id + ';' + 'idfColumn' + ';' + ','.join(tfidfColumn)  + '\n')
 	
-	f.close()
-
+	# f.close()
+	# or line by line?
+	db.commit()
 
 def removeStopWords(tfGlobal,stopWords):
 	words = set(tfGlobal.keys())
@@ -121,12 +123,12 @@ def getStopWords(stopWordFiles):
 	return stopWords
 
 start_time = time.time()
-outputFileName = 'tfidf/tfidf.csv'
-tf, noDocs = getTF("tfidf/tf.json")
-tfGlobal = getJSON("tfidf/tfGlobal.json")
-idfRow = getJSON("tfidf/idfRow.json")
-idfColumn = getJSON("tfidf/idfColumn.json")
-idf = getJSON("tfidf/idf.json")
+outputFileName = 'tfidf/10000/tfidf.csv'
+tf, noDocs = getTF("tfidf/10000/tf.json")
+tfGlobal = getJSON("tfidf/10000/tfGlobal.json")
+idfRow = getJSON("tfidf/10000/idfRow.json")
+idfColumn = getJSON("tfidf/10000/idfColumn.json")
+idf = getJSON("tfidf/10000/idf.json")
 stopWordFiles = ['stopwords/stopwords1.txt','stopwords/stopwords2.txt','stopwords/stop-words_english_1_en.txt','stopwords/stop-words_english_2_en.txt',
 				'stopwords/stop-words_english_4_google_en.txt','stopwords/stop-words_english_5_en.txt','stopwords/stop-words_english_6_en.txt'] 
 print(len(idfColumn))

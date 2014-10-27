@@ -62,30 +62,30 @@ def getRegisteredDomain(fqdn,publicSuffixes):
 			return '-1'
 		secondLevel = domains[-2]
 		if(('*' in publicSuffixes[TLD]) and (('!' + secondLevel) not in publicSuffixes[TLD])):
-			return ".".join(domains[-3])
+			return domains[-3]
 		if(secondLevel not in publicSuffixes[TLD]):
-			return ".".join(domains[-2])
+			return domains[-2]
 		else:
 			if(len(domains) < 3):
 				print('***ERROR domain should be longer or not in public suffixes: ' + str(domains))
 				return '-1'
 			thirdLevel = domains[-3]
 			if(('*' in publicSuffixes[TLD][secondLevel]) and (('!' + thirdLevel) not in publicSuffixes[TLD][secondLevel])):
-				return ".".join(domains[-4])
+				return domains[-4]
 			if(thirdLevel not in publicSuffixes[TLD][secondLevel]):
-				return ".".join(domains[-3])
+				return domains[-3]
 			else:
 				if(len(domains) < 4):
 					print('***ERROR domain should be longer or not in public suffixes: ' + str(domains))
 					return '-1'
 				fourthLevel = domains[-4]
 				if(fourthLevel not in publicSuffixes[TLD][secondLevel][thirdLevel]):
-					return ".".join(domains[-4])
+					return domains[-4]
 				else:
 					if(len(domains) < 5):
 						print('***ERROR domain should be longer or not in public suffixes: ' + str(domains))
 						return '-1'
-					return ".".join(domains[-5])
+					return domains[-5]
 
 def getDomainFromURL(url):
 	# QUESTION-TODO added .split('\\')[0], because sometime URL looked like: http://domain\
@@ -138,13 +138,13 @@ def getDomainRedir(originalURL, redirURL):
 	isRedir = False
 	originalDomain = getDomainFromURL(originalURL)
 	redirDomain = '-1'
-	if(redirURL is not None):
+	if(redirURL is not ''):
 		redirDomain = getDomainFromURL(redirURL)
 	else:
-		return originalDomain, redirURL, isRedir
+		return originalDomain, redirURL, 0
 	
 	if(isIP(originalDomain) or isIP(redirDomain)):
-		return originalDomain, redirDomain, isRedir
+		return originalDomain, redirDomain, 0
 	else:
 		originalDomain = getRegisteredDomain(originalDomain + '.',publicSuffixes)
 		if(originalDomain == -1):
@@ -153,34 +153,62 @@ def getDomainRedir(originalURL, redirURL):
 		if(redirDomain == -1):
 			redirDomain = redirURL
 		isRedir = (redirDomain != originalDomain)
-	
+		
+	if(isRedir):
+		isRedir = 1
+	else:
+		isRedir = 0
+
 	return originalDomain, redirDomain, isRedir
+
+def isNone(variable):
+	if(variable is None):
+		variable = ''
+	return variable
+
 	
 publicSuffixFile = 'publicsuffix.txt'		
 scheme = "dbname=ts_analysis"
 fileName = "test.txt"
-limit = "1000"
+limit = 10000
+seed = 1234
+
+# resultList =  ["invalid URL", "crawler failure", "hostname not found", "authentication required (401)", "proxy error (502/504/52x)",
+				# "timeout", "ok (redirected)", "bad request (400)", "ok", "service unavailable (503)", "page not found (404/410)", 
+				# "redirection loop", "server error (500)", "network or protocol error", "forbidden (403)", "other HTTP response"]
 
 pages = {}
 publicSuffixes = loadPublicSuffixes(publicSuffixFile)	
 
+
+counter = 0
 db = PageDB(scheme)
-for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
+cursor = db.db.cursor()
+for page in db.get_random_pages(limit, seed, ordered = True, want_links = False):
+	counter += 1
+	print(counter)
 	originalURL = page.url
 	locale = page.locale
 	url_id = page.page_id[1]
-	result = page.result
-	detail = page.detail
+	result = isNone(page.result)
+	# result = resultList.index(result)
+	detail = isNone(page.detail).lower()
 	html = page.html_content
 	userContent =  page.text_content
 	dom_stats = page.dom_stats
 	depth = len(dom_stats.tags_at_depth)
-	# userContentFeatures, domFeatures = getHtmlFeatures(html)
-	redirURL = page.redir_url
+	NumberOfTagTypes = len(dom_stats.tags)
+	numberOfTags = 0
+	for tag in dom_stats.tags:
+		numberOfTags += dom_stats.tags[tag]
+	redirURL = isNone(page.redir_url).lower()
 	originalDomain, redirDomain, isRedir = getDomainRedir(originalURL, redirURL)
 
-	print(len(pages))
-
+	query = 'UPDATE features_test SET code=%s, detail=%s, isRedir=%s, redirDomain=%s, html_length=%s, content_length=%s, dom_depth=%s, number_of_tags=%s, unique_tags=%s WHERE locale=%s and url=%s;'
+	data = (result, detail, isRedir, redirDomain, len(html), len(userContent), depth, numberOfTags, NumberOfTagTypes, locale, url_id)
+	cursor.execute(query, data)
+	
+db.db.commit()
 	
 	# print(originalURL + ' - ' + redirURL + ' - ' + locale + ' - ' + result)
 	# print(originalDomain + ' - ' + redirDomain + ' - ' + str(isRedir))
