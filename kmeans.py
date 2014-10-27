@@ -35,20 +35,21 @@ query = '''
 	
 scheme = "dbname=ts_analysis"
 
-pages = []
-
+#would not fit in memory
+# pages = []
 db = psycopg2.connect(scheme)
 
 # codeFeatureMap = getBinaryFeatureMap(db,'code')
 # detailFeatureMap = getBinaryFeatureMap(db,'detail')
 # redirDomainFeatureMap = getBinaryFeatureMap(db,'redirDomain')
 
-
 cursor = db.cursor()
+cursor.itersize = 100
 cursor.execute(query)
-row = cursor.fetchone()
+# row = cursor.fetchone()
 counter  = 0
-while row:
+for row in cursor:
+# while row:
 	counter += 1
 	print(counter)
 	# Hold features for a given row/example/page
@@ -61,8 +62,8 @@ while row:
 	# Adding code features
 	# code = getSparseList(row[2],codeFeatureMap)
 	print(len(page))
-	pages.append(page)
-	row = cursor.fetchone()
+	# pages.append(page)
+	# row = cursor.fetchone()
 
 cursor.close()
 db.close()
