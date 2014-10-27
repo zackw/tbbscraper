@@ -1,5 +1,6 @@
 import psycopg2
 import time
+import os
 # from sparse import SparseList
 
 # def getBinaryFeatureMap(db,rowName):
@@ -43,27 +44,30 @@ db = psycopg2.connect(scheme)
 # detailFeatureMap = getBinaryFeatureMap(db,'detail')
 # redirDomainFeatureMap = getBinaryFeatureMap(db,'redirDomain')
 
-cursor = db.cursor()
-cursor.itersize = 100
-cursor.execute(query)
+# cursor = db.cursor()
+# cursor.itersize = 100
+# cursor.execute(query)
 # row = cursor.fetchone()
 counter  = 0
-for row in cursor:
-# while row:
-	counter += 1
-	print(counter)
-	# Hold features for a given row/example/page
-	page = []
-	# add none tfidf features:
-	page.extend(row[:-1])
-	# Adding tfidf features
-	tfidf = row[11].split(',')
-	page.extend(tfidf)
-	# Adding code features
-	# code = getSparseList(row[2],codeFeatureMap)
-	print(len(page))
-	# pages.append(page)
-	# row = cursor.fetchone()
+with db, \
+	db.cursor("pagedb_qtmp_{}".format(os.getpid())) as cur:
+	cur.itersize = 10000
+	cur.execute(query)
+	for row in cur:
+		counter += 1
+		print(counter)
+		# Hold features for a given row/example/page
+		page = []
+		# add none tfidf features:
+		page.extend(row[:-1])
+		# Adding tfidf features
+		tfidf = row[11].split(',')
+		page.extend(tfidf)
+		# Adding code features
+		# code = getSparseList(row[2],codeFeatureMap)
+		print(len(page))
+		# pages.append(page)
+		# row = cursor.fetchone()
 
 cursor.close()
 db.close()
