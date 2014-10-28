@@ -6,6 +6,7 @@ import os
 import psycopg2
 import zlib
 import json
+import random
 from html_extractor import ExtractedContent
 
 class CapturedPage:
@@ -14,7 +15,7 @@ class CapturedPage:
     """
 
     def __init__(self, locale, url_id, url, access_time, result, detail,
-                 redir_url, capture_log, html_content, screenshot):
+                 redir_url, capture_log, html_content, screenshot, want_links=True):
 
         self.page_id     = (locale, url_id)
         self.locale      = locale
@@ -24,6 +25,7 @@ class CapturedPage:
         self.detail      = detail
         self.redir_url   = redir_url
         self.screenshot  = screenshot
+        self.want_links  = want_links
 
         # For memory efficiency, the compressed data is only
         # uncompressed upon request.  (screenshot, if available, is
@@ -41,7 +43,8 @@ class CapturedPage:
     def _do_extraction(self):
         if self._extracted is None:
             self._extracted = ExtractedContent(self.redir_url,
-                                               self.html_content)
+                                               self.html_content,
+                                               self.want_links)
 
     @property
     def capture_log(self):
@@ -128,11 +131,26 @@ class PageDB:
         if "=" not in connstr:
             connstr = "dbname="+connstr
         self.db = psycopg2.connect(connstr)
+        self._locales = None
+
+    @property
+    def locales(self):
+        """Retrieve a list of all available locales.  This involves a
+           moderately expensive query so it's memoized.
+        """
+        if self._locales is None:
+            with self.db, self.db.cursor() as cur:
+                cur.execute("SELECT DISTINCT locale FROM captured_pages")
+                self._locales = sorted([
+                    row[0] for row in cur
+                ])
+        return self._locales
 
     def get_pages(self, *,
                   ordered=False,
                   where_clause="",
-                  limit=None):
+                  limit=None,
+                  want_links=True):
         """Retrieve pages from the database matching the where_clause.
            This is a generator, which produces one CapturedPage object
            per row.
@@ -141,7 +159,7 @@ class PageDB:
         query = ("SELECT c.locale, c.url, u.url, c.access_time, c.result, d.detail,"
                  "       r.url, c.capture_log, c.html_content, c.screenshot"
                  "       FROM captured_pages c"
-                 "  LEFT JOIN url_strings u    ON c.url = u.id"
+                 "       JOIN url_strings u    ON c.url = u.id"
                  "  LEFT JOIN url_strings r    ON c.redir_url = r.id"
                  "  LEFT JOIN capture_detail d ON c.detail = d.id")
 
@@ -149,7 +167,18 @@ class PageDB:
             query += "  WHERE {}".format(where_clause)
 
         if ordered:
-            query += "  ORDER BY u.url, c.locale"
+            # Note: these ordering options do not require the database server to
+            # sort the entire result set before returning it.  If you add another
+            # option, use EXPLAIN SELECT in the psql command-line tool and make
+            # sure there are no "Sort" steps.
+            if ordered == "locale":
+                query += "  ORDER BY c.locale"
+            elif ordered == "url":
+                query += "  ORDER BY u.url"
+            elif ordered == True or ordered == "both":
+                query += "  ORDER BY c.locale, c.url"
+            else:
+                raise ValueError("invalid argument: ordered={!r}".format(ordered))
 
         if limit is not None:
             query += "  LIMIT {}".format(limit)
@@ -161,7 +190,19 @@ class PageDB:
             cur.itersize = 100
             cur.execute(query)
             for row in cur:
-                yield CapturedPage(*row)
+                yield CapturedPage(*row, want_links=want_links)
+
+    def get_random_pages(self, count, seed, **kwargs):
+        rng = random.Random(seed)
+
+        with self.db, self.db.cursor() as cur:
+            cur.execute("select min(url), max(url) from captured_pages");
+            lo_url, hi_url = cur.fetchone()
+
+        sample = rng.sample(range(lo_url, hi_url + 1), count)
+        where = "c.url IN (" + ",".join(str(n) for n in sample) + ")"
+
+        return self.get_pages(where_clause=where, **kwargs)
 
 if __name__ == '__main__':
     def main():
@@ -175,7 +216,7 @@ if __name__ == '__main__':
         ap.add_argument("database", help="Database to connect to")
         ap.add_argument("where", help="WHERE clause for query", nargs='*')
         ap.add_argument("--limit", help="maximum number of results",
-                        default=None)
+                        default=None, type=int)
         ap.add_argument("--html", help="also dump the captured HTML",
                         action="store_true")
         ap.add_argument("--links", help="also dump extracted hyperlinks",
@@ -189,21 +230,29 @@ if __name__ == '__main__':
                         action="store_true")
         ap.add_argument("--capture-log", help="also dump the capture log",
                         action="store_true")
-        ap.add_argument("--ordered", help="sort pages by URL and then locale",
-                        action="store_true")
+        ap.add_argument("--ordered", help="sort returned results",
+                        choices=('url', 'locale', 'both'))
+        ap.add_argument("--random", help="select pages at random", type=int, metavar="seed",
+                        default=None)
 
         args = ap.parse_args()
         args.where = " ".join(args.where)
 
         db = PageDB(args.database)
+
+        if args.random is not None:
+            if args.limit is None:
+                ap.error("--random must be used with --limit")
+            pages = db.get_random_pages(args.limit, args.random, ordered=args.ordered)
+        else:
+            pages = db.get_pages(where_clause = args.where,
+                                 limit        = args.limit,
+                                 ordered      = args.ordered)
+
         prettifier = subprocess.Popen(["underscore", "pretty"],
                                       stdin=subprocess.PIPE)
-
         prettifier.stdin.write(b'[')
-
-        for page in db.get_pages(where_clause = args.where,
-                                 limit        = args.limit,
-                                 ordered      = args.ordered):
+        for page in pages:
             page.dump(prettifier.stdin,
                       html_content = args.html,
                       text_content = args.text,
@@ -213,7 +262,6 @@ if __name__ == '__main__':
                       capture_log  = args.capture_log)
             prettifier.stdin.write(b',')
             prettifier.stdin.flush()
-
         prettifier.stdin.write(b']')
         prettifier.stdin.close()
 
