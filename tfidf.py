@@ -11,7 +11,7 @@ class Document(object):
 uids = 0
 scheme = "dbname=ts_analysis"
 db = PageDB(scheme)
-limit = 1000
+limit = 20
 document = []
 wordtfidf = {}
 for page in db.get_pages(where_clause = "", limit = limit, ordered = False):
