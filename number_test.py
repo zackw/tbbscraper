@@ -37,13 +37,13 @@ class KMeansPlusPlus:
         if columns is None:
             self.columns = range(data_frame.shape[1])
         else:
-            for col in columns:
-                if col not in range(data_frame.shape[1]):
-                    raise Exception(
-                        "Column '%s' not found in the given data" % col)
-                if not self._is_numeric(col):
-                    raise Exception(
-                        "The column '%s' is either not numeric or contains NaN values" % col)
+#            for col in columns:
+#                if col not in range(data_frame.shape[1]):
+#                    raise Exception(
+#                        "Column '%s' not found in the given data" % col)
+#                if not self._is_numeric(col):
+#                    raise Exception(
+#                        "The column '%s' is either not numeric or contains NaN values" % col)
             self.columns = columns
 
     def _populate_initial_centers(self):
