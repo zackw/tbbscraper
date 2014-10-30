@@ -34,7 +34,7 @@ start_time = time.time()
 query = '''
 	select locale, url, code, detail, isRedir, redirDomain, 
 	html_length, content_length, dom_depth, number_of_tags, unique_tags, 
-	tfidf from features_test limit 2000
+	tfidf from features_test limit 1000
 	'''
 
 scheme = "dbname=ts_analysis"
@@ -70,12 +70,13 @@ with db, \
         # Adding code features
         # code = getSparseList(row[2],codeFeatureMap)
         #print(page[:11])
-        print(len(page))
-       # print(page[0:11])
+        #print(len(page))
+        # print(page[0:11])
         if counter == 1:
-            savedpage = page[12:60]
+            savedpage = page[11:-1]
         else:
-            savedpage = np.row_stack((savedpage,page[12:60]))
+            savedpage = np.row_stack((savedpage,page[11:-1]))
+        print(counter)
         # pages.append(page)
         # row = cursor.fetchone()))
         #savedpage.extend(page)
@@ -83,7 +84,7 @@ print(savedpage.shape)
 
 #cursor.close()
 db.close()
-kmpp = KMeansPlusPlus(savedpage, 8 ,max_iterations=10)
+kmpp = KMeansPlusPlus(savedpage, 4 ,max_iterations=10)
 kmpp.cluster()
 cls = kmpp.clusters
 print(cls)
