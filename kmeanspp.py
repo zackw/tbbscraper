@@ -47,16 +47,18 @@ class KMeansPlusPlus:
 
         while len(rows) < self.k:
             if distances is None:
-                distances = self._distances_from_point(rows[0])
+                distances = (self._distances_from_point(rows[0]))**2
             else:
-                distances = self._distances_from_point_list(rows)
+                distances = (self._distances_from_point_list(rows))**2
 
-            normalized_distances = distances *1./ distances.sum()
+            normalized_distances = distances / distances.sum()
             print('normalized_distances')
             print(normalized_distances)
             #normalized_distances.sort()
             dice_roll = np.random.rand()
-            index = np.where(normalized_distances.cumsum() >= dice_roll)[0][0]
+            index = np.where(normalized_distances.cumsum() >= dice_roll)[0][0] # should be < if you use negative
+            print('index=')
+            print(index)
             rows.append(self.data_frame[index,self.columns])
 
         self.centers = rows # 1 list contains k arrays
@@ -129,8 +131,8 @@ class KMeansPlusPlus:
     def _distances_from_point(self, point):
 
         # cos distance
-        norm = LA.norm(self.data_frame,axis=1)*LA.norm(point)
-        cos_distance = np.dot(self.data_frame[:,self.columns], point)/norm
+        norm = LA.norm(self.data_frame,axis=1)*(LA.norm(point))
+        cos_distance = -np.dot(self.data_frame[:,self.columns], point)/norm
         cos_distance[norm==0] = 0
         return cos_distance
         # L2 distance
