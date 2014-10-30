@@ -47,9 +47,9 @@ class KMeansPlusPlus:
 
         while len(rows) < self.k:
             if distances is None:
-                distances = (self._distances_from_point(rows[0]))**2
+                distances = (np.arccos(-self._distances_from_point(rows[0])))**2
             else:
-                distances = (self._distances_from_point_list(rows))**2
+                distances = (np.arccos(-(self._distances_from_point_list(rows))))**2
 
             normalized_distances = distances / distances.sum()
             print('normalized_distances')
