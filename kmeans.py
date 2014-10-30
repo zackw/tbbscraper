@@ -2,9 +2,10 @@ import psycopg2
 import time
 import os
 import numpy as np
+import resource
 
 from kmeanspp import *
-# from sparse import SparseList
+from sparse import SparseList
 
 def getBinaryFeatureMap(db,rowName):
 	featureMap = {}
@@ -13,8 +14,8 @@ def getBinaryFeatureMap(db,rowName):
 	values = cursor.fetchall()
 	counter = 0
 	for value in values:
-		if(value not in featureMap):
-			featureMap[value] = counter
+		if(value[0] not in featureMap):
+			featureMap[value[0]] = counter
 			counter += 1
 		else:
 			print('Error distinct had the same value twice: ' + str(value))
@@ -22,11 +23,11 @@ def getBinaryFeatureMap(db,rowName):
 	print(rowName + ' has ' + str(len(featureMap)) + ' distinct values')
 	return featureMap
 
-# def getSparseList(value,featureMap):
-	# sparseList = SparseList()
-	# sparseList[len(featureMap)-1] = 0
-	# sparseList[featureMap[value]] = 1
-	# return sparseList
+def getSparseList(value,featureMap):
+	sparseList = SparseList()
+	sparseList[len(featureMap)-1] = 0
+	sparseList[featureMap[value]] = 1
+	return sparseList
 
 
 start_time = time.time()
@@ -43,7 +44,7 @@ scheme = "dbname=ts_analysis"
 # pages = []
 db = psycopg2.connect(scheme)
 
-#codeFeatureMap = getBinaryFeatureMap(db,'code')
+codeFeatureMap = getBinaryFeatureMap(db,'code')
 # detailFeatureMap = getBinaryFeatureMap(db,'detail')
 # redirDomainFeatureMap = getBinaryFeatureMap(db,'redirDomain')
 
@@ -51,7 +52,7 @@ db = psycopg2.connect(scheme)
 # cursor.itersize = 100
 # cursor.execute(query)
 # row = cursor.fetchone()
-#savedpage = []
+savedpage = []
 counter  = 0
 with db, \
     db.cursor("pagedb_qtmp_{}".format(os.getpid())) as cur:
@@ -65,22 +66,23 @@ with db, \
         # add none tfidf features:
         page.extend(row[:-1])
         # Adding tfidf features
-        tfidf = list(map(float,row[11].split(',')))
+        tfidf = row[11].split(',')
         page.extend(tfidf)
         # Adding code features
-        # code = getSparseList(row[2],codeFeatureMap)
+        code = getSparseList(row[2],codeFeatureMap)
+        page.extend(code)
         #print(page[:11])
-        #print(len(page))
+        #print(page[-13:])
+        print(len(page))
         # print(page[0:11])
-        if counter == 1:
-            savedpage = page[11:-1]
-        else:
-            savedpage = np.row_stack((savedpage,page[11:-1]))
         print(counter)
+        print(np.array(list(map(float,page[-16:]))).sum())
+        savedpage.append(list(map(float,page[-16:])))
         # pages.append(page)
         # row = cursor.fetchone()))
         #savedpage.extend(page)
-print(savedpage.shape)
+savedpage = np.array(savedpage)
+print(savedpage.sum())
 
 #cursor.close()
 db.close()
@@ -96,3 +98,4 @@ for item in savedpage:
 thefile.close()
 """
 print("--- " + str(time.time() - start_time) + " seconds ---")
+print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
