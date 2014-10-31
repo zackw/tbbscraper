@@ -76,8 +76,7 @@ with db, \
         print(len(page))
         # print(page[0:11])
         print(counter)
-        print(np.array(list(map(float,page[-16:]))).sum())
-        savedpage.append(list(map(float,page[-16:])))
+        savedpage.append(list(map(float,page[11:])))
         # pages.append(page)
         # row = cursor.fetchone()))
         #savedpage.extend(page)
@@ -86,7 +85,7 @@ print(savedpage.sum())
 
 #cursor.close()
 db.close()
-kmpp = KMeansPlusPlus(savedpage, 4 ,max_iterations=10)
+kmpp = KMeansPlusPlus(savedpage, 13 ,max_iterations=5)
 kmpp.cluster()
 cls = kmpp.clusters
 print(cls)
