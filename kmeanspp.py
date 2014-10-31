@@ -47,16 +47,19 @@ class KMeansPlusPlus:
 
         while len(rows) < self.k:
             if distances is None:
-                distances = (np.arccos(-self._distances_from_point(rows[0])))**2
+                distances = (self._distances_from_point(rows[0]))**2
             else:
-                distances = (np.arccos(-(self._distances_from_point_list(rows))))**2
+                distances = ((self._distances_from_point_list(rows)))**2
 
             normalized_distances = distances / distances.sum()
             print('normalized_distances')
             print(normalized_distances)
-            #normalized_distances.sort()
+            index_distances = normalized_distances.copy()
+            normalized_distances.sort()
             dice_roll = np.random.rand()
-            index = np.where(normalized_distances.cumsum() >= dice_roll)[0][0] # should be < if you use negative
+            min_over_roll = normalized_distances[normalized_distances.cumsum() >=dice_roll].min()
+            index = np.where(index_distances == min_over_roll)[0][0]
+            #index = np.where(normalized_distances.cumsum() >= dice_roll)[0][0] # should be < if you use negative
             print('index=')
             print(index)
             rows.append(self.data_frame[index,self.columns])
@@ -132,9 +135,11 @@ class KMeansPlusPlus:
 
         # cos distance
         norm = LA.norm(self.data_frame,axis=1)*(LA.norm(point))
-        cos_distance = -np.dot(self.data_frame[:,self.columns], point)/norm
+        cos_distance = np.dot(self.data_frame[:,self.columns], point)/norm
+        tol = 1e-7
         cos_distance[norm==0] = 0
-        return cos_distance
+        cos_distance[np.abs(cos_distance-1)<=tol] = 1
+        return np.arccos(cos_distance)
         # L2 distance
         # return np.power(self.data_frame[:,self.columns] - point, 2).sum(axis=1)
 
@@ -161,10 +166,10 @@ if __name__ == '__main__':
 # (25,45), (-30,5), and (5,-20)
     x0 = 10 * np.random.randn(500) + 25
     y0 = 10 * np.random.randn(500) + 45
-    x1 = 10 * np.random.randn(500) - 30
-    y1 = 10 * np.random.randn(500) + 5
-    x2 = 10 * np.random.randn(500) + 5
-    y2 = 10 * np.random.randn(500) - 20
+    x1 = 10 * np.random.randn(500) + 30
+    y1 = 10 * np.random.randn(500) + 70
+    x2 = 10 * np.random.randn(500) + 100
+    y2 = 10 * np.random.randn(500) + 20
 
     x = np.concatenate((x0,x1,x2))
     y = np.concatenate((y0,y1,y2))
@@ -176,7 +181,7 @@ if __name__ == '__main__':
 #plt.scatter(x, y, s=5)
 
 # Cluster
-    kmpp = KMeansPlusPlus(data, 3, max_iterations=1)
+    kmpp = KMeansPlusPlus(data, 55, max_iterations=5)
     kmpp.cluster()
     cls = kmpp.clusters
     print(cls)
