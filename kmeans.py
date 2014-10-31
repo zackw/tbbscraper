@@ -35,7 +35,7 @@ start_time = time.time()
 query = '''
 	select locale, url, code, detail, isRedir, redirDomain, 
 	html_length, content_length, dom_depth, number_of_tags, unique_tags, 
-	tfidf from features_test limit 1000
+	tfidf from features_test limit 10
 	'''
 
 scheme = "dbname=ts_analysis"
@@ -53,6 +53,7 @@ codeFeatureMap = getBinaryFeatureMap(db,'code')
 # cursor.execute(query)
 # row = cursor.fetchone()
 savedpage = []
+keys=[]
 counter  = 0
 with db, \
     db.cursor("pagedb_qtmp_{}".format(os.getpid())) as cur:
@@ -65,6 +66,8 @@ with db, \
         page = []
         # add none tfidf features:
         page.extend(row[:-1])
+        keys.append(row[0:2])
+        print(keys)
         # Adding tfidf features
         tfidf = row[11].split(',')
         page.extend(tfidf)
@@ -85,10 +88,11 @@ print(savedpage.sum())
 
 #cursor.close()
 db.close()
-kmpp = KMeansPlusPlus(savedpage, 13 ,max_iterations=5)
+kmpp = KMeansPlusPlus(savedpage, 3 ,max_iterations=5)
 kmpp.cluster()
 cls = kmpp.clusters
-print(cls)
+final = dict(zip(keys,cls))
+print(final)
 """
 print(len(savedpage))
 thefile = open("testlist", "w")
