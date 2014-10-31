@@ -7,7 +7,7 @@ from numbers import Integral
 
 class KMeansPlusPlus:
 
-    def __init__(self, data_frame, k, columns=None, max_iterations=None):
+    def __init__(self, data_frame, k, columns=None, spherical=False, max_iterations=None):
         if max_iterations is not None and max_iterations <= 0:
             raise Exception("max_iterations must be positive!")
 
@@ -39,6 +39,8 @@ class KMeansPlusPlus:
             self.columns = range(data_frame.shape[1])
         else:
             self.columns = columns
+
+        self.spherical = spherical
 
     def _populate_initial_centers(self):
         rows = []
@@ -133,15 +135,17 @@ class KMeansPlusPlus:
 
     def _distances_from_point(self, point):
 
+        if self.spherical:
         # cos distance
-        norm = LA.norm(self.data_frame,axis=1)*(LA.norm(point))
-        cos_distance = np.dot(self.data_frame[:,self.columns], point)/norm
-        tol = 1e-7
-        cos_distance[norm==0] = 0
-        cos_distance[np.abs(cos_distance-1)<=tol] = 1
-        return np.arccos(cos_distance)
+            norm = LA.norm(self.data_frame,axis=1)*(LA.norm(point))
+            cos_distance = np.dot(self.data_frame[:,self.columns], point)/norm
+            tol = 1e-7
+            cos_distance[norm==0] = 0
+            cos_distance[np.abs(cos_distance-1)<=tol] = 1
+            return np.arccos(cos_distance)
+        else:
         # L2 distance
-        # return np.power(self.data_frame[:,self.columns] - point, 2).sum(axis=1)
+            return np.power(self.data_frame[:,self.columns] - point, 2).sum(axis=1)
 
     def _distances_from_point_list(self, point_list):
         result = None
@@ -181,7 +185,7 @@ if __name__ == '__main__':
 #plt.scatter(x, y, s=5)
 
 # Cluster
-    kmpp = KMeansPlusPlus(data, 55, max_iterations=5)
+    kmpp = KMeansPlusPlus(data, 55, spherical=False,max_iterations=5)
     kmpp.cluster()
     cls = kmpp.clusters
     print(cls)
