@@ -64,7 +64,8 @@ with db, \
         # Hold features for a given row/example/page
         page = []
         # add none tfidf features:
-        page.extend(row[:-1])
+        page.append(row[4])
+        page.extend(row[6:-1])
         # Adding tfidf features
         tfidf = row[11].split(',')
         page.extend(tfidf)
@@ -76,7 +77,7 @@ with db, \
         print(len(page))
         # print(page[0:11])
         print(counter)
-        savedpage.append(list(map(float,page[11:])))
+        savedpage.append(list(map(float,page)))
         # pages.append(page)
         # row = cursor.fetchone()))
         #savedpage.extend(page)
@@ -85,7 +86,7 @@ print(savedpage.sum())
 
 #cursor.close()
 db.close()
-kmpp = KMeansPlusPlus(savedpage, 13 ,max_iterations=5)
+kmpp = KMeansPlusPlus(savedpage, 13, spherical=False ,max_iterations=5)
 kmpp.cluster()
 cls = kmpp.clusters
 print(cls)
