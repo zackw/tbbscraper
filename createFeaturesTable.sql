@@ -1,4 +1,4 @@
-CREATE TABLE features_test2 (
+CREATE TABLE features_test (
 	locale TEXT NOT NULL,
 	url INTEGER NOT NULL,
 	tfidf TEXT,

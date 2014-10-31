@@ -65,9 +65,10 @@ with db, \
         # Hold features for a given row/example/page
         page = []
         # add none tfidf features:
-        page.extend(row[:-1])
         keys.append(row[0:2])
         print(keys)
+        page.append(row[4])
+        page.extend(row[6:-1])
         # Adding tfidf features
         tfidf = row[11].split(',')
         page.extend(tfidf)
@@ -79,7 +80,7 @@ with db, \
         print(len(page))
         # print(page[0:11])
         print(counter)
-        savedpage.append(list(map(float,page[11:])))
+        savedpage.append(list(map(float,page)))
         # pages.append(page)
         # row = cursor.fetchone()))
         #savedpage.extend(page)
