@@ -7,92 +7,60 @@
 #include <Python.h>
 #include <structmember.h>
 
-/* String crunching.
+/* Module global data. Mostly strings, some regexps. */
 
-   The HTML spec makes a distinction between "space characters"
+/* The HTML spec makes a distinction between "space characters"
    (perhaps better known as "ASCII whitespace": SPC TAB CR LF FF) and
-   "White_Space characters".  Only "space characters" are considered
-   whitespace inside attribute values. */
+   "White_Space characters" (everything considered whitespace by Unicode).
+   Only "space characters" are considered whitespace inside attribute
+   values. */
 
-static PyObject *empty_string;
-static PyObject *one_space;
-static PyObject *sub_method;
-static PyObject *whitespace_character_re;
-static PyObject *space_character_re;
-static bool
-init_strings(void)
+typedef struct he_global
 {
-  PyObject *re = PyImport_ImportModule("re");
-  if (!re)
-    return false;
-  PyObject *re_compile = PyObject_GetAttrString(re, "compile");
-  if (!re_compile) {
-    Py_DECREF(re);
-    return false;
-  }
+  PyObject *empty_string;            // u""
+  PyObject *one_space;               // u" "
+  PyObject *sub_method;              // u"sub"
+  PyObject *whitespace_character_re; // White_Space: /\s+/
+  PyObject *space_character_re;      // ASCII space: /[ \t\r\n\f]+/
 
-  empty_string = PyUnicode_FromString("");
-  one_space = PyUnicode_FromString(" ");
-  sub_method = PyUnicode_FromString("sub");
+  // String for every GUMBO_TAG_* constant.
+  PyObject *tag_names[GUMBO_TAG_LAST];
+} he_global;
+#define HE_GLOBAL(o) ((he_global *)PyModule_GetState(o))
 
-  space_character_re = PyObject_CallFunction(re_compile, "s",
-                                             "[ \\t\\r\\n\\f]+");
-  whitespace_character_re = PyObject_CallFunction(re_compile, "s",
-                                                  "\\s+");
+/* This needs to be up here so that functions (other than
+   PyInit_html_extractor) that need the globals can use
+   HE_GLOBAL(PyState_FindModule(&html_extractor_module)).  */
 
-  Py_DECREF(re_compile);
-  Py_DECREF(re);
+static void traverse_html_extractor(PyObject *, visitproc, void *);
+static void clear_html_extractor(PyObject *);
 
-  return (empty_string && one_space && sub_method &&
-          space_character_re && whitespace_character_re);
-}
-static void
-destroy_strings(void)
-{
-  Py_CLEAR(empty_string);
-  Py_CLEAR(whitespace_character_re);
-  Py_CLEAR(space_character_re);
-}
+static struct PyModuleDef html_extractor_module = {
+  PyModuleDef_HEAD_INIT
+  "html_extractor",
+  "Extraction of content from an HTML document.",
+  .m_size     = sizeof(he_global),
+  .m_traverse = traverse_html_extractor,
+  .m_clear    = clear_html_extractor
+};
+
+#define HE_MODGLOBALS HE_GLOBAL(PyState_FindModule(&html_extractor_module))
+
+/* String munging. */
 
 static PyObject *
-merge_text(PyObject *textvec)
+merge_text(he_global *G, PyObject *textvec)
 {
   PyObject *merged = PyUnicode_Join(empty_string, textvec);
   if (!merged) return 0;
 
-  PyObject *condensed = PyObject_CallMethodObjArgs(whitespace_character_re,
-                                                   sub_method,
-                                                   merged,
-                                                   0);
+  PyObject *condensed =
+    PyObject_CallMethodObjArgs(G->whitespace_character_re,
+                               G->sub_method,
+                               G->merged,
+                               0);
   Py_DECREF(merged);
   return condensed;
-}
-
-/* Internal cache of Python string objects corresponding to
-   GUMBO_TAG_* constants.  Holds owning references.  */
-
-static PyObject *tagnames[GUMBO_TAG_LAST];
-
-static bool
-init_tagnames(void)
-{
-  for (int i = 0; i < GUMBO_TAG_LAST; i++) {
-    if (i == GUMBO_TAG_UNKNOWN)
-      continue;
-
-    const char *name = gumbo_normalized_tagname(i);
-    if (!name) return false;
-    PyObject *py_name = PyUnicode_FromString(name);
-    if (!py_name) return false;
-    tagnames[i] = py_name;
-  }
-  return true;
-}
-static void
-destroy_tagnames(void)
-{
-  for (int i = 0; i < GUMBO_TAG_LAST; i++)
-    Py_CLEAR(tagnames[i]);
 }
 
 /* Elements that introduce "heading content" according to HTML5.  Note
@@ -200,7 +168,9 @@ forces_word_break(int tag)
 
 
 /* Main tree walker.   Since this is now C rather than Python we are gonna
-   just go ahead and use recursive function calls. */
+   just go ahead and use recursive function calls.
+
+   All references in walker_state are borrowed. */
 
 typedef struct walker_state
 {
@@ -214,6 +184,8 @@ typedef struct walker_state
   PyObject *text_content;
   PyObject *tags;
   PyObject *tags_at_depth;
+
+  he_global *G;
 }
 walker_state;
 
@@ -307,7 +279,7 @@ walk_element(GumboElement *elt, GumboParseFlags flags, walker_state *state)
   if (flags == GUMBO_INSERTION_NORMAL ||
       flags == GUMBO_INSERTION_IMPLICIT_END_TAG) {
     if (elt->tag != GUMBO_TAG_UNKNOWN) {
-      if (!update_dom_stats(tagnames[elt->tag], state))
+      if (!update_dom_stats(state->G->tagnames[elt->tag], state))
         return false;
 
     } else {
@@ -476,16 +448,18 @@ static const PyMethodDef DomStatistics_methods = {
   { 0 }
 };
 
-static PyTypeObject DomStatisticsType = {
-  PyVarObject_HEAD_INIT(0, 0)
-  .tp_flags     = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
-  .tp_name      = "html_extractor.DomStatistics",
-  .tp_doc       = "Statistics about the DOM structure."
-  .tp_basicsize = sizeof(DomStatisticsType),
-  .tp_dealloc   = DomStatistics_dealloc,
-  .tp_new       = DomStatistics_new,
-  .tp_methods   = DomStatistics_methods,
-  .tp_members   = DomStatistics_members,
+static const PyType_Slot DomStatistics_slots[] = {
+  { Py_tp_dealloc, DomStatistics_dealloc },
+  { Py_tp_new,     DomStatistics_new },
+  { Py_tp_methods, DomStatistics_methods },
+  { Py_tp_members, DomStatistics_members },
+  { 0, 0 }
+}
+static const PyType_Spec DomStatistics_spec = {
+  "html_extractor.DomStatistics",
+  "Statistics about the DOM structure.",
+  sizeof(DomStatisticsType), 0,
+  DomStatistics_slots
 };
 
 
@@ -534,53 +508,28 @@ ExtractedContent_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 static bool
 process_document(ExtractedContent *self, Py_buffer *page)
 {
-  walker_state state;
-  state.depth         = 0;
-  state.in_discard    = 0;
-  state.in_title      = 0;
-  state.in_heading    = 0;
-  state.title         = self->title;
-  state.headings      = self->headings;
-  state.text_content  = self->text_content;
-  state.tags          = self->dom_stats->tags;
-  state.tags_at_depth = self->dom_stats->tags_at_depth;
-
-  GumboOptions opts        = kGumboDefaultOptions;
-  opts.userdata            = 0;
-  opts.stop_on_first_error = false;
-  opts.max_errors          = 0;
-
-  GumboOutput *output = gumbo_parse_with_options(&opts, page->buf, page->len);
-  if (!output)
-    return false;
-
-  bool rv = walk_node(output->root, &state);
-  gumbo_destroy_output(&opts, output);
-  if (rv)
-    rv = postprocess_document(self);
-  return rv;
 }
 
 static bool
-postprocess_document(ExtractedContent *self)
+postprocess_document(he_global *G, ExtractedContent *self)
 {
   PyObject *merged, *old;
 
   old = self->text_content;
-  merged = merge_text(old);
+  merged = merge_text(G, old);
   if (!merged) return false;
   self->text_content = merged;
   Py_DECREF(old);
 
   old = self->title;
-  merged = merge_text(old);
+  merged = merge_text(G, old);
   if (!merged) return false;
   self->title = merged;
   Py_DECREF(old);
 
   for (Py_ssize_t i = 0, len = PyList_GET_SIZE(self->headings); i < len; i++) {
     old = PyList_GET_ITEM(state->headings, i);
-    merged = merge_text(old);
+    merged = merge_text(G, old);
     if (!merged) return false;
     PyList_SET_ITEM(state->headings, i, merged);
     Py_DECREF(old);
@@ -594,6 +543,7 @@ ExtractedContent_init(ExtractedContent *self, PyObject *args, PyObject *kwds)
 {
   PyObject *url;
   Py_buffer page;
+  he_global *G = HE_MODGLOBALS;
 
   // Note: the 's*' format descriptor uses PyBUF_SIMPLE, so we are
   // guaranteed a contiguous buffer in page->buf.  The database is
@@ -608,11 +558,37 @@ ExtractedContent_init(ExtractedContent *self, PyObject *args, PyObject *kwds)
   self->url = url;
   Py_INCREF(self->url);
 
-  bool success = process_document(self, &page);
+  GumboOptions opts        = kGumboDefaultOptions;
+  opts.userdata            = 0;
+  opts.stop_on_first_error = false;
+  opts.max_errors          = 0;
+
+  // Note: must hold onto the page buffer until after we're done
+  // walking the gumbo tree, because the gumbo tree contains pointers
+  // into the page buffer.
+  GumboOutput *output = gumbo_parse_with_options(&opts, page->buf, page->len);
+  bool success = false;
+  if (output) {
+    walker_state state;
+    state.G             = G;
+    state.depth         = 0;
+    state.in_discard    = 0;
+    state.in_title      = 0;
+    state.in_heading    = 0;
+    state.title         = self->title;
+    state.headings      = self->headings;
+    state.text_content  = self->text_content;
+    state.tags          = self->dom_stats->tags;
+    state.tags_at_depth = self->dom_stats->tags_at_depth;
+
+    success = walk_node(output->root, &state);
+  }
+  gumbo_destroy_output(&opts, output);
   PyBuffer_Release(&page);
   if (!success)
     return -1;
-  success = postprocess_document(self);
+
+  success = postprocess_document(G, self);
   return success ? 0 : -1;
 }
 
@@ -637,58 +613,119 @@ static const PyMemberDef ExtractedContent_members = {
 
 /* there are no non-special methods */
 
-static PyTypeObject ExtractedContentType = {
-  PyVarObject_HEAD_INIT(0, 0)
-  .tp_flags     = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
-  .tp_name      = "html_extractor.ExtractedContent",
-  .tp_doc       = "Content extracted from an HTML document."
-  .tp_basicsize = sizeof(ExtractedContentType),
-  .tp_dealloc   = ExtractedContent_dealloc,
-  .tp_new       = ExtractedContent_new,
-  .tp_init      = ExtractedContent_init,
-  .tp_methods   = ExtractedContent_methods,
+static const PyType_Slot ExtractedContent_slots[] = {
+  { Py_tp_dealloc, ExtractedContent_dealloc },
+  { Py_tp_new,     ExtractedContent_new },
+  { Py_tp_init,    ExtractedContent_init },
+  { Py_tp_methods, ExtractedContent_methods },
+  { 0, 0 }
+};
+static const PyType_Spec ExtractedContent_spec = {
+  "html_extractor.ExtractedContent",
+  "Content extracted from an HTML document.",
+  sizeof(ExtractedContentType), 0,
+  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+  ExtractedContent_slots
 };
 
-/* Module global */
+/* Module setup and teardown */
 
-static void
-destroy_html_extractor(void *unused)
+static bool
+init_he_global(he_global *G)
 {
-  destroy_strings();
-  destroy_tagnames();
+  PyObject *re = PyImport_ImportModule("re");
+  if (!re)
+    return false;
+  PyObject *re_compile = PyObject_GetAttrString(re, "compile");
+  if (!re_compile) {
+    Py_DECREF(re);
+    return false;
+  }
+
+  G->space_character_re =
+    PyObject_CallFunction(re_compile, "s", "[ \\t\\r\\n\\f]+");
+
+  G->whitespace_character_re =
+    PyObject_CallFunction(re_compile, "s", "\\s+");
+
+  Py_DECREF(re_compile);
+  Py_DECREF(re);
+
+  if (!G->space_character_re || !G->whitespace_character_re)
+    return false;
+
+  G->empty_string = PyUnicode_FromString("");
+  G->one_space    = PyUnicode_FromString(" ");
+  G->sub_method   = PyUnicode_FromString("sub");
+
+  if (!G->empty_string || !G->one_space || !G->sub_method)
+    return false;
+
+  for (int i = 0; i < GUMBO_TAG_LAST; i++) {
+    if (i == GUMBO_TAG_UNKNOWN)
+      continue;
+
+    const char *name = gumbo_normalized_tagname(i);
+    if (!name) return false;
+    PyObject *py_name = PyUnicode_FromString(name);
+    if (!py_name) return false;
+    G->tagnames[i] = py_name;
+  }
+  return true;
 }
 
-static struct PyModuleDef html_extractor_module = {
-  PyModuleDef_HEAD_INIT,
-  "html_extractor",
-  "Extraction of content from an HTML document.",
-  .m_size = -1,
-  .m_free = destroy_html_extractor;
-};
+static void
+traverse_html_extractor(PyObject *m, visitproc v, void *arg)
+{
+  he_global *G = HE_GLOBAL(m);
 
+  Py_VISIT(G->empty_string);
+  Py_VISIT(G->one_space);
+  Py_VISIT(G->sub_method);
+  Py_VISIT(G->whitespace_character_re);
+  Py_VISIT(G->space_character_re);
+
+  for (int i = 0; i < GUMBO_TAG_LAST; i++)
+    Py_VISIT(G->tagnames[i]);
+}
+
+static void
+clear_html_extractor(PyObject *m)
+{
+  he_global *G = HE_GLOBAL(m);
+
+  Py_CLEAR(G->empty_string);
+  Py_CLEAR(G->one_space);
+  Py_CLEAR(G->sub_method);
+  Py_CLEAR(G->whitespace_character_re);
+  Py_CLEAR(G->space_character_re);
+
+  for (int i = 0; i < GUMBO_TAG_LAST; i++)
+    Py_CLEAR(G->tagnames[i]);
+}
 
 PyMODINIT_FUNC
 PyInit_html_extractor(void)
 {
-  if (PyType_Ready(&DomStatisticsType))
-    return 0;
-  if (PyType_Ready(&ExtractedContentType))
-    return 0;
+  PyObject *mod = 0, *tp = 0;
 
-  PyObject *mod = PyModule_Create(&html_extractor_module);
-  if (!mod)
-    return 0;
+  mod = PyModule_Create(&html_extractor_module);
+  if (!mod) goto fail;
+  if (!init_he_global(HE_GLOBAL(mod))) goto fail;
 
-  if (!init_tagnames() || !init_strings()) {
-    Py_DECREF(mod);
-    return 0;
-  }
+  tp = PyType_FromSpec(&DomStatistics_spec);
+  if (!tp) goto fail;
+  if (PyModule_AddObject(mod, "DomStatistics", tp)) goto fail;
 
-  Py_INCREF(&DomStatisticsType);
-  PyModule_AddObject(mod, "DomStatistics", (PyObject *)&DomStatisticsType);
-  Py_INCREF(&ExtractedContentType);
-  PyModule_AddObject(mod, "ExtractedContent",
-                     (PyObject *)&ExtractedContentType);
+  tp = PyType_FromSpec(&ExtractedContent_spec);
+  if (!tp) goto fail;
+  if (PyModule_AddObject(mod, "ExtractedContent", tp)) goto fail;
 
   return mod;
+
+ fail:
+  /* If PyModule_AddObject fails, we still hold a reference to tp. */
+  Py_XDECREF(tp);
+  Py_XDECREF(mod);
+  return 0;
 }
