@@ -6,7 +6,7 @@ import collections
 import urllib.parse
 import re
 import sys
-from gumbo import gumboc
+from . import gumboc
 
 # The HTML spec makes a distinction between "space characters" and
 # "White_Space characters".  Only "space characters" are stripped
