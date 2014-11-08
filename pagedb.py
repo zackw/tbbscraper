@@ -139,11 +139,11 @@ class PageDB:
            moderately expensive query so it's memoized.
         """
         if self._locales is None:
-            with self.db, self.db.cursor() as cur:
-                cur.execute("SELECT DISTINCT locale FROM captured_pages")
-                self._locales = sorted([
-                    row[0] for row in cur
-                ])
+            cur = self.db.cursor()
+            cur.execute("SELECT DISTINCT locale FROM captured_pages")
+            self._locales = sorted([
+                row[0] for row in cur
+            ])
         return self._locales
 
     def get_pages(self, *,
@@ -185,19 +185,18 @@ class PageDB:
 
         # This must be a named cursor, otherwise psycopg2 helpfully fetches
         # ALL THE ROWS AT ONCE, and they don't fit in RAM and it crashes.
-        with self.db, \
-             self.db.cursor("pagedb_qtmp_{}".format(os.getpid())) as cur:
-            cur.itersize = 100
-            cur.execute(query)
-            for row in cur:
-                yield CapturedPage(*row, want_links=want_links)
+        cur = self.db.cursor("pagedb_qtmp_{}".format(os.getpid()))
+        cur.itersize = 100
+        cur.execute(query)
+        for row in cur:
+            yield CapturedPage(*row, want_links=want_links)
 
     def get_random_pages(self, count, seed, **kwargs):
         rng = random.Random(seed)
 
-        with self.db, self.db.cursor() as cur:
-            cur.execute("select min(url), max(url) from captured_pages");
-            lo_url, hi_url = cur.fetchone()
+        cur = self.db.cursor()
+        cur.execute("select min(url), max(url) from captured_pages");
+        lo_url, hi_url = cur.fetchone()
 
         sample = rng.sample(range(lo_url, hi_url + 1), count)
         where = "c.url IN (" + ",".join(str(n) for n in sample) + ")"
@@ -249,7 +248,7 @@ if __name__ == '__main__':
                                  limit        = args.limit,
                                  ordered      = args.ordered)
 
-        prettifier = subprocess.Popen(["underscore", "pretty"],
+        prettifier = subprocess.Popen(["cat"], #["underscore", "pretty"],
                                       stdin=subprocess.PIPE)
         prettifier.stdin.write(b'[')
         for page in pages:
