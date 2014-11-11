@@ -3,6 +3,7 @@ import psycopg2
 import time
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 from numpy import linalg as LA
 import resource
 
@@ -64,6 +65,21 @@ with db, \
     for row in cur:
         counter += 1
         #print(counter)
+
+skip = 'crawler failure'
+skipCN = 'timeout'
+nSkipped = 0
+
+cur = db.cursor("pagedb_qtmp_{}".format(os.getpid()))
+cur.itersize = 10000
+cur.execute(query)
+for row in cur:
+    locale = row[0]
+    code =  row[2]
+    # TODO filter by uninteresting rows -> maybe in other script
+    if((code != skip) and ((locale != 'cn') or (code != skipCN))):
+        counter += 1
+        print(counter)
         # Hold features for a given row/example/page
         page = []
         # add none tfidf features:
@@ -73,10 +89,12 @@ with db, \
         page.extend(row[6:-1])
         # Adding tfidf features
         tfidf = row[11].split(',')
+        #tfidf = row[11][:1000]
         page.extend(tfidf)
         # Adding code features
         code = getSparseList(row[2],codeFeatureMap)
         page.extend(code)
+        print(page)
         #print(page[:11])
         #print(page[-13:])
         #print(len(page))
@@ -94,10 +112,43 @@ db.close()
 norm = LA.norm(savedpage,axis=1)
 savedpage = savedpage/norm[:,None]
 print(savedpage)
-km = KMeans(n_clusters=100, init='k-means++',max_iter=20)
-km.fit(savedpage)
+
+# k Inertia test
+K = [5,8,11]
+inertia = np.zeros((len(K),))
+for k in range(len(K)):
+    kmeans = KMeans(init='k-means++', n_clusters=K[k])
+    kmeans.fit(savedpage)
+    inertia[k] = kmeans.inertia_
+"""
+plt.figure(1)
+plt.plot(K,inertia)
+plt.xlabel('Number of k')
+plt.ylabel('inertia')
+"""
+print(inertia)
+# Convergence test
+L = [1,2,3,4,5]
+itera = np.zeros((len(L),))
+for l in range(len(L)):
+    kmeans = KMeans(init='k-means++', n_clusters=3, max_iter=L[l])
+    kmeans.fit(savedpage)
+    itera[l] = kmeans.inertia_
+print(itera)
+"""
+plt.figure(2)
+plt.plot(L,itera)
+plt.xlabel('Number of iterations')
+plt.ylabel('inertia')
+plt.show()
+"""
+#km = KMeans(n_clusters=10, init='k-means++',max_iter=20)
+#km.fit(savedpage)
 #final = dict(zip(keys,cls))
-print(km.labels_)
+#print(km.labels_)
+# print(savedpage[1])
+
+#cursor.close()
 """
 print(len(savedpage))
 thefile = open("testlist", "w")
@@ -106,4 +157,3 @@ for item in savedpage:
 thefile.close()
 """
 print("--- " + str(time.time() - start_time) + " seconds ---")
-print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)

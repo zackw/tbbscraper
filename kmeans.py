@@ -3,7 +3,8 @@ import time
 import os
 import numpy as np
 import resource
-
+from sklearn.manifold import TSNE
+from matplotlib.pylab import plt
 from kmeanspp import *
 from sparse import SparseList
 
@@ -35,7 +36,7 @@ start_time = time.time()
 query = '''
 	select locale, url, code, detail, isRedir, redirDomain, 
 	html_length, content_length, dom_depth, number_of_tags, unique_tags, 
-	tfidf from features_test limit 10
+	tfidf from features_test limit 1000
 	'''
 
 scheme = "dbname=ts_analysis"
@@ -85,13 +86,19 @@ with db, \
         # row = cursor.fetchone()))
         #savedpage.extend(page)
 savedpage = np.array(savedpage)
-print(savedpage.sum())
 
 #cursor.close()
 db.close()
-kmpp = KMeansPlusPlus(savedpage, 3 ,max_iterations=5)
+kmpp = KMeansPlusPlus(savedpage, 6 ,spherical=True,max_iterations=10)
 kmpp.cluster()
 cls = kmpp.clusters
+model = TSNE(n_components=2,random_state=0)
+X = model.fit_transform(savedpage)
+#plt.scatter(X[:,0],X[:,1])
+#plt.show()
+np.save('X.npy',X)
+np.save('cls.npy',cls)
+
 final = dict(zip(keys,cls))
 print(final)
 """
