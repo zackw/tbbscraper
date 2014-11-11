@@ -136,6 +136,12 @@ class KMeansPlusPlus:
     def _distances_from_point(self, point):
 
         if self.spherical:
+        # 1 - cos distance
+        #    norm = LA.norm(self.data_frame,axis=1)*(LA.norm(point))
+        #    cos_distance = np.dot(self.data_frame[:,self.columns], point)/norm
+        #    cos_distance[norm==0] = 0
+        #    cos_distance[np.abs(cos_distance-1)<=tol] = 1
+        #    return 1 - cos_distance
         # cos distance
             norm = LA.norm(self.data_frame,axis=1)*(LA.norm(point))
             cos_distance = np.dot(self.data_frame[:,self.columns], point)/norm
