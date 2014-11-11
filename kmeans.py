@@ -4,6 +4,7 @@ import os
 import numpy as np
 import resource
 
+from sklearn.manifold import TSNE
 from kmeanspp import *
 from sparse import SparseList
 
@@ -35,7 +36,7 @@ start_time = time.time()
 query = '''
 	select locale, url, code, detail, isRedir, redirDomain, 
 	html_length, content_length, dom_depth, number_of_tags, unique_tags, 
-	tfidf from features_test limit 10
+	tfidf from features_test
 	'''
 
 scheme = "dbname=ts_analysis"
@@ -66,12 +67,12 @@ with db, \
         page = []
         # add none tfidf features:
         keys.append(row[0:2])
-        print(keys)
+        # print(keys)
         page.append(row[4])
         page.extend(row[6:-1])
         # Adding tfidf features
-        tfidf = row[11].split(',')
-        page.extend(tfidf)
+        tfidf = row[11].split(',')[:5000]
+        # page.extend(tfidf)
         # Adding code features
         code = getSparseList(row[2],codeFeatureMap)
         page.extend(code)
@@ -87,13 +88,26 @@ with db, \
 savedpage = np.array(savedpage)
 print(savedpage.sum())
 
+isSpherical = True
+k = 100
 #cursor.close()
 db.close()
-kmpp = KMeansPlusPlus(savedpage, 3 ,max_iterations=5)
+kmpp = KMeansPlusPlus(savedpage, k, spherical=isSpherical ,max_iterations=5)
 kmpp.cluster()
 cls = kmpp.clusters
-final = dict(zip(keys,cls))
-print(final)
+# final = dict(zip(keys,cls))
+# print(final)
+outputFile = 'results/clusters-' + str(k) + '-' + str(isSpherical) + '-allv2'
+
+model = TSNE(n_components=2,random_state=0)
+X = model.fit_transform(savedpage)
+np.save('X.npy',X)
+np.save('cls.npy',cls)
+
+# f = open(outputFile, mode = 'w')
+# for i in range(len(cls)):
+    # f.write(str(keys[i][0]) + ',' + str(keys[i][1]) + ',' + str(cls[i]) + '\n')
+# f.close()
 """
 print(len(savedpage))
 thefile = open("testlist", "w")
