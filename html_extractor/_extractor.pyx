@@ -8,7 +8,7 @@ from re import compile as _Regexp
 from collections import Counter as _Counter
 
 # "Common" tag names are those that have GUMBO_TAG_* constants.
-_common_tagnames = [gumbo_normalized_tagname(<GumboTag>i).decode("ascii")
+_common_tagnames = [gumbo_normalized_tagname(<GumboTag>i).decode("utf-8")
                     for i in range(GUMBO_TAG_LAST)]
 
 _WSRE = _Regexp(u"\\s+")
@@ -171,13 +171,13 @@ cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
             if elt.tag_namespace == GUMBO_NAMESPACE_SVG:
                 svg_tagname = gumbo_normalize_svg_tagname(&elt.original_tag)
                 if svg_tagname:
-                    tagname = svg_tagname.decode("ascii")
+                    tagname = svg_tagname.decode("utf-8")
                 else:
                     tagname = (elt.original_tag.data[:elt.original_tag.length]
-                               .decode("ascii"))
+                               .decode("utf-8"))
             else:
                 tagname = (elt.original_tag.data[:elt.original_tag.length]
-                           .decode("ascii"))
+                           .decode("utf-8"))
 
             update_dom_stats(tagname, state)
 

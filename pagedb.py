@@ -43,8 +43,7 @@ class CapturedPage:
     def _do_extraction(self):
         if self._extracted is None:
             self._extracted = ExtractedContent(self.redir_url,
-                                               self.html_content,
-                                               self.want_links)
+                                               self.html_content)
 
     @property
     def capture_log(self):
@@ -186,7 +185,7 @@ class PageDB:
         # This must be a named cursor, otherwise psycopg2 helpfully fetches
         # ALL THE ROWS AT ONCE, and they don't fit in RAM and it crashes.
         cur = self.db.cursor("pagedb_qtmp_{}".format(os.getpid()))
-        cur.itersize = 100
+        cur.itersize = 10000
         cur.execute(query)
         for row in cur:
             yield CapturedPage(*row, want_links=want_links)
