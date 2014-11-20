@@ -1,0 +1,198 @@
+#! /usr/bin/python3
+
+import math
+import psycopg2
+import random
+import sys
+
+def compute_parameters(db):
+    with db, db.cursor() as cur:
+        # All three of these values require a table scan to compute, but
+        # they can all be done at the same time.
+        cur.execute('SELECT MIN("timestamp"), MAX("timestamp"),'
+                    '       COUNT(DISTINCT "url")'
+                    '       FROM ts_run_0.urls_tweeted')
+
+        min_ts, max_ts, urls_total = cur.fetchone()
+        ndays = math.ceil((max_ts - min_ts)/86400)
+
+        # Partition the Twitter sample by days.
+        cur.execute('WITH i(start, stop) AS'
+                    '   (SELECT %s::bigint + s     * 86400,'
+                    '           %s::bigint + (s+1) * 86400'
+                    '    FROM generate_series(0,%s) s)'
+                    'SELECT i.start, COUNT(*)'
+                    '       FROM i'
+                    '  LEFT JOIN ts_run_0.urls_tweeted u'
+                    '         ON u."timestamp" >= i.start'
+                    '        AND u."timestamp" <  i.stop'
+                    '   GROUP BY i.start'
+                    '   ORDER BY i.start',
+                    (min_ts, min_ts, ndays-1))
+
+        per_day = [(r[0], r[1]) for r in cur.fetchall()]
+        per_day.append((per_day[-1][0]+86400, 0))
+
+        # Local cache of tweets available for sampling.
+        # They come back as vectors, which won't do for set keys.
+        cur.execute('SELECT timestamp, uid, url FROM ts_run_0.urls_tweeted')
+        tweets_to_sample = set((r[0], r[1], r[2]) for r in cur.fetchall())
+
+        return urls_total, per_day, tweets_to_sample
+
+def choose_tweets(rng, urls_wanted, urls_total,
+                  tweets_per_day, tweets_to_sample):
+    # The goal here is to select 'urls_wanted' _unique URLs_ at random
+    # from the complete pool of available tweeted-URLs, such that each
+    # URL's chance of being selected is proportional to the total
+    # number of times it occurs in the pool, and the number of
+    # _tweets_ per day in the subsample is proportional to the number
+    # of tweets per day in the full sample.  We do this by rejection
+    # sampling over the entire pool, tracking both the above criteria.
+    selected = {}
+    selected_uids = set()
+    day_thresholds = [(t[0], d) for d, t in enumerate(tweets_per_day)]
+    selected_by_day = [0] * len(tweets_per_day)
+    wanted_by_day = [math.ceil(d[1] * urls_wanted/urls_total)
+                     for d in tweets_per_day]
+    assert sum(wanted_by_day) >= urls_wanted
+
+    sys.stderr.write("Goal: "
+                     + " ".join("{}:{}".format(d+1, w)
+                                for d,w in enumerate(wanted_by_day))
+                     + "\n")
+
+    pass_ct = 1
+    while len(selected) < urls_wanted:
+        candidates = rng.sample(tweets_to_sample, urls_wanted - len(selected))
+        for c in candidates:
+            ts, uid, url = c
+            if url in selected:
+                continue
+            for t, d in day_thresholds:
+                if t > ts:
+                    day = d - 1
+                    break
+            else:
+                raise RuntimeError("timestamp %d out of expected range" % ts)
+
+            if selected_by_day[day] > wanted_by_day[day]:
+                continue
+
+            selected_by_day[day] += 1
+            selected[url] = c
+            selected_uids.add(uid)
+
+        sys.stderr.write("Pass {}:".format(pass_ct)
+                         + " ".join("{}:{}".format(d+1, w)
+                                    for d,w in enumerate(selected_by_day))
+                         + "\n")
+        pass_ct += 1
+
+    return sorted(selected_uids), sorted(selected.values())
+
+
+def copy_users(cur, selected_uids):
+    where = cur.mogrify("   WHERE uid = ANY(%s)", (selected_uids,))
+
+    sys.stderr.write("Copying users...\n")
+    cur.execute(b"INSERT INTO ts_run_1.twitter_users"
+                b"  SELECT * FROM ts_run_0.twitter_users"
+                + where)
+
+    sys.stderr.write("Copying user profile URL strings...\n")
+    cur.execute(b"INSERT INTO ts_run_1.url_strings (url)"
+                b"  SELECT s.url FROM ts_run_0.url_strings s"
+                b"    JOIN ts_run_0.urls_twitter_user_profiles u"
+                b"      ON u.url = s.id"
+                + where +
+                b"  EXCEPT SELECT url FROM ts_run_1.url_strings")
+
+    # The URLs, in general, do not have the same ID in ts_run_1 that
+    # they did in ts_run_0.
+    sys.stderr.write("Copying user profile URLs...\n")
+    cur.execute(b"INSERT INTO ts_run_1.urls_twitter_user_profiles (uid, url)"
+                b"  SELECT u.uid, t.id AS url"
+                b"   FROM ts_run_0.urls_twitter_user_profiles u"
+                b"   JOIN ts_run_0.url_strings s ON u.url = s.id"
+                b"   JOIN ts_run_1.url_strings t ON s.url = t.url"
+                + where)
+
+    sys.stderr.write("User profile URLs: {}\n".format(cur.rowcount))
+
+def copy_tweets(cur, selected_tweets):
+
+    # Create a temp table containing all the tweets to be copied.
+    # (If we try to dump it all into a WHERE, we get a "stack depth
+    # limit exceeded" error.)
+    cur.execute("CREATE TEMP TABLE tweets_to_copy"
+                "(ts BIGINT, uid BIGINT, url INTEGER)")
+    cur.execute(b"INSERT INTO tweets_to_copy VALUES" +
+                b",".join(cur.mogrify("(%s, %s, %s)", st)
+                          for st in selected_tweets))
+
+    sys.stderr.write("Copying tweeted URL strings...\n")
+    cur.execute("INSERT INTO ts_run_1.url_strings (url)"
+                "  SELECT s.url FROM tweets_to_copy c"
+                "    JOIN ts_run_0.url_strings s"
+                "      ON c.url = s.id"
+                "  EXCEPT SELECT url FROM ts_run_1.url_strings")
+
+    # The URLs, in general, do not have the same ID in ts_run_1 that
+    # they did in ts_run_0.
+    # It's possible that there is more than one row in ts_run_0 matching
+    # one of the rows in tweets_to_copy, and in ts_run_1 we can't even have
+    # more than one (c.uid, t.id) combination.
+    sys.stderr.write("Copying tweets...\n")
+    cur.execute("INSERT INTO ts_run_1.urls_tweeted"
+                "  (uid, url, \"timestamp\", retweets, possibly_sensitive,"
+                "   lang, withheld, hashtags)"
+                " SELECT DISTINCT ON (c.uid, t.id)"
+                "        c.uid, t.id, c.ts, u.retweets,"
+                "        u.possibly_sensitive, u.lang, u.withheld, u.hashtags"
+                "   FROM tweets_to_copy c"
+                "   JOIN ts_run_0.urls_tweeted u"
+                "     ON c.ts = u.\"timestamp\""
+                "    AND c.uid = u.uid"
+                "    AND c.url = u.url"
+                "   JOIN ts_run_0.url_strings s ON c.url = s.id"
+                "   JOIN ts_run_1.url_strings t ON s.url = t.url"
+                "  ORDER BY c.uid, t.id, c.ts, u.retweets")
+
+    sys.stderr.write("Tweeted URLs: {}\n".format(cur.rowcount))
+
+
+def copy_selected(db, selected_uids, selected_tweets):
+    with db.cursor() as cur:
+        try:
+            # We're going to be doing lots of random access queries with
+            # this multi-column key.
+            sys.stderr.write("Indexing...\n")
+            cur.execute("CREATE INDEX ut_sample_idx"
+                        " ON ts_run_0.urls_tweeted(\"timestamp\", uid, url)")
+            cur.execute("ANALYZE ts_run_0.urls_tweeted")
+            with db:
+                copy_users(cur, selected_uids)
+                copy_tweets(cur, selected_tweets)
+
+        finally:
+            cur.execute("DROP INDEX ts_run_0.ut_sample_idx")
+
+def main():
+    if len(sys.argv) != 4:
+        raise SystemExit("usage: %s database n_urls seed" % sys.argv[0])
+
+    db = psycopg2.connect(sys.argv[1])
+    urls_wanted = int(sys.argv[2])
+    rng = random.Random(sys.argv[3])
+
+    urls_total, tweets_per_day, tweets_to_sample = compute_parameters(db)
+    selected_uids, selected_tweets = choose_tweets(rng,
+                                                   urls_wanted,
+                                                   urls_total,
+                                                   tweets_per_day,
+                                                   tweets_to_sample)
+
+    copy_selected(db, selected_uids, selected_tweets)
+
+main()

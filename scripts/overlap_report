@@ -1,0 +1,224 @@
+#! /usr/bin/python3
+
+import psycopg2
+import sys
+import textwrap
+import json
+
+SCHEMA = 'ts_run_1'
+
+def emit_overlap_table(of, left_names, top_names, mat, caption, label):
+    #sys.stderr.write(repr(mat))
+    N = len(mat)
+    for i in range(N):
+        for j in range(N):
+            mat[i][j] = None if mat[i][j] is None else str(mat[i][j])
+
+    colwidths = [0] * (N+2)
+    colwidths[0] = max(len("Source"), max(len(s) for s in left_names))
+    colwidths[1] = max(len("URLs"), max(len(mat[i][i]) for i in range(N)))
+    for j in range(N):
+        colwidths[j+2] = max(len(top_names[j]),
+                             max((len(mat[i][j]) for i in range(N) if i != j),
+                                 default=0))
+
+    of.write("\\begin{table}\\centering\\footnotesize\n")
+    of.write("\\begin{tabular}{" + "r"*(N+2) + "}\n\\toprule\n")
+    of.write(" "*colwidths[0] + " & " + " "*colwidths[1])
+    of.write(" &\multicolumn{" + str(N) + "}{c}{Overlap with}\\\\\n")
+    of.write("Source".rjust(colwidths[0]))
+    of.write(" & ")
+    of.write("URLs".rjust(colwidths[1]))
+    for j in range(N):
+        of.write(" & " + top_names[j].rjust(colwidths[j+2]))
+    of.write(" \\\\\n\\cmidrule(r){1-1}\\cmidrule(lr){2-2}\\cmidrule(l){3-"
+             + str(N+2)
+             + "}\n")
+
+    for i in range(N):
+        of.write(left_names[i].rjust(colwidths[0]))
+        of.write(" & ")
+        of.write(mat[i][i].rjust(colwidths[1]))
+        for j in range(N):
+            if j == i or mat[i][j] is None:
+                of.write(" & " + " "*colwidths[j+2])
+            else:
+                of.write(" & " + mat[i][j].rjust(colwidths[j+2]))
+        of.write(" \\\\\n")
+    of.write("\\bottomrule\n\\end{tabular}\n")
+    of.write(textwrap.fill("\\caption{" + caption + "}\\label{" + label + "}"))
+    of.write("\n\\end{table}\n")
+
+class OverlapTable:
+    def __init__(self, label, caption, sources, left_names, top_names,
+                 get_overlap):
+        self.label = label
+        self.caption = caption
+        self.sources = sources
+        self.left_names = [left_names[s] for s in sources]
+        self.top_names  = [top_names[s] for s in sources]
+        self.get_overlap = get_overlap
+
+        self.N = len(self.sources)
+        assert self.N == len(self.left_names)
+        assert self.N == len(self.top_names)
+
+    def fill(self, cur, schema):
+        N = self.N
+        src = self.sources
+        mat = [ [0 for i in range(N)] for j in range(N) ]
+
+        for i in range(N):
+            for j in range(i, N):
+                mat[i][j] = self.get_overlap(cur, schema, src[i], src[j])
+                mat[j][i] = mat[i][j]
+
+        self.mat = mat
+
+    def emit(self, of):
+        emit_overlap_table(of, self.left_names, self.top_names, self.mat,
+                           self.caption, self.label)
+
+def get_overlap_url_sources(cur, schema, t1, t2):
+    # minor speed hack
+    if t1 == t2:
+        cur.execute("SELECT COUNT(DISTINCT url) FROM {schema}.{t1}"
+                    .format(schema=schema, t1=t1))
+    else:
+        cur.execute("SELECT COUNT(DISTINCT t1.url)"
+                    " FROM {schema}.{t1} t1, {schema}.{t2} t2"
+                    " WHERE t1.url = t2.url"
+                    .format(schema=schema, t1=t1, t2=t2))
+    return cur.fetchone()[0]
+
+url_sources_OT = OverlapTable(
+    label       = "t:overlap.sources",
+    caption     = "Pairwise overlaps between all sources of URLs used "
+                  "in this study",
+    get_overlap = get_overlap_url_sources,
+    sources     = [
+        'urls_staticlist',
+        'urls_citizenlab',
+        'urls_herdict',
+        'urls_tweeted',
+        'urls_twitter_user_profiles',
+        'urls_alexa',
+        'urls_pinboard'
+    ],
+    left_names  = {
+        'urls_staticlist':            'Leaked lists',
+        'urls_citizenlab':            'Citizen Lab',
+        'urls_herdict':               'Herdict',
+        'urls_tweeted':               'Twitter messages',
+        'urls_twitter_user_profiles': 'Twitter users',
+        'urls_alexa':                 'Alexa top 25k',
+        'urls_pinboard':              'Pinboard',
+    },
+    top_names   = {
+        'urls_staticlist':            'Leak',
+        'urls_citizenlab':            'Clab',
+        'urls_herdict':               'Hdct',
+        'urls_tweeted':               'Tmsg',
+        'urls_twitter_user_profiles': 'Tusr',
+        'urls_alexa':                 'Alex',
+        'urls_pinboard':              'Pbrd',
+    })
+
+def get_overlap_static_lists(cur, schema, t1, t2):
+    # minor speed hack
+    if t1 == t2:
+        cur.execute("SELECT COUNT(DISTINCT url) FROM {schema}.urls_staticlist"
+                    " WHERE listid = {t1}"
+                    .format(schema=schema, t1=t1))
+    else:
+        cur.execute("SELECT COUNT(DISTINCT t1.url)"
+                    " FROM {schema}.urls_staticlist t1,"
+                    "      {schema}.urls_staticlist t2"
+                    " WHERE t1.listid = {t1}"
+                    "   AND t2.listid = {t2}"
+                    "   AND t1.url = t2.url"
+                    .format(schema=schema, t1=t1, t2=t2))
+    return cur.fetchone()[0]
+
+# The static-lists OT needs some preprocessing.
+def prep_static_lists_OT(cur, schema):
+    expected_database_labels = {
+        1: "Australia 2009 (ACMA; Wikileaks)",
+        2: "Germany 2014 (BPjM hashbusting)",
+        3: "India (Anonymous, 2012)",
+        4: "India (2012; Assam riots)",
+        5: "Italy (2009; Wikileaks)",
+        6: "Norway (2009; Wikileaks)",
+        7: "Russia (2014; rublacklist.net)",
+        8: "Thailand (2007; Wikileaks)"
+    }
+
+    left_names = {
+        1: "Australia (Wikileaks, 2009)",
+        2: "Germany (\\#BPjMleak, 2014)",
+        3: "India (Anonymous, 2012)",
+        4: "India (Assam riots, 2012)",
+        5: "Italy (Wikileaks, 2009)",
+        6: "Norway (Wikileaks, 2009)",
+        7: "Russia (rublacklist.net, 2014)",
+        8: "Thailand (Wikileaks, 2007)"
+    }
+    top_names = {
+        1: "Aust",
+        2: "Germ",
+        3: "IndA",
+        4: "IndR",
+        5: "Ital",
+        6: "Norw",
+        7: "Russ",
+        8: "Thai"
+    }
+
+    # Sanity check.
+    cur.execute("SELECT id, label FROM {schema}.static_list_metadata"
+                .format(schema=schema))
+    for id_, label_ in cur:
+        if id_ not in expected_database_labels:
+            raise RuntimeError("unrecognized list: {}={}"
+                               .format(id_, label_))
+        if expected_database_labels[id_] != label_:
+            raise RuntimeError("list {} expected {} got {}"
+                               .format(id_, expected_database_labels[id_],
+                                       label_))
+        del expected_database_labels[id_]
+
+    if expected_database_labels:
+        raise RuntimeError("missing static lists: {!r}"
+                           .format(expected_database_labels))
+
+    # Sort the lists in descending order of length.
+    cur.execute("SELECT listid"
+                "  FROM {schema}.urls_staticlist"
+                "  GROUP BY listid"
+                "  ORDER BY COUNT(DISTINCT url) DESC"
+                .format(schema=schema))
+    sources = [row[0] for row in cur]
+
+    return OverlapTable(
+        label   = "t:overlap.leak.lists",
+        caption = "Pairwise overlaps between individual leaked lists "
+                  "of censored URLs",
+        sources = sources,
+        left_names = left_names,
+        top_names = top_names,
+        get_overlap = get_overlap_static_lists)
+
+def main():
+    with psycopg2.connect("dbname="+sys.argv[1]) as db:
+        with db.cursor() as cur:
+            cur.execute("SELECT quote_ident(%s)", (SCHEMA,))
+            schema = cur.fetchone()[0]
+
+            url_sources_OT.fill(cur, schema)
+            url_sources_OT.emit(sys.stdout)
+
+            static_lists_OT = prep_static_lists_OT(cur, schema)
+            static_lists_OT.fill(cur, schema)
+            static_lists_OT.emit(sys.stdout)
+
+main()
