@@ -207,7 +207,7 @@ def add_www(spliturl):
 
 no_www_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+$|\[[\dA-Fa-f:]+\]$|www\.)")
 
-def add_site(db, site):
+def add_site(db, site, http_only=False, www_only=False):
     """Add a site to the url_strings table for DB, if it is not already
        there.  Returns a list of pairs [(id1, url1), (id2, url2), ...]
        comprising all URLs chosen to represent the site.
@@ -234,6 +234,9 @@ def add_site(db, site):
        content is on servers named SOMETHINGELSE.akamaihd.net, and
        you're not expected to notice that the domain even exists.
        But there's nothing we can do about that.
+
+       If http_only is True, https urls are not added.
+       If www_only is true, urls without 'www.' are not added.
     """
 
     parsed = canon_url_syntax("http://" + site, want_splitresult=True)
@@ -242,40 +245,43 @@ def add_site(db, site):
     if parsed.path != "/":
         root = to_siteroot(parsed)
         need_path = True
+        with_path = parsed
     else:
         root = parsed
         need_path = False
 
-    urls = [ root.geturl(),
-             to_https(root).geturl() ]
-
     host = root.hostname
     if no_www_re.match(host):
         need_www = False
+        with_www = root
+        if need_path:
+            with_www_path = with_path
     else:
         need_www = True
         with_www = add_www(root)
-        urls.extend([ with_www.geturl(),
-                      to_https(with_www).geturl() ])
+        if need_path:
+            with_www_path = add_www(with_path)
 
+    urls = [with_www.geturl()]
+    if not http_only:
+        urls.append(to_https(with_www).geturl())
+
+    if need_www and not www_only:
+        urls.append(root.geturl())
+        if not http_only:
+            urls.append(to_https(root).geturl())
 
     if need_path:
-        urls.extend([ parsed.geturl(),
-                      to_https(parsed).geturl() ])
+        urls.append(with_www_path.geturl())
+        if not http_only:
+            urls.append(to_https(with_www_path).geturl())
 
-        if need_www:
-            with_www = add_www(parsed)
-            urls.extend([ with_www.geturl(),
-                          to_https(with_www).geturl() ])
+        if need_www and not www_only:
+            urls.append(with_path.geturl())
+            if not http_only:
+                urls.append(to_https(with_path).geturl())
 
     return [ add_url_string(db, url) for url in urls ]
-
-    for url in urls:
-        (uid, url) = url_database.add_url_string(cur, url)
-        if url in already_seen:
-            continue
-        batch.append( (uid, rank, datestamp) )
-        already_seen.add(url)
 
 
 def categorize_result(status, original_uid, canon_uid):

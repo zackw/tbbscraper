@@ -19,6 +19,16 @@ def setup_argp(ap):
     ap.add_argument("--cache", "-c", metavar="DIR",
                 help="Directory in which to cache downloaded site lists.",
                 default="alexa")
+    ap.add_argument("--top-n", "-t", metavar="N",
+                help="How many sites (from the top down) to add.",
+                type=int, default=0)
+    ap.add_argument("--http-only", "-H",
+                    help="Only add http:// URLs.",
+                    action="store_true")
+    ap.add_argument("--www-only", "-w",
+                    help="Only add URLs with 'www.' prefixed to the hostname.",
+                    action="store_true")
+
 
 def run(args):
     Monitor(AlexaExtractor(args),
@@ -50,7 +60,6 @@ class AlexaExtractor:
         db        = url_database.ensure_database(self.args)
         sitelist  = self.download_sitelist(mon, datestamp)
         self.process_sitelist(mon, db, sitelist, datestamp)
-        self.update_canon_queue(mon, db)
 
     def download_sitelist(self, mon, datestamp):
         # We hardwire the knowledge that Alexa only updates this once a
@@ -94,9 +103,11 @@ class AlexaExtractor:
         os.rename(cached_csv+".tmp", cached_csv)
         return cached_csv, ci_csv
 
-    @staticmethod
-    def add_urls_from_site(cur, site, rank, datestamp, batch, already_seen):
-        for (uid, url) in url_database.add_site(cur, site):
+    def add_urls_from_site(self, cur, site, rank, datestamp, batch,
+                           already_seen):
+        for (uid, url) in url_database.add_site(cur, site,
+                                                self.args.http_only,
+                                                self.args.www_only):
             if url in already_seen:
                 continue
             batch.append( (uid, rank, datestamp) )
@@ -123,37 +134,20 @@ class AlexaExtractor:
             batch = []
             for line in sitelist:
                 rank, _, site = line.decode("ascii").partition(",")
+                rank = int(rank)
                 site = site.rstrip()
                 self.add_urls_from_site(cur, site, rank, datestamp,
                                         batch, already_seen)
                 n = len(batch)
-                if n > 10000:
+                if n >= 10000 or rank >= self.args.top_n:
                     self.flush_batch(db, cur, batch)
                     nurls += n
                     mon.report_status("Loaded {:>8} URLs from {:>7} sites | {}"
                                       .format(nurls, rank, site[:35]))
                     mon.maybe_pause_or_stop()
                     batch = []
+                if rank >= self.args.top_n:
+                    break
 
         db.commit()
         os.rename(todo_name, done_name)
-
-    def update_canon_queue(self, mon, db):
-        cur = db.cursor()
-
-        mon.report_status("Flushing duplicates...")
-        # The urls_alexa table doesn't have any uniquifier.
-        # Flush any duplicate rows that may have occurred.
-        cur.execute(
-            'DELETE FROM urls_alexa WHERE ctid IN (SELECT ctid FROM ('
-            '  SELECT ctid, row_number() OVER ('
-            '    PARTITION BY url,rank,retrieval_date'
-            '    ORDER BY ctid) AS rnum FROM urls_alexa) t'
-            '  WHERE t.rnum > 1)')
-        db.commit()
-
-        mon.report_status("Adding URLs to be canonicalized...")
-        cur.execute("INSERT INTO canon_urls (url) "
-                    "  SELECT DISTINCT url FROM urls_alexa"
-                    "  EXCEPT SELECT url FROM canon_urls")
-        db.commit()
