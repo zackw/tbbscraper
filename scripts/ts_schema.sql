@@ -70,10 +70,20 @@ CREATE TABLE urls_citizenlab (
 );
 
 CREATE TABLE urls_herdict (
-    url            INTEGER NOT NULL REFERENCES url_strings(id),
     "timestamp"    BIGINT  NOT NULL,
-    accessible     BOOLEAN NOT NULL,
-    country        CHAR(2) NOT NULL CHECK(country<>'')
+    url            INTEGER NOT NULL REFERENCES url_strings(id),
+    country        CHAR(2) NOT NULL CHECK(country<>''),
+    accessible     BOOLEAN NOT NULL
+);
+
+CREATE TABLE urls_pinboard (
+    username     TEXT NOT NULL,
+    url          INTEGER NOT NULL REFERENCES url_strings(id),
+    access_time  TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    title        TEXT NOT NULL DEFAULT(''),
+    annotation   TEXT NOT NULL DEFAULT(''),
+    tags         TEXT NOT NULL DEFAULT(''),
+    UNIQUE (username, url)
 );
 
 CREATE TABLE urls_staticlist (
@@ -98,16 +108,6 @@ CREATE TABLE urls_twitter_user_profiles (
     uid                 BIGINT NOT NULL REFERENCES twitter_users(uid),
     url                 INTEGER NOT NULL REFERENCES url_strings(id),
     UNIQUE (uid, url)
-);
-
-CREATE TABLE urls_pinboard (
-    username     TEXT NOT NULL,
-    url          INTEGER NOT NULL REFERENCES url_strings(id),
-    access_time  TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    title        TEXT NOT NULL DEFAULT(''),
-    annotation   TEXT NOT NULL DEFAULT(''),
-    tags         TEXT NOT NULL DEFAULT(''),
-    UNIQUE (username, url)
 );
 
 -- Capture results
