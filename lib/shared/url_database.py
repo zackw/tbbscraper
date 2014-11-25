@@ -107,8 +107,10 @@ def canon_url_syntax(url, *, want_splitresult=None):
     if path == "":
         path = "/"
 
-    if host.strip(".-0123456789abcdefghijklmnopqrstuvwxyz"):
-        host = host.encode("idna").decode("ascii")
+    # We do this even if there are no non-ASCII characters, because it
+    # has the side-effect of throwing a UnicodeError if the hostname
+    # is syntactically invalid (e.g. "foo..com").
+    host = host.encode("idna").decode("ascii")
 
     if port is None:
         port = ""
