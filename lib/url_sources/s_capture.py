@@ -1114,6 +1114,7 @@ class CaptureDispatcher:
                     self.capture_detail[r['detail']] = detail_id
 
                 (_, result) = url_database.categorize_result(r['status'],
+                                                             r['detail'],
                                                              url_id,
                                                              redir_url_id)
 

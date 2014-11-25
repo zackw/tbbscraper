@@ -284,46 +284,116 @@ def add_site(db, site, http_only=False, www_only=False):
     return [ add_url_string(db, url) for url in urls ]
 
 
-def categorize_result(status, original_uid, canon_uid):
+# see http://qt-project.org/doc/qt-5/qnetworkreply.html#NetworkError-enum
+# codes not listed are mapped to "crawler failure" because they
+# shouldn't be possible.
+look_at_the_detail = object()
+maybe_ok = object()
+network_errors_by_code = {
+    "N1":   "connection refused",
+    "N2":   "connection interrupted",
+    "N3":   "host not found",
+    "N4":   "timeout",
+    "N5":   "connection interrupted",
+    "N6":   "TLS handshake failed",
+
+    "N101": "proxy failure",   # All 1xx errors indicate something
+    "N102": "proxy failure",   # wrong with the proxy.
+    "N103": "proxy failure",
+    "N104": "proxy failure",
+    "N105": "proxy failure",
+    "N199": "proxy failure",
+
+    # Unlike all the other 2xx, 4xx QNetworkReply codes that
+    # should be reported to us as proper HTTP status codes,
+    # this one actually happens.  We're not sure why, but it's
+    # quite rare and probably not worth digging into.
+    "N205": "other network error",
+
+    "N301": "invalid URL", # ProtocolUnknownError: unrecognized URL scheme.
+    "N302": "other network error",
+    "N399": "other network error",
+
+    "N99":  look_at_the_detail
+}
+network_errors_by_detail = {
+    "N99 Connection to proxy refused": "proxy failure",
+    "N99 Host unreachable":            "server unreachable",
+    "N99 Network unreachable":         "server unreachable",
+    "N99 Unknown error":               "other network error"
+}
+misc_errors_by_status = {
+    "hostname not found":   "host not found",
+    "timeout":              "timeout",
+}
+http_statuses_by_code = {
+    200: maybe_ok,
+
+    301: "redirection loop",
+    302: "redirection loop",
+    303: "redirection loop",
+    307: "redirection loop",
+    308: "redirection loop",
+
+    400: "bad request (400)",
+    401: "authentication required (401)",
+    403: "forbidden (403)",
+    404: "page not found (404/410)",
+    410: "page not found (404/410)",
+
+    500: "server error (500)",
+    503: "service unavailable (503)",
+
+    502: "proxy error (502/504/52x)", # not our proxy, but a CDN's.
+    504: "proxy error (502/504/52x)",
+    520: "proxy error (502/504/52x)",
+    521: "proxy error (502/504/52x)",
+    522: "proxy error (502/504/52x)",
+    523: "proxy error (502/504/52x)",
+    524: "proxy error (502/504/52x)",
+    525: "proxy error (502/504/52x)",
+    526: "proxy error (502/504/52x)",
+    527: "proxy error (502/504/52x)",
+    528: "proxy error (502/504/52x)",
+    529: "proxy error (502/504/52x)",
+}
+
+def categorize_result(status, detail, original_uid, canon_uid):
+
     if not isinstance(status, int):
-        if status == "N301" or status == "invalid URL":
-            return False, "invalid URL"
-        elif status == "N3" or status == "hostname not found":
-            return False, "hostname not found"
-        elif status.startswith("N"):
-            return False, "network or protocol error"
-        elif status == "timeout":
+        if status.startswith("N"):
+            cat = network_errors_by_code.get(status, "crawler failure")
+            if cat is look_at_the_detail:
+                cat = network_errors_by_detail.get(detail, "crawler failure")
+
+            return False, cat
+
+        # I'm not sure if these can still happen, but best be safe.
+        if status == "hostname not found":
+            return False, "host not found"
+        if status == "timeout":
             return False, "timeout"
-        elif status == "crawler failure":
+        if status == "crawler failure":
             return False, "crawler failure"
 
-        status = int(status)
+        try:
+            status = int(status)
+        except ValueError:
+            return False, "crawler failure"
 
-    if status == 200:
+    cat = http_statuses_by_code.get(status, None)
+
+    if cat is maybe_ok:
         if canon_uid is None:
             return False, "invalid URL"
-        elif original_uid == canon_uid:
+        if original_uid == canon_uid:
             return True, "ok"
-        else:
-            return True, "ok (redirected)"
+        return True, "ok (redirected)"
 
-    if status == 502 or status == 504 or 520 <= status <= 529:
-        return False, "proxy error (502/504/52x)"
-    elif status == 500:
-        return False, "server error (500)"
-    elif status == 503:
-        return False, "service unavailable (503)"
-    elif status == 400:
-        return False, "bad request (400)"
-    elif status == 401:
-        return False, "authentication required (401)"
-    elif status == 403:
-        return False, "forbidden (403)"
-    elif status == 404 or status == 410:
-        return False, "page not found (404/410)"
-    elif status in (301, 302, 303, 307, 308):
-        return False, "redirection loop"
-    elif canon_uid is None:
+    if cat is not None:
+        return False, cat
+
+    if canon_uid is None:
         return False, "invalid URL"
-    else:
-        return False, "other HTTP response"
+
+    return False, "other HTTP response"
