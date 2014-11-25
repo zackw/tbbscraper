@@ -605,20 +605,15 @@ class CaptureTask:
         # Make sure the URL is not so mangled that phantomjs is just going
         # to give up and report nothing at all.
         try:
-            surl = url_database.canon_url_syntax(url, want_splitresult = True)
-            if not surl.hostname:
-                self.status = 'invalid URL'
-                self.detail = 'URL with no host: {!r}'.format(url)
-                return
-            else:
-                # Will throw UnicodeError if the hostname is
-                # syntactically invalid.
-                surl.hostname.encode('idna')
+            self.original_url = \
+                url_database.canon_url_syntax(url, want_splitresult = False)
 
-            self.original_url = surl.geturl()
+        except ValueError as e:
+            self.status = 'invalid URL'
+            self.detail = str(e)
+            return
 
-        except (ValueError, UnicodeError) as e:
-            # The above IDN-encoding test may produce nested exceptions.
+        except UnicodeError as e:
             while e.__cause__ is not None: e = e.__cause__
             self.status = 'invalid URL'
             self.detail = 'invalid hostname: ' + str(e)
@@ -650,48 +645,44 @@ class CaptureTask:
             stdout=self.result_fd,
             stderr=self.errors_fd)
 
+    def unpack_results(self, results):
+        self.canon_url     = results["canon"]
+        self.status        = results["status"]
+        self.detail        = results.get("detail", "")
+        if self.detail == "" and self.status == "timeout":
+            self.detail = "timeout"
+
+        self.log['events'] = results.get("log",    [])
+        self.log['chain']  = results.get("chain",  [])
+        self.log['redirs'] = results.get("redirs", None)
+
+        if 'content' in results:
+            self.content = zlib.compress(results['content']
+                                         .encode('utf-8'))
+        if 'render' in results:
+            self.render = recompress_image(results['render'])
+
     def parse_stdout(self, stdout):
-        # Under conditions which are presently unclear, PhantomJS dumps
-        # javascript console errors to stdout despite script logic which
-        # is supposed to intercept them; so we need to scan through all
-        # lines of output looking for something with the expected form.
         if not stdout:
+            # This may get overridden later, by analysis of stderr.
             self.status = "crawler failure"
             self.detail = "no output from tracer"
             return False
 
-        anomalous_stdout = []
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line: continue
-            try:
-                results = json.loads(line)
-
-                self.canon_url     = results["canon"]
-                self.status        = results["status"]
-                self.detail        = results.get("detail", None)
-                self.log['events'] = results.get("log",    [])
-                self.log['chain']  = results.get("chain",  [])
-                self.log['redirs'] = results.get("redirs", None)
-                if 'content' in results:
-                    self.content = zlib.compress(results['content']
-                                                 .encode('utf-8'))
-                if 'render' in results:
-                    self.render = recompress_image(results['render'])
-
-            except:
-                anomalous_stdout.append(line)
-
-        if anomalous_stdout:
-            self.log["stdout"] = anomalous_stdout
-        if not self.status:
+        # The output, taken as a whole, should be one complete JSON object.
+        try:
+            self.unpack_results(json.loads(stdout))
+            return True
+        except:
+            # There is some sort of bug causing junk to be emitted along
+            # with the expected output.  We used to try to clean up after
+            # this but that caused its own problems.  Just fail.
+            self.log["stdout"] = stdout
             self.status = "crawler failure"
-            if not self.detail:
-                self.detail = "garbage output from tracer"
+            self.detail = "garbage output from tracer"
             return False
-        return True
 
-    def parse_stderr(self, stderr, valid_result):
+    def parse_stderr(self, stderr):
         status = ""
         detail = ""
         anomalous_stderr = []
@@ -729,26 +720,21 @@ class CaptureTask:
             else:
                 anomalous_stderr.append(err)
 
-        # Don't count a crash on exit as a failure if it happened
-        # after a valid result was printed.
-        if not valid_result:
-            if not status:
-                status = "crawler failure"
-                detail = "unexplained unsuccessful exit"
+        if not status:
+            status = "crawler failure"
+            detail = "unexplained unsuccessful exit"
 
-            self.status = status
-            self.detail = detail
+        self.status = status
+        self.detail = detail
 
         if anomalous_stderr:
             self.log["stderr"] = anomalous_stderr
-        elif "stderr" in self.log:
-            del self.log["stderr"]
 
     def pickup_results(self):
 
         if self.proc is None:
             return
-        status = self.proc.wait()
+        exitcode = self.proc.wait()
 
         self.result_fd.seek(0)
         stdout = self.result_fd.read()
@@ -757,21 +743,28 @@ class CaptureTask:
         stderr = self.errors_fd.read()
         self.result_fd.close()
 
+        # We parse stdout regardless of exit status, because sometimes
+        # phantomjs prints a complete crawl result and _then_ crashes.
         valid_result = self.parse_stdout(stdout)
-        stderr = stderr.strip().split("\n")
-        if stderr and (len(stderr) > 1 or stderr[0] != ''):
-            self.log["stderr"] = stderr
 
-        if status == 0:
-            pass
-        elif status == 1:
-            self.parse_stderr(stderr, valid_result)
-        elif status > 0:
-            self.status = "crawler failure"
-            self.detail = "unexpected exit code {}".format(status)
+        # We only expect to get stuff on stderr with exit code 1.
+        stderr = stderr.strip().splitlines()
+        if exitcode == 1 and not valid_result:
+            self.parse_stderr(stderr)
         else:
-            self.status = "crawler failure"
-            self.detail = "Killed by " + strsignal(-status)
+            if stderr:
+                self.log["stderr"] = stderr
+
+            if not self.status:
+                self.status = "crawler failure"
+                if exitcode > 1:
+                    self.detail = "unexpected exit code {}".format(exitcode)
+                elif exitcode >= 0:
+                    self.detail = "exit {} with invalid output".format(exitcode)
+                else:
+                    self.detail = strsignal(-exitcode)
+
+        self.log = zlib.compress(json.dumps(self.log).encode('utf-8'))
 
     def report(self):
         self.pickup_results()
@@ -784,7 +777,7 @@ class CaptureTask:
         if self.content:   r['content'] = self.content
         if self.render:    r['render']  = self.render
         if self.log:
-            r['log'] = zlib.compress(json.dumps(self.log).encode('utf-8'))
+            r['log'] = 
         return r
 
 class CaptureWorker:
