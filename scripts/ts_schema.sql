@@ -1,7 +1,8 @@
 -- -*- sql-product: postgres -*-
 
-CREATE SCHEMA tbbscraper;
-SET search_path = tbbscraper, pg_catalog;
+-- update this number each time there is a new batch
+CREATE SCHEMA ts_run_2;
+SET search_path = ts_run_2, pg_catalog;
 
 -- URL ancillary
 CREATE TABLE url_strings (
@@ -112,22 +113,48 @@ CREATE TABLE urls_pinboard (
 
 -- Capture results
 CREATE TYPE capture_result AS ENUM (
+    -- HTTP: success
     'ok',
     'ok (redirected)',
+
+    -- HTTP: failure
     'redirection loop',
     'bad request (400)',
     'authentication required (401)',
     'forbidden (403)',
     'page not found (404/410)',
-    'proxy error (502/504/52x)',
     'server error (500)',
     'service unavailable (503)',
+    'proxy error (502/504/52x)',
     'other HTTP response',
-    'network or protocol error',
+    'invalid URL',
+
+    -- Network-level failure
+    'host not found',
+    'server unreachable', -- lumping EHOSTUNREACH and ENETUNREACH
+    'connection refused',
+    'TLS handshake failed',
+    'connection interrupted',
+    'other network error',
+
+    -- Crawler timeout.
+    -- Note that HTTP responses containing the regex /timed?-?out/i are
+    -- classified as site failures rather than client-side timeouts,
+    -- because that normally means the *site* timed out talking to its
+    -- own backend.
     'timeout',
-    'crawler failure',
-    'hostname not found',
-    'invalid URL'
+
+    -- Something went wrong with the proxy, not the site.
+    -- This category mostly gets used for legacy data from SOCKS proxies,
+    -- for which we would get "N103 Connection to proxy closed prematurely"
+    -- for everything from DNS lookup failure to an actual disconnect.
+    -- It is still relevant in cases where, say, the censors notice what
+    -- we are doing and terminate our control connection to the proxy itself.
+    'proxy failure',
+
+    -- The crawler crashed (usually this means it ran out of memory, but
+    -- WebKit does still have an awful lot of bugs).
+    'crawler failure'
 );
 
 CREATE TABLE capture_detail (
