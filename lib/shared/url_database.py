@@ -368,34 +368,34 @@ def categorize_result(status, detail, original_uid, canon_uid):
             if cat is look_at_the_detail:
                 cat = network_errors_by_detail.get(detail, "crawler failure")
 
-            return False, cat
+            return cat
 
         # I'm not sure if these can still happen, but best be safe.
         if status == "hostname not found":
-            return False, "host not found"
+            return "host not found"
         if status == "timeout":
-            return False, "timeout"
+            return "timeout"
         if status == "crawler failure":
-            return False, "crawler failure"
+            return "crawler failure"
 
         try:
             status = int(status)
         except ValueError:
-            return False, "crawler failure"
+            return "crawler failure"
 
     cat = http_statuses_by_code.get(status, None)
 
     if cat is maybe_ok:
         if canon_uid is None:
-            return False, "invalid URL"
+            return "invalid URL"
         if original_uid == canon_uid:
-            return True, "ok"
-        return True, "ok (redirected)"
+            return "ok"
+        return "ok (redirected)"
 
     if cat is not None:
-        return False, cat
+        return cat
 
     if canon_uid is None:
-        return False, "invalid URL"
+        return "invalid URL"
 
-    return False, "other HTTP response"
+    return "other HTTP response"

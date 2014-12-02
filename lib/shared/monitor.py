@@ -48,14 +48,15 @@ class Monitor:
        thread-related failure may occur."""
 
     # Public API.
-    def report_status(self, status):
+    def report_status(self, status, thread=None):
         """Each worker thread should call this method at intervals to
            report its status.  The status may be any text you like.
            Writing a single ASCII NUL (that is, "\x00") clears the
-           thread's status line."""
-        self._tasks.put((self._STATUS,
-                         self._line_indexes[threading.get_ident()],
-                         status))
+           thread's status line.  The thread= argument can override
+           which thread the message is deemed to be from."""
+        if thread is None:
+            thread = threading.get_ident()
+        self._tasks.put((self._STATUS, self._line_indexes[thread], status))
 
     def add_work_thread(self, worker_fn, *args, **kwargs):
         """The initial worker thread (the one that executes the
