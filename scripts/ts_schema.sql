@@ -1,9 +1,5 @@
 -- -*- sql-product: postgres -*-
 
--- update this number each time there is a new batch
-CREATE SCHEMA ts_run_2;
-SET search_path = ts_run_2, pg_catalog;
-
 -- URL ancillary
 CREATE TABLE url_strings (
     id    SERIAL  NOT NULL PRIMARY KEY,
@@ -163,11 +159,11 @@ CREATE TABLE capture_detail (
 );
 
 CREATE TABLE captured_pages (
-    locale       TEXT    NOT NULL CHECK (locale <> ''),
+    locale       TEXT NOT NULL CHECK (locale <> ''),
     url          INTEGER NOT NULL REFERENCES url_strings(id),
-    access_time  TIMESTAMP WITHOUT TIME ZONE,
-    result       capture_result,
-    detail       INTEGER REFERENCES capture_detail(id),
+    access_time  TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    result       capture_result NOT NULL,
+    detail       INTEGER NOT NULL REFERENCES capture_detail(id),
     redir_url    INTEGER REFERENCES url_strings(id),
     capture_log  BYTEA,
     html_content BYTEA,
