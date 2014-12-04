@@ -294,7 +294,7 @@ class Proxy:
 
     def report_status(self, msg):
         self._detail = msg
-        self._mon.report_status("{}: {}{}"
+        self._mon.report_status("p {}: {}{}"
                                 .format(self.label(), self._statm, msg),
                                 thread=self._thrdid)
 
@@ -459,9 +459,13 @@ class DirectProxy(Proxy):
         return cmd
 
     def __call__(self, mon, thr):
+        self._mon = mon
         self._thrdid = thr.ident
         self._online = True
-        self._detail = "online (direct)."
+        self.report_status("online.")
+
+        while self._online:
+            mon.idle(1)
 
 class OpenVPNProxy(Proxy):
     """Helper thread which runs and supervises an OpenVPN-based
@@ -588,6 +592,7 @@ class CaptureTask:
                 "PHANTOMJS_DISABLE_CRASH_DUMPS=1",
                 "MALLOC_CHECK_=0",
                 "phantomjs",
+                "--local-url-access=no",
                 pj_trace_redir,
                 "--capture",
                 self.original_url
@@ -599,9 +604,13 @@ class CaptureTask:
     def unpack_results(self, results):
         self.canon_url     = results["canon"]
         self.status        = results["status"]
-        self.detail        = results.get("detail", "")
-        if self.detail == "" and self.status == "timeout":
-            self.detail = "timeout"
+        self.detail        = results.get("detail")
+        if self.detail is None or self.detail == "":
+            if self.status == "timeout":
+                self.detail = "timeout"
+            else:
+                self.detail = self.status
+                self.status = "crawler failure"
 
         self.log['events'] = results.get("log",    [])
         self.log['chain']  = results.get("chain",  [])
@@ -733,24 +742,8 @@ class CaptureWorker:
     def __init__(self, disp):
         self.disp = disp
         self.args = disp.args
-        self.proxy = None
         self.batch_queue = queue.PriorityQueue()
         self.batch_queue_serializer = 0
-
-        self.online = False
-        self.nsuccess = 0
-        self.nfailure = 0
-
-    def proxy_code(self):
-        return self.proxy.label() if self.proxy else "--:--"
-        return "{}:{}".format(self.proxy.locale if self.proxy else "--",
-                              self.proxy.TYPE if self.proxy else "--")
-
-    def report_status(self, msg):
-        status = ("{}: | {} captured, {} failures"
-                  .format(self.proxy_code(), self.nsuccess, self.nfailure))
-
-        self.mon.report_status(status + " | " + msg)
 
     # batch queue message types/priorities
     _MON_SAYS_STOP  = 1
@@ -779,15 +772,12 @@ class CaptureWorker:
                 self.process_batch_queue()
                 break
             except Exception:
-                self.disp.log_worker_exc(thr.ident,
-                                         self.proxy_code(),
-                                         sys.exc_info())
-                self.proxy = None
+                self.disp.log_worker_exc(thr.ident, sys.exc_info())
 
     def process_batch_queue(self):
         while True:
             if self.batch_queue.empty():
-                self.report_status("waiting for batch...")
+                self.mon.report_status("waiting for batch...")
                 self.disp.request_batch(self.queue_batch)
 
             msg = self.batch_queue.get()
@@ -798,7 +788,7 @@ class CaptureWorker:
             elif msg[0] == self._CAPTURE_BATCH:
                 if msg[2] == []:
                     # No more work to do.
-                    self.report_status("done")
+                    self.mon.report_status("done")
                     return
 
                 if msg[2] == [None]:
@@ -807,16 +797,12 @@ class CaptureWorker:
                     # must not block for extended periods in anything but
                     # mon.idle().
                     if self.batch_queue.empty():
-                        self.report_status("waiting for batch... (idling)")
+                        self.mon.report_status("waiting for batch... (idling)")
                         self.mon.idle(30)
-                        continue
+                    continue
 
                 assert msg[3] is not None
-                self.proxy = msg[3].proxy
-                self.nsuccess = 0
-                self.nfailure = 0
                 self.process_batch(msg[3], msg[2])
-                self.proxy = None
 
             else:
                 raise RuntimeError("invalid batch queue message {!r}"
@@ -825,22 +811,25 @@ class CaptureWorker:
     def process_batch(self, loc, batch):
         batchsize = len(batch)
         completed = []
-        batch.reverse()
-
+        nsucc = 0
+        nfail = 0
         start = time.time()
+
         # The appearance of any message on the batch queue means we need
         # to stop, as does the proxy going offline.
-        while batch and self.batch_queue.empty() and self.proxy.online:
-            self.report_status("processing batch ({}/{})..."
-                               .format(len(completed), batchsize))
+        while batch and self.batch_queue.empty() and loc.proxy.online:
+            self.mon.report_status("w {}: processing batch of {}: "
+                                   "{} captured, {} failures"
+                                   .format(loc.proxy.label(),
+                                           batchsize, nsucc, nfail))
 
             (url_id, url) = batch.pop()
-            report = CaptureTask(url, self.proxy).report()
+            report = CaptureTask(url, loc.proxy).report()
             completed.append((url_id, report))
-            if 'content' in report:
-                self.nsuccess += 1
+            if report.get('content') and report['status'] != 'crawler failure':
+                nsucc += 1
             else:
-                self.nfailure += 1
+                nfail += 1
 
         stop = time.time()
         if completed:
@@ -848,11 +837,11 @@ class CaptureWorker:
         else:
             sec_per_url = 0
 
-        self.proxy.update_stats(self.nsuccess, self.nfailure, sec_per_url)
+        loc.proxy.update_stats(nsucc, nfail, sec_per_url)
 
         # If the proxy has gone offline, and the last capture is a
         # failure, it should be retried after the proxy comes back.
-        if   (not self.proxy.online and completed
+        if   (not loc.proxy.online and completed
               and 'content' not in completed[-1][0]):
             last_failure = completed.pop()
             batch.append((last_failure[0], last_failure[1]['ourl']))
@@ -861,22 +850,22 @@ class CaptureWorker:
         # anything we have successfully completed needs to be recorded.
         self.disp.complete_batch(loc, completed, batch)
 
+
+class PerLocaleState:
+    def __init__(self, locale, method, args):
+        self.locale       = locale
+        self.proxy_method = method
+        self.proxy_args   = args
+        self.proxy        = None
+        self.in_progress  = set()
+        self.n_workers    = 0
+        self.todo         = 0
+
+    def start_proxy(self, disp):
+        self.proxy = self.proxy_method(disp, self.locale, *self.proxy_args)
+        return self.proxy
+
 class CaptureDispatcher:
-
-    class PerLocaleState:
-        def __init__(self, locale, method, args):
-            self.locale       = locale
-            self.proxy_method = method
-            self.proxy_args   = args
-            self.proxy        = None
-            self.in_progress  = set()
-            self.n_workers    = 0
-            self.todo         = 0
-
-        def start_proxy(self):
-            self.proxy = self.proxy_method(self.locale, *self.proxy_args)
-            return self.proxy
-
     def __init__(self, args):
         self.args      = args
         self.state     = {}
@@ -902,8 +891,7 @@ class CaptureDispatcher:
                                       (self._MON_SAYS_STOP, -1))
 
         for loc in self.locales:
-            proxy = self.state[loc].start_proxy()
-            proxy.add_queue(self.status_queue)
+            proxy = self.state[loc].start_proxy(self)
             self.mon.add_work_thread(proxy)
 
         for _ in range(self.args.total_workers):
@@ -965,9 +953,9 @@ class CaptureDispatcher:
         self.status_queue.put((self._COMPLETE, self.oq(), loc,
                                success, failure))
 
-    def log_worker_exc(self, thread_ident, proxy_code, exc_info):
-        self.error_log.write("Exception in worker {}:{}:\n"
-                             .format(thread_ident, proxy_code))
+    def log_worker_exc(self, thread_ident, exc_info):
+        self.error_log.write("Exception in worker {}:\n"
+                             .format(thread_ident))
         traceback.print_exception(*exc_info, file=self.error_log)
         self.error_log.flush()
 
@@ -978,8 +966,7 @@ class CaptureDispatcher:
         self.error_log.flush()
 
     def log_dispatcher_exc(self, exc_info):
-        self.error_log.write("Exception in dispatcher:\n"
-                             .format(thread_ident))
+        self.error_log.write("Exception in dispatcher:\n")
         traceback.print_exception(*exc_info, file=self.error_log)
         self.error_log.flush()
 
@@ -1020,7 +1007,7 @@ class CaptureDispatcher:
                 continue
 
             nothing_todo = False
-            if loc.proxy.online and loc.n_workers < self.args.max_workers:
+            if loc.proxy.online and loc.n_workers < self.args.workers_per_loc:
                 chooseable_locales.append(loc)
 
         if nothing_todo:
@@ -1057,13 +1044,7 @@ class CaptureDispatcher:
                          '  FROM capture_progress c, url_strings s'
                          ' WHERE c.url = s.id')
 
-                # Special case: all locales except 'us' draw from the pool of
-                # URLs already processed in 'us'.
-                if loc.locale == 'us' or 'us' not in self.locales:
-                    query += ' AND NOT c."l_{0}"'.format(loc.locale)
-                else:
-                    query += (' AND c."l_us" AND NOT c."l_{0}"'
-                              .format(loc.locale))
+                query += ' AND NOT c."l_{0}"'.format(loc.locale)
 
                 if loc.in_progress:
                     query += ' AND c.url NOT IN ('
@@ -1095,18 +1076,17 @@ class CaptureDispatcher:
         if not successes:
             return
 
-        loc.todo -= len(successes)
         with self.db, self.db.cursor() as cr:
-            for r in successes:
-                url_id = r[0]
-                surl   = r[1]
+            for s in successes:
+                url_id = s[0]
+                r      = s[1]
                 loc.in_progress.remove(url_id)
 
                 redir_url = None
                 redir_url_id = None
                 if r['canon']:
                     redir_url = r['canon']
-                    if redir_url == surl or redir_url == r['ourl']:
+                    if redir_url == r['ourl']:
                         redir_url_id = url_id
                     elif redir_url is not None:
                         try:
@@ -1120,8 +1100,7 @@ class CaptureDispatcher:
                                 r['detail'] += " | " + addendum
 
                 detail_id = self.capture_detail.get(r['detail'])
-                if detail_id is None and (r['detail'] is not None and
-                                          r['detail'] != ''):
+                if detail_id is None:
                     cr.execute("INSERT INTO capture_detail(id, detail) "
                                "  VALUES(DEFAULT, %s)"
                                "  RETURNING id", (r['detail'],))
@@ -1140,7 +1119,7 @@ class CaptureDispatcher:
                     "detail":       detail_id,
                     "redir_url":    redir_url_id,
                     "log":          r['log'],
-                    "html_content": r['html_content'],
+                    "html_content": r['content'],
                     "screenshot":   r['render']
                 }
                 cr.execute("INSERT INTO captured_pages"
@@ -1160,17 +1139,21 @@ class CaptureDispatcher:
                            to_insert)
                 cr.execute('UPDATE capture_progress SET "l_{0}" = TRUE '
                            ' WHERE url = {1}'.format(locale, url_id))
+                loc.todo -= 1
 
     def update_progress_statistics(self):
         jobsize = 0
         plreport = []
         for plstate in self.state.values():
             jobsize = max(jobsize, plstate.todo)
-            plreport.append("{}:{}".format(plstate.locale, plstate.todo))
+            plreport.append((-plstate.todo, plstate.locale))
+
+        plreport.sort()
+        plreport = " ".join("{}:{}".format(pl[1], -pl[0]) for pl in plreport)
 
         self.mon.report_status("Processing {}/{} URLs | {}"
                                .format(jobsize, self.overall_jobsize,
-                                       " ".join(plreport)))
+                                       plreport))
 
     def prepare_database(self):
         with self.db, self.db.cursor() as cr:
@@ -1188,7 +1171,7 @@ class CaptureDispatcher:
 
             l_columns = ",\n  ".join(
                 "\"l_{0}\" BOOLEAN NOT NULL DEFAULT FALSE"
-                .format(loc) for loc in self.locale_list)
+                .format(loc) for loc in self.locales)
 
             cr.execute("CREATE TEMPORARY TABLE capture_progress ("
                        "  url INTEGER PRIMARY KEY,"

@@ -152,7 +152,7 @@ class Monitor:
             self._lines  = []
             self._line_attrs = []
             self._line_indexes = {}
-            self._line_indexes_used = set()
+            self._line_indexes_used = 0
 
             self._initscr_plus()
 
@@ -274,13 +274,8 @@ class Monitor:
         with self._counters_lock:
             self._n_work_threads += 1
             self._active_work_threads += 1
-            i = 0
-            while True:
-                if i not in self._line_indexes_used:
-                    self._line_indexes[thread.ident] = i
-                    self._line_indexes_used.add(i)
-                    break
-                i += 1
+            self._line_indexes[thread.ident] = self._line_indexes_used
+            self._line_indexes_used += 1
 
         try:
             worker_fn(self, thread, *args, **kwargs)
@@ -294,9 +289,6 @@ class Monitor:
 
         finally:
             with self._counters_lock:
-                i = self._line_indexes[thread.ident]
-                del self._line_indexes[thread.ident]
-                self._line_indexes_used.remove(i)
                 self._n_work_threads -= 1
                 self._active_work_threads -= 1
 
