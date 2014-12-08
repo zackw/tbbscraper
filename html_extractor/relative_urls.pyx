@@ -179,5 +179,5 @@ cpdef unicode urljoin_outbound(unicode doc, unicode url):
     dest = urljoin(doc, url)
     (doc, _) = _splitchar(doc, u'#')
     (dpage, _) = _splitchar(dest, u'#')
-    if dpage != doc: return None
+    if dpage == doc: return None
     return dest
