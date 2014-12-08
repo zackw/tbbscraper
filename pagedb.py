@@ -15,7 +15,7 @@ class CapturedPage:
     """
 
     def __init__(self, locale, url_id, url, access_time, result, detail,
-                 redir_url, capture_log, html_content, screenshot, want_links=True):
+                 redir_url, capture_log, html_content, screenshot):
 
         self.page_id     = (locale, url_id)
         self.locale      = locale
@@ -25,7 +25,6 @@ class CapturedPage:
         self.detail      = detail
         self.redir_url   = redir_url
         self.screenshot  = screenshot
-        self.want_links  = want_links
 
         # For memory efficiency, the compressed data is only
         # uncompressed upon request.  (screenshot, if available, is
@@ -148,8 +147,7 @@ class PageDB:
     def get_pages(self, *,
                   ordered=False,
                   where_clause="",
-                  limit=None,
-                  want_links=True):
+                  limit=None):
         """Retrieve pages from the database matching the where_clause.
            This is a generator, which produces one CapturedPage object
            per row.
@@ -188,7 +186,7 @@ class PageDB:
         cur.itersize = 10000
         cur.execute(query)
         for row in cur:
-            yield CapturedPage(*row, want_links=want_links)
+            yield CapturedPage(*row)
 
     def get_random_pages(self, count, seed, **kwargs):
         rng = random.Random(seed)

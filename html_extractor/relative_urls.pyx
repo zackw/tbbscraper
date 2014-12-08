@@ -4,7 +4,7 @@
 
 """
 
-__all__ = (u'urljoin', u'urlparse', u'urlunparse')
+__all__ = (u'urljoin', u'urljoin_outbound')
 
 # A classification of schemes
 uses_relative = frozenset((
@@ -51,12 +51,12 @@ cdef inline tuple _splitparams(unicode url):
         return url[:i], url[i+1:]
 
 cdef inline tuple _splitchar(unicode url, unicode c):
-    cdef Py_ssize_t i = url.find(c)
+    cdef Py_ssize_t i = url.rfind(c)
     if i >= 0:
         return url[:i], url[i+1:]
     return url, u''
 
-cpdef tuple urlparse(unicode url, unicode scheme=u''):
+cdef tuple urlparse(unicode url, unicode scheme=u''):
     cdef Py_ssize_t i
     cdef unicode netloc   = u''
     cdef unicode params   = u''
@@ -96,12 +96,12 @@ cpdef tuple urlparse(unicode url, unicode scheme=u''):
 
     return (scheme, netloc, url, params, query, fragment)
 
-cpdef unicode urlunparse(unicode scheme,
-                         unicode netloc,
-                         unicode path,
-                         unicode params,
-                         unicode query,
-                         unicode fragment):
+cdef unicode urlunparse(unicode scheme,
+                        unicode netloc,
+                        unicode path,
+                        unicode params,
+                        unicode query,
+                        unicode fragment):
     cdef unicode url = path
     if netloc or (not url.startswith(u'//') and scheme in uses_netloc):
         if not url.startswith(u'/'):
@@ -125,9 +125,11 @@ cpdef unicode urljoin(unicode base, unicode url):
     cdef Py_ssize_t i, n
 
     if not base:
-        return urlunparse(*urlparse(url, u''))
+        scheme, netloc, path, params, query, fragment = urlparse(url, u'')
+        return urlunparse(scheme, netloc, path, params, query, fragment)
     if not url:
-        return urlunparse(*urlparse(base, u''))
+        bscheme, bnetloc, bpath, bparams, bquery, bfragment = urlparse(base, u'')
+        return urlunparse(bscheme, bnetloc, bpath, bparams, bquery, bfragment)
 
     bscheme, bnetloc, bpath, bparams, bquery, bfragment = urlparse(base, u'')
     scheme, netloc, path, params, query, fragment       = urlparse(url, bscheme)
@@ -170,3 +172,12 @@ cpdef unicode urljoin(unicode base, unicode url):
         segments[-2:] = [u'']
     return urlunparse(scheme, netloc, u'/'.join(segments),
                       params, query, fragment)
+
+cpdef unicode urljoin_outbound(unicode doc, unicode url):
+    """If URL is the same as DOCURL, or a link to an anchor within DOCURL,
+       return None.  Otherwise, return urljoin(doc, url)."""
+    dest = urljoin(doc, url)
+    (doc, _) = _splitchar(doc, u'#')
+    (dpage, _) = _splitchar(dest, u'#')
+    if dpage != doc: return None
+    return dest

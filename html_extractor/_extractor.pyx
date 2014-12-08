@@ -4,20 +4,49 @@ walking as well as the parsing in C(ython).
 """
 
 from gumbo cimport *
+from relative_urls cimport urljoin, urljoin_outbound
+
 from re import compile as _Regexp
+from re import DOTALL  as _Re_DOTALL
 from collections import Counter as _Counter
 
 # "Common" tag names are those that have GUMBO_TAG_* constants.
 _common_tagnames = [gumbo_normalized_tagname(<GumboTag>i).decode("utf-8")
                     for i in range(GUMBO_TAG_LAST)]
 
+# The HTML spec makes a distinction between "space characters" and
+# "White_Space characters".  Only "space characters" are stripped
+# from URL attributes.
 _WSRE = _Regexp(u"\\s+")
-cdef unicode merge_text(textvec):
-    """Merge a list of strings, then compact every run of White_Space
-    characters within that list to a single space character.
-    """
-    merged = u"".join(textvec)
-    return _WSRE.sub(u" ", merged).strip()
+_SRE  = _Regexp(u"[ \t\r\n\f]+")
+_SSRE = _Regexp("^[ \t\r\n\f]+(.*?)[ \t\r\n\f]+$", _Re_DOTALL)
+
+cdef inline unicode strip_ascii_space(unicode s):
+    return _SSRE.sub(u"\\1", s)
+
+cdef inline unicode merge_text(textvec):
+    """Merge a list of strings, then remove leading and trailing
+    White_Space and compact every internal run of White_Space
+    to a single space character."""
+    return _WSRE.sub(u" ", u"".join(textvec).strip())
+
+cdef inline list prune_outbound_urls(unicode doc, list urls):
+    """Given a list of possibly-relative URLs, make them all absolute
+    (with reference to DOC), then remove all duplicates and all links to
+    or within DOC itself."""
+    pruned = set()
+    for url in urls:
+        adjusted = urljoin_outbound(doc, url)
+        if adjusted is not None:
+            pruned.add(adjusted)
+    return sorted(pruned)
+
+cdef inline unicode get_htmlattr(GumboElement *element, bytes name):
+    """Extract an attribute value from an HTML element."""
+    cdef GumboAttribute* attr = gumbo_get_attribute(&element.attributes, name)
+    if attr is NULL:
+        return None
+    return attr.value.decode("utf-8")
 
 cdef inline bint is_heading(GumboTag tag):
     """Elements that introduce "heading content" according to HTML5.
@@ -108,19 +137,125 @@ cdef class walker_state:
     cdef unsigned int depth,      \
                       in_discard, \
                       in_title,   \
-                      in_heading
+                      in_head,    \
+                      in_heading, \
+                      saw_base_href
+    cdef unicode url
     cdef object title,            \
                 headings,         \
                 text_content,     \
                 tags,             \
-                tags_at_depth
+                tags_at_depth,    \
+                links,            \
+                resources
 
-    def __init__(self, stats):
-        self.title = []
-        self.headings = []
-        self.text_content = []
-        self.tags = stats.tags
+    def __init__(self, url, stats):
+        self.depth         = 0
+        self.in_discard    = 0
+        self.in_title      = 0
+        self.in_head       = 0
+        self.in_heading    = 0
+        self.saw_base_href = 0
+        self.url           = url
+        self.title         = []
+        self.headings      = []
+        self.text_content  = []
+        self.tags          = stats.tags
         self.tags_at_depth = stats.tags_at_depth
+        self.links         = []
+        self.resources     = []
+
+# Link extraction.
+cdef inline bint _X_(GumboElement *element, bytes attr, list links) except False:
+    """Helper: If ATTR is present on ELEMENT, extract its value, strip
+    ASCII whitespace and append the result to LINKS."""
+    v = get_htmlattr(element, attr)
+    if v is not None:
+        links.append(strip_ascii_space(v))
+    return True
+
+cdef inline bint extract_links(GumboElement *element, walker_state state) except False:
+    cdef GumboTag tag = element.tag
+
+    # resources
+    if tag in (GUMBO_TAG_AUDIO,
+               GUMBO_TAG_EMBED,
+               GUMBO_TAG_IFRAME,
+               GUMBO_TAG_INPUT,
+               GUMBO_TAG_SCRIPT,
+               GUMBO_TAG_SOURCE,
+               GUMBO_TAG_TRACK):
+        _X_(element, b"src", state.resources)
+
+    elif tag == GUMBO_TAG_VIDEO:
+        _X_(element, b"src", state.resources)
+        _X_(element, b"poster", state.resources)
+
+    elif tag == GUMBO_TAG_IMG:
+        _X_(element, b"src", state.resources)
+        # srcset is a comma-separated list of "image candidate strings",
+        # each consisting of a URL possibly followed by spaces and then
+        # "width" or "density" descriptors.  Note that leading spaces in
+        # each field of the comma-separated list are to be discarded,
+        # i.e. in srcset=" 1x", "1x" is the URL, not a descriptor.
+        v = get_htmlattr(element, b"srcset")
+        if v is not None:
+            for ic in v.split(u","):
+                ic = _SRE.split(strip_ascii_space(ic))
+                if ic:
+                    state.resources.append(ic[0])
+
+    elif tag == GUMBO_TAG_OBJECT:
+        _X_(element, b"data", state.resources)
+
+    elif tag == GUMBO_TAG_MENUITEM:
+        _X_(element, b"icon", state.resources)
+
+    # hyperlinks
+    elif tag in (GUMBO_TAG_A, GUMBO_TAG_AREA):
+        _X_(element, b"href", state.links)
+
+    elif tag == GUMBO_TAG_FORM:
+        _X_(element, b"action", state.resources)
+
+    elif tag in (GUMBO_TAG_BUTTON, GUMBO_TAG_INPUT):
+        _X_(element, b"formaction", state.links)
+
+    elif tag in (GUMBO_TAG_BLOCKQUOTE, GUMBO_TAG_DEL,
+                 GUMBO_TAG_INS, GUMBO_TAG_Q):
+        _X_(element, b"cite", state.links)
+
+
+    # link[href] may be either a resource, an outbound link, or to-ignore
+    # depending on the value of the rel= property.
+    elif tag == GUMBO_TAG_LINK:
+        href = get_htmlattr(element, b"href")
+        rel  = get_htmlattr(element, b"rel")
+        if href and rel:
+            reltags = _SRE.split(rel)
+            for ty in ("icon", "pingback", "prefetch", "stylesheet"):
+                if ty in reltags:
+                    state.resources.append(strip_ascii_space(href))
+                    break
+            else:
+                for ty in ("alternate", "author", "help", "license",
+                           "next", "prev", "search", "sidebar"):
+                    if ty in reltags:
+                        state.links.append(strip_ascii_space(href))
+                        break
+    else:
+        pass
+
+    return True
+
+cdef bint update_dom_stats(unicode tagname, walker_state state) except False:
+    state.tags_at_depth[state.depth] += 1
+    state.tags[tagname] += 1
+    return True
+
+
+#forward-declare
+cdef extern bint walk_node(GumboNode*, walker_state) except False
 
 cdef bint walk_text(const char *text, walker_state state) except False:
     if state.in_discard and not state.in_title:
@@ -136,14 +271,6 @@ cdef bint walk_text(const char *text, walker_state state) except False:
             state.headings[-1].append(decoded)
 
     return True
-
-cdef bint update_dom_stats(unicode tagname, walker_state state) except False:
-    state.tags_at_depth[state.depth] += 1
-    state.tags[tagname] += 1
-    return True
-
-#forward-declare
-cdef extern bint walk_node(GumboNode*, walker_state) except False
 
 cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
                        walker_state state) except False:
@@ -181,6 +308,21 @@ cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
 
             update_dom_stats(tagname, state)
 
+    extract_links(elt, state)
+    # Very special case for /html/head/base the first time it's seen
+    # (HTML5 requires ignoring misplaced <base>, and second and
+    # subsequent instances of <base>)
+    if (elt.tag == GUMBO_TAG_BASE
+        and not state.saw_base_href
+        and state.depth == 2
+        and state.in_head == 1):
+        state.saw_base_href = 1
+        href = get_htmlattr(elt, b"href")
+        if href:
+            href = strip_ascii_space(href)
+        if href:
+            state.url = urljoin(state.url, href)
+
     # Empty elements may still force word breaks.
     elt_forces_word_break = forces_word_break(elt.tag)
     if elt_forces_word_break:
@@ -189,6 +331,7 @@ cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
     if elt.children.length == 0:
         return True # empty element, we're done
 
+    elt_is_head           = elt.tag == GUMBO_TAG_HEAD
     elt_is_title          = elt.tag == GUMBO_TAG_TITLE
     elt_is_heading        = is_heading(elt.tag)
     elt_discards_contents = discards_contents(elt.tag)
@@ -198,6 +341,8 @@ cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
         state.in_discard += 1
     if elt_is_title:
         state.in_title += 1
+    if elt_is_head:
+        state.in_head += 1
     if elt_is_heading:
         state.in_heading += 1
         if state.in_heading == 1:
@@ -212,6 +357,8 @@ cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
             state.in_discard -= 1
         if elt_is_title:
             state.in_title -= 1
+        if elt_is_head:
+            state.in_head -= 1
         if elt_is_heading:
             state.in_heading -= 1
 
@@ -278,11 +425,15 @@ cdef class ExtractedContent:
                    string per outermost <hN> or <hgroup> element.
     text_content - String: all visible text content on the page, including
                    the headings, but not the title.
+    links        - Array of strings: all outbound links from this page.
+                   Relative URLs have already been made absolute.
+    resources    - Array of strings: all resources referenced by this page.
+                   Relative URLs have already been made absolute.
     dom_stats    - DomStatistics object calculated from this page.
     """
 
     cdef public unicode url, title, text_content
-    cdef public object headings, dom_stats
+    cdef public object links, resources, headings, dom_stats
 
     def __init__(self, url, page):
 
@@ -311,11 +462,14 @@ cdef class ExtractedContent:
             raise RuntimeError("gumbo_parse returned nothing")
 
         try:
-            state = walker_state(self.dom_stats)
+            state = walker_state(self.url, self.dom_stats)
             walk_node(output.root, state)
         finally:
             gumbo_destroy_output(&opts, output)
 
-        self.title = merge_text(state.title)
+        self.url          = state.url
+        self.title        = merge_text(state.title)
         self.text_content = merge_text(state.text_content)
-        self.headings = [merge_text(head) for head in state.headings]
+        self.headings     = [merge_text(head) for head in state.headings]
+        self.links        = prune_outbound_urls(state.url, state.links)
+        self.resources    = prune_outbound_urls(state.url, state.resources)
