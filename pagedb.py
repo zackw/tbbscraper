@@ -14,17 +14,20 @@ class CapturedPage:
        row of the .captured_pages table.  Not tied to the database.
     """
 
-    def __init__(self, locale, url_id, url, access_time, result, detail,
-                 redir_url, capture_log, html_content, screenshot):
+    def __init__(self,
+                 run, urlid, orig_url, sources,
+                 cc2, country, access_time,
+                 result, detail, redir_url, capture_log, html_content):
 
-        self.page_id     = (locale, url_id)
-        self.locale      = locale
-        self.url         = url
+        self.page_id     = (run, urlid, cc2)
+        self.url         = orig_url
+        self.sources     = sources
+        self.cc2         = cc2
+        self.country     = country
         self.access_time = access_time
         self.result      = result
         self.detail      = detail
         self.redir_url   = redir_url
-        self.screenshot  = screenshot
 
         # For memory efficiency, the compressed data is only
         # uncompressed upon request.  (screenshot, if available, is
@@ -41,8 +44,12 @@ class CapturedPage:
 
     def _do_extraction(self):
         if self._extracted is None:
-            self._extracted = ExtractedContent(self.redir_url,
-                                               self.html_content)
+            # redir_url may be None if, for instance, we got redirected to
+            # an itmss: URL.
+            url = self.redir_url
+            if url is None:
+                url = self.url
+            self._extracted = ExtractedContent(url, self.html_content)
 
     @property
     def capture_log(self):
@@ -96,7 +103,8 @@ class CapturedPage:
         val = {
             "0_id": self.page_id,
             "0_url": self.url,
-            "1_locale": self.locale,
+            "1_country": self.country,
+            "1_cc2": self.cc2,
             "2_access_time": self.access_time.isoformat(' '),
             "3_result": self.result,
             "4_detail": self.detail,
@@ -126,19 +134,23 @@ class PageDB:
        interesting material (add queries as they become useful!)"""
 
     def __init__(self, connstr):
+        self._locales = None
+
         if "=" not in connstr:
             connstr = "dbname="+connstr
         self.db = psycopg2.connect(connstr)
-        self._locales = None
+        cur = self.db.cursor()
+        cur.execute("SET search_path TO ts_analysis")
 
     @property
     def locales(self):
         """Retrieve a list of all available locales.  This involves a
-           moderately expensive query so it's memoized.
+           moderately expensive query, which has now been memoized on
+           the server, but we memoize it again here just to be sure.
         """
         if self._locales is None:
             cur = self.db.cursor()
-            cur.execute("SELECT DISTINCT locale FROM captured_pages")
+            cur.execute("SELECT DISTINCT locale FROM captured_locales")
             self._locales = sorted([
                 row[0] for row in cur
             ])
@@ -153,52 +165,46 @@ class PageDB:
            per row.
         """
 
-        query = ("SELECT c.locale, c.url, u.url, c.access_time, c.result, d.detail,"
-                 "       r.url, c.capture_log, c.html_content, c.screenshot"
-                 "       FROM captured_pages c"
-                 "       JOIN url_strings u    ON c.url = u.id"
-                 "  LEFT JOIN url_strings r    ON c.redir_url = r.id"
-                 "  LEFT JOIN capture_detail d ON c.detail = d.id")
+        query = ("SELECT run, urlid, orig_url, sources,"
+                 "       cc2, country, access_time,"
+                 "       result, detail, redir_url, capture_log, html_content"
+                 "  FROM captured_pages")
 
         if where_clause:
             query += "  WHERE {}".format(where_clause)
-
-        if ordered:
-            # Note: these ordering options do not require the database server to
-            # sort the entire result set before returning it.  If you add another
-            # option, use EXPLAIN SELECT in the psql command-line tool and make
-            # sure there are no "Sort" steps.
-            if ordered == "locale":
-                query += "  ORDER BY c.locale"
-            elif ordered == "url":
-                query += "  ORDER BY u.url"
-            elif ordered == True or ordered == "both":
-                query += "  ORDER BY c.locale, c.url"
-            else:
-                raise ValueError("invalid argument: ordered={!r}".format(ordered))
 
         if limit is not None:
             query += "  LIMIT {}".format(limit)
 
         # This must be a named cursor, otherwise psycopg2 helpfully fetches
         # ALL THE ROWS AT ONCE, and they don't fit in RAM and it crashes.
-        cur = self.db.cursor("pagedb_qtmp_{}".format(os.getpid()))
+        cur = self.db.cursor("pagedb_qtmp_{}_{}".format(os.getpid(), id(self)))
         cur.itersize = 10000
         cur.execute(query)
         for row in cur:
             yield CapturedPage(*row)
 
-    def get_random_pages(self, count, seed, **kwargs):
+    def get_random_pages(self, count, seed, where_clause="", **kwargs):
         rng = random.Random(seed)
 
         cur = self.db.cursor()
-        cur.execute("select min(url), max(url) from captured_pages");
+        cur.execute("select min(id), max(id) from source_url_crossmap");
         lo_url, hi_url = cur.fetchone()
 
         sample = rng.sample(range(lo_url, hi_url + 1), count)
-        where = "c.url IN (" + ",".join(str(n) for n in sample) + ")"
+        cur.execute("SELECT r1, r2 FROM source_url_crossmap WHERE "
+                    "id IN (" + ",".join(str(n) for n in sample) + ")")
 
-        return self.get_pages(where_clause=where, **kwargs)
+        selection = ("(run, urlid) IN (VALUES " +
+                     ",".join("(1,{}),(2,{})".format(r[0], r[1])
+                              for r in cur) + ")")
+
+        if where_clause:
+            where_clause = "({}) AND ({})".format(where_clause, selection)
+        else:
+            where_clause = selection
+
+        return self.get_pages(where_clause=where_clause, **kwargs)
 
 if __name__ == '__main__':
     def main():
@@ -226,8 +232,6 @@ if __name__ == '__main__':
                         action="store_true")
         ap.add_argument("--capture-log", help="also dump the capture log",
                         action="store_true")
-        ap.add_argument("--ordered", help="sort returned results",
-                        choices=('url', 'locale', 'both'))
         ap.add_argument("--random", help="select pages at random", type=int, metavar="seed",
                         default=None)
 
@@ -239,11 +243,12 @@ if __name__ == '__main__':
         if args.random is not None:
             if args.limit is None:
                 ap.error("--random must be used with --limit")
-            pages = db.get_random_pages(args.limit, args.random, ordered=args.ordered)
+            pages = db.get_random_pages(args.limit,
+                                        args.random,
+                                        where_clause=args.where)
         else:
             pages = db.get_pages(where_clause = args.where,
-                                 limit        = args.limit,
-                                 ordered      = args.ordered)
+                                 limit        = args.limit)
 
         prettifier = subprocess.Popen(["cat"], #["underscore", "pretty"],
                                       stdin=subprocess.PIPE)
