@@ -8359,7 +8359,7 @@ static const uint32_t kDistinctOcta0122_2KeyMask = 0xffffffff;    // Mask hash k
 //       More info: https://code.google.com/p/cld2/issues/detail?id=9
 static const IndirectProbBucket4 kDistinctOcta0122_2[1] = {
   // hash_indirect[4], tokens[4] in UTF-8
-  {0x00000000,0x00000000,0x00000000,0x00000000} // UNUSED, see above!
+  {{0x00000000,0x00000000,0x00000000,0x00000000}} // UNUSED, see above!
   };
   // table_hash = ffff-ffff, unused_entries = 0 (0.00%)
 
