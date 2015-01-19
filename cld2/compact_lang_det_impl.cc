@@ -63,23 +63,9 @@ extern const CLD2TableSummary kDeltaOcta_obj;
 extern const CLD2TableSummary kDistinctOcta_obj;
 extern const short kAvgDeltaOctaScore[];
 
-static const bool FLAGS_cld_no_minimum_bytes = false;
-static const bool FLAGS_cld_forcewords = true;
 static const bool FLAGS_cld_showme = false;
-static const bool FLAGS_cld_echotext = true;
 static const int32_t FLAGS_cld_textlimit = 160;
 static const int32_t FLAGS_cld_smoothwidth = 20;
-static const bool FLAGS_cld_2011_hints = true;
-static const int32_t FLAGS_cld_max_lang_tag_scan_kb = 8;
-
-static const bool FLAGS_dbgscore = false;
-
-
-static const int kLangHintInitial = 12;  // Boost language by N initially
-static const int kLangHintBoost = 12;    // Boost language by N/16 per quadgram
-
-static const int kShortSpanThresh = 32;       // Bytes
-static const int kMaxSecondChanceLen = 1024;  // Look at first 1K of short spans
 
 static const int kCheapSqueezeTestThresh = 4096;  // Only look for squeezing
                                                   // after this many text bytes
@@ -99,12 +85,6 @@ static const int kShortTextThresh = 256;      // Bytes
 
 static const int kMinChunkSizeQuads = 4;      // Chunk is at least four quads
 static const int kMaxChunkSizeQuads = 1024;   // Chunk is at most 1K quads
-
-static const int kDefaultWordSpan = 256;      // Scan at least this many initial
-                                              // bytes with word scoring
-static const int kReallyBigWordSpan = 9999999;  // Forces word scoring all text
-
-static const int kMinReliableSeq = 50;      // Record in seq if >= 50% reliable
 
 static const int kPredictionTableSize = 4096;   // Must be exactly 4096 for
                                                 // cheap compressor
@@ -842,9 +822,6 @@ bool CheapSqueezeTriggerTest(const char* src, int src_len, int testsize) {
 
 static const int kMinReliableKeepPercent = 41;  // Remove lang if reli < this
 
-// For Tier3 languages, require a minimum number of bytes to be first-place lang
-static const int kGoodFirstT3MinBytes = 24;         // <this => no first
-
 // Move bytes for unreliable langs to another lang or UNKNOWN
 // doc_tote is sorted, so cannot Add
 //
@@ -1112,7 +1089,6 @@ bool IsEFIGS(Language lang) {
 // For Tier3 languages, require more bytes of text to override
 // the first-place language
 static const int kGoodSecondT1T2MinBytes = 15;        // <this => no second
-static const int kGoodSecondT3MinBytes = 128;         // <this => no second
 
 // Calculate a single summary language for the document, and its reliability.
 // Returns language3[0] or language3[1] or ENGLISH or UNKNOWN_LANGUAGE

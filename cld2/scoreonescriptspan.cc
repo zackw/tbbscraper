@@ -27,8 +27,6 @@
 
 namespace CLD2 {
 
-static const int kUnreliablePercentThreshold = 75;
-
 static void AddLangProb(uint32_t langprob, Tote* chunk_tote) {
   ProcessProbV2Tote(langprob, chunk_tote);
 }
