@@ -109,10 +109,8 @@ ScriptScanner::~ScriptScanner() {
 int ScriptScanner::SkipToFrontOfSpan(const char* src, int len, int* script) {
   int sc = UNKNOWN_ULSCRIPT;
   int skip = 0;
-  int tlen;
 
   // Do run of non-letters
-  tlen = 0;
   while (skip < len) {
     // Do fast scan to next interesting byte
     // int oldskip = skip;
@@ -126,7 +124,7 @@ int ScriptScanner::SkipToFrontOfSpan(const char* src, int len, int* script) {
     }
 
     // Update 1..4 bytes
-    tlen = UTF8OneCharLen(src + skip);
+    int tlen = UTF8OneCharLen(src + skip);
     sc = GetUTF8LetterScriptNum(src + skip);
     if (sc != 0) {break;}           // Letter found
     skip += tlen;                   // Else advance
@@ -178,7 +176,7 @@ bool ScriptScanner::GetOneTextSpan(LangSpan* span) {
   std::size_t take = 0;
   int put = 1;              // Start after the initial space
 
-  if (byte_length_ <= 0) {
+  if (byte_length_ == 0) {
     return false;          // No more text to be found
   }
 
@@ -273,7 +271,7 @@ bool ScriptScanner::GetOneScriptSpan(LangSpan* span) {
   next_byte_ += skip;
   byte_length_ -= skip;
 
-  if (byte_length_ <= 0) {
+  if (byte_length_ == 0) {
     return false;               // No more letters to be found
   }
 

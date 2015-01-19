@@ -63,8 +63,6 @@ extern const CLD2TableSummary kDeltaOcta_obj;
 extern const CLD2TableSummary kDistinctOcta_obj;
 extern const short kAvgDeltaOctaScore[];
 
-static const bool FLAGS_cld_showme = false;
-static const int32_t FLAGS_cld_textlimit = 160;
 static const int32_t FLAGS_cld_smoothwidth = 20;
 
 static const int kCheapSqueezeTestThresh = 4096;  // Only look for squeezing
@@ -471,15 +469,6 @@ int CheapRepWordsInplace(char* isrc, int src_len, int* hash, int* tbl) {
       if ((good_predict_bytes * 2) > word_length_bytes) {
         // Word is well-predicted: backup to start of this word
         dst = word_dst;
-        if (FLAGS_cld_showme) {
-          // Mark the deletion point with period
-          // Don't repeat multiple periods
-          // Cannot mark with more bytes or may overwrite unseen input
-          if ((isrc < (dst - 2)) && (dst[-2] != '.')) {
-            *dst++ = '.';
-            *dst++ = ' ';
-          }
-        }
       }
       word_dst = dst;              // Start of next word
       good_predict_bytes = 0;
@@ -588,13 +577,6 @@ int CheapSqueezeInplace(char* isrc,
           // Force a leading space if the first chunk is deleted
           *dst++ = ' ';
         }
-        if (FLAGS_cld_showme) {
-          // Mark the deletion point with black square U+25A0
-          *dst++ = static_cast<unsigned char>(0xe2);
-          *dst++ = static_cast<unsigned char>(0x96);
-          *dst++ = static_cast<unsigned char>(0xa0);
-          *dst++ = ' ';
-        }
         skipping = true;
       }
     } else {
@@ -680,7 +662,6 @@ static const int kMinReliableKeepPercent = 41;  // Remove lang if reli < this
 void RemoveUnreliableLanguages(DocTote* doc_tote) {
   // Prepass to merge some low-reliablility languages
   // TODO: this shouldn't really reach in to the internal structure of doc_tote
-  int total_bytes = 0;
   for (int sub = 0; sub < doc_tote->MaxSize(); ++sub) {
     int plang = doc_tote->Key(sub);
     if (plang == DocTote::kUnusedKey) {continue;}               // Empty slot
@@ -689,7 +670,6 @@ void RemoveUnreliableLanguages(DocTote* doc_tote) {
     int bytes = doc_tote->Value(sub);
     int reli = doc_tote->Reliability(sub);
     if (bytes == 0) {continue;}                     // Zero bytes
-    total_bytes += bytes;
 
     // Reliable percent = stored reliable score over stored bytecount
     int reliable_percent = reli / bytes;
@@ -1227,8 +1207,6 @@ Language DetectLanguageSummaryV2(
   scriptspan.lang = UNKNOWN_LANGUAGE;
 
   int total_text_bytes = 0;
-  int textlimit = FLAGS_cld_textlimit << 10;    // in KB
-  if (textlimit == 0) {textlimit = 0x7fffffff;}
 
   // Pick up chunk sizes
   // Smoothwidth is units of quadgrams, about 2.5 chars (unigrams) each

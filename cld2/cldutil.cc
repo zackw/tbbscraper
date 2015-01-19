@@ -44,8 +44,6 @@ static const int kMinCJKUTF8CharBytes = 3;
 static const int kMinGramCount = 3;
 static const int kMaxGramCount = 16;
 
-static const int UTFmax = 4;        // Max number of bytes in a UTF-8 character
-
 // Always advances one UTF-8 character
 static const uint8_t kAdvanceOneChar[256] = {
   1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
@@ -388,12 +386,13 @@ void GetOctaHits(const char* text,
       int len = word_end - word_start;
       // Hash the word
       uint64_t wordhash40 = OctaHash40(word_start, len);
-      uint32_t probs;
 
       // Filter out recent repeats. Unlike quads, we update even if no hit,
       // so we can get hits on same word if separated by non-hit words
       if ((wordhash40 != prior_octahash[0]) &&
           (wordhash40 != prior_octahash[1])) {
+        uint32_t probs;
+
         // Round-robin two entries of words
         prior_octahash[next_prior_octahash] = wordhash40;
         next_prior_octahash = 1 - next_prior_octahash;    // Alternates 0,1,0,1

@@ -217,13 +217,11 @@ static void ScoreAllHits(ULScript ulscript,
 
 static void SummaryBufferToDocTote(const SummaryBuffer* summarybuffer,
                                    DocTote* doc_tote) {
-  int cs_bytes_sum = 0;
   for (int i = 0; i < summarybuffer->n; ++i) {
     const ChunkSummary* cs = &summarybuffer->chunksummary[i];
     int reliability = minint(cs->reliability_delta, cs->reliability_score);
     // doc_tote uses full languages
     doc_tote->Add(cs->lang1, cs->bytes, cs->score1, reliability);
-    cs_bytes_sum += cs->bytes;
   }
 }
 
