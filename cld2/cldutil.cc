@@ -124,62 +124,9 @@ void ProcessProbV2Tote(uint32_t probs, Tote* tote) {
   if (top3 > 0) {tote->Add(top3, LgProb3(prob123_entry, 2));}
 }
 
-// Return score for a particular per-script language, or zero
-int GetLangScore(uint32_t probs, uint8_t pslang) {
-  uint8_t prob123 = (probs >> 0) & 0xff;
-  const uint8_t* prob123_entry = LgProb2TblEntry(prob123);
-  int retval = 0;
-  uint8_t top1 = (probs >> 8) & 0xff;
-  if (top1 == pslang) {retval += LgProb3(prob123_entry, 0);}
-  uint8_t top2 = (probs >> 16) & 0xff;
-  if (top2 == pslang) {retval += LgProb3(prob123_entry, 1);}
-  uint8_t top3 = (probs >> 24) & 0xff;
-  if (top3 == pslang) {retval += LgProb3(prob123_entry, 2);}
-  return retval;
-}
-
 //----------------------------------------------------------------------------//
 // Routines to accumulate probabilities                                       //
 //----------------------------------------------------------------------------//
-
-
-// BIGRAM, using hash table, always advancing by 1 char
-// Caller supplies table, such as &kCjkBiTable_obj or &kGibberishTable_obj
-// Score all bigrams in isrc, using languages that have bigrams (CJK)
-// Return number of bigrams that hit in the hash table
-int DoBigramScoreV3(const CLD2TableSummary* bigram_obj,
-                         const char* isrc, int srclen, Tote* chunk_tote) {
-  int hit_count = 0;
-  const char* src = isrc;
-
-  // Hashtable-based CJK bigram lookup
-  const uint8_t* usrc = reinterpret_cast<const uint8_t*>(src);
-  const uint8_t* usrclimit1 = usrc + srclen - UTFmax;
-
-  while (usrc < usrclimit1) {
-    int len = kAdvanceOneChar[usrc[0]];
-    int len2 = kAdvanceOneChar[usrc[len]] + len;
-
-    if ((kMinCJKUTF8CharBytes * 2) <= len2) {      // Two CJK chars possible
-      // Lookup and score this bigram
-      // Always ignore pre/post spaces
-      uint32_t bihash = BiHashV2(reinterpret_cast<const char*>(usrc), len2);
-      uint32_t probs = QuadHashV3Lookup4(bigram_obj, bihash);
-      // Now go indirect on the subscript
-      probs = bigram_obj->kCLDTableInd[probs &
-        ~bigram_obj->kCLDTableKeyMask];
-
-      // Process the bigram
-      if (probs != 0) {
-        ProcessProbV2Tote(probs, chunk_tote);
-        ++hit_count;
-      }
-    }
-    usrc += len;  // Advance by one char
-  }
-
-  return hit_count;
-}
 
 
 // Score up to 64KB of a single script span in one pass

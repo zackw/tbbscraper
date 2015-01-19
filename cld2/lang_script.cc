@@ -237,29 +237,6 @@ ULScript LanguageRecognizedScript(Language lang, int n) {
   return static_cast<ULScript>(kLanguageToScripts[i_lang][n]);
 }
 
-// Given the Language, returns its string name used as the output by
-// the lang/enc identifier, e.g. "Korean"
-// "invalid_language" if the input is invalid.
-// TG_UNKNOWN_LANGUAGE is used as a placeholder for the "ignore me" language,
-// used to subtract out HTML, link farms, DNA strings, and alittle English porn
-const char* ExtLanguageName(const Language lang) {
-  return LanguageName(lang);
-}
-
-// Given the Language, return the language code, e.g. "ko"
-const char* ExtLanguageCode(const Language lang) {
-  return LanguageCode(lang);
-}
-
-
-// Given the Language, returns its Language enum spelling, for use by
-// programs that create C declarations, e.g. "KOREAN"
-// "UNKNOWN_LANGUAGE" if the input is invalid.
-const char* ExtLanguageDeclaredName(const Language lang) {
-  return LanguageDeclaredName(lang);
-}
-
-
 extern const int kCloseSetSize = 10;
 
 // Returns which set of statistically-close languages lang is in. 0 means none.

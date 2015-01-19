@@ -31,10 +31,10 @@ namespace CLD2 {
 typedef int16_t OneCLDLangPrior;
 
 const int kMaxOneCLDLangPrior = 14;
-typedef struct {
+struct CLDLangPriors {
   int32_t n;
   OneCLDLangPrior prior[kMaxOneCLDLangPrior];
-} CLDLangPriors;
+};
 
 // Reading exposed here; setting hidden in .cc
 inline int GetCLDPriorWeight(OneCLDLangPrior olp) {
@@ -55,14 +55,6 @@ inline void InitCLDLangPriors(CLDLangPriors* lps) {
 // Trim language priors to no more than max_entries, keeping largest abs weights
 void TrimCLDLangPriors(int max_entries, CLDLangPriors* lps);
 
-// Trim language tag string to canonical form for each language
-// Input is from GetLangTagsFromHtml(), already lowercased
-std::string TrimCLDLangTagsHint(const std::string& langtags);
-
-// Add hints to vector of langpriors
-// Input is from GetLangTagsFromHtml(), already lowercased
-void SetCLDLangTagsHint(const std::string& langtags, CLDLangPriors* langpriors);
-
 // Add hints to vector of langpriors
 // Input is from HTTP content-language
 void SetCLDContentLangHint(const char* contentlang, CLDLangPriors* langpriors);
@@ -79,16 +71,6 @@ void SetCLDEncodingHint(Encoding enc, CLDLangPriors* langpriors);
 // Input is from random source
 void SetCLDLanguageHint(Language lang, CLDLangPriors* langpriors);
 
-// Make printable string of priors
-std::string DumpCLDLangPriors(const CLDLangPriors* langpriors);
-
-
-// Get language tag hints from HTML body
-// Normalize: remove spaces and make lowercase comma list
-std::string GetLangTagsFromHtml(const char* utf8_body, int32_t utf8_body_len,
-                           int32_t max_scan_bytes);
-
 }       // End namespace CLD2
 
 #endif  // I18N_ENCODINGS_COMPACT_LANG_DET_COMPACT_LANG_DET_HINT_CODE_H__
-

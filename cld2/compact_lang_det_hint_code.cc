@@ -19,7 +19,6 @@
 #include "compact_lang_det_hint_code.h"
 
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -927,11 +926,8 @@ static const int kCLDTable3Size =
 inline void SetCLDPriorWeight(int w, OneCLDLangPrior* olp) {
   *olp = (*olp & 0x3ff) + (w << 10);
 }
-inline void SetCLDPriorLang(Language lang, OneCLDLangPrior* olp) {
-  *olp = (*olp & ~0x3ff) + lang;
-}
 
-OneCLDLangPrior PackCLDPriorLangWeight(Language lang, int w) {
+inline OneCLDLangPrior PackCLDPriorLangWeight(Language lang, int w) {
   return (w << 10) + lang;
 }
 
@@ -940,7 +936,7 @@ inline int MaxInt(int a, int b) {
 }
 
 // Merge in another language prior, taking max if already there
-void MergeCLDLangPriorsMax(OneCLDLangPrior olp, CLDLangPriors* lps) {
+static void MergeCLDLangPriorsMax(OneCLDLangPrior olp, CLDLangPriors* lps) {
   if (olp == 0) {return;}
   Language target_lang = GetCLDPriorLang(olp);
   for (int i = 0; i < lps->n; ++i) {
@@ -957,7 +953,7 @@ void MergeCLDLangPriorsMax(OneCLDLangPrior olp, CLDLangPriors* lps) {
 }
 
 // Merge in another language prior, boosting 10x if already there
-void MergeCLDLangPriorsBoost(OneCLDLangPrior olp, CLDLangPriors* lps) {
+static void MergeCLDLangPriorsBoost(OneCLDLangPrior olp, CLDLangPriors* lps) {
   if (olp == 0) {return;}
   Language target_lang = GetCLDPriorLang(olp);
   for (int i = 0; i < lps->n; ++i) {
@@ -997,7 +993,7 @@ void TrimCLDLangPriors(int max_entries, CLDLangPriors* lps) {
   lps->n = max_entries;
 }
 
-int CountCommas(const string& langtags) {
+static int CountCommas(const string& langtags) {
   int commas = 0;
   for (int i = 0; i < static_cast<int>(langtags.size()); ++i) {
     if (langtags[i] == ',') {++commas;}
@@ -1006,8 +1002,9 @@ int CountCommas(const string& langtags) {
 }
 
 // Binary lookup on language tag
-const LangTagLookup* DoLangTagLookup(const char* key,
-                                     const LangTagLookup* tbl, int tbl_size) {
+static const LangTagLookup* DoLangTagLookup(const char* key,
+                                            const LangTagLookup* tbl,
+                                            int tbl_size) {
   // Key is always in range [lo..hi)
   int lo = 0;
   int hi = tbl_size;
@@ -1026,8 +1023,8 @@ const LangTagLookup* DoLangTagLookup(const char* key,
 }
 
 // Binary lookup on tld
-const TLDLookup* DoTLDLookup(const char* key,
-                             const TLDLookup* tbl, int tbl_size) {
+static const TLDLookup* DoTLDLookup(const char* key,
+                                    const TLDLookup* tbl, int tbl_size) {
   // Key is always in range [lo..hi)
   int lo = 0;
   int hi = tbl_size;
@@ -1044,60 +1041,6 @@ const TLDLookup* DoTLDLookup(const char* key,
   }
   return NULL;
 }
-
-
-
-// Trim language tag string to canonical form for each language
-// Input is from GetLangTagsFromHtml(), already lowercased
-string TrimCLDLangTagsHint(const string& langtags) {
-  string retval;
-  if (langtags.empty()) {return retval;}
-  int commas = CountCommas(langtags);
-  if (commas > 4) {return retval;}       // Ignore if too many language tags
-
-  char temp[20];
-  size_t pos = 0;
-  while (pos < langtags.size()) {
-    size_t comma = langtags.find(',', pos);
-    if (comma == string::npos) {comma = langtags.size();} // fake trailing comma
-    size_t len = comma - pos;
-    if (len <= 16) {
-      // Short enough to use
-      memcpy(temp, &langtags[pos], len);
-      temp[len] = '\0';
-      const LangTagLookup* entry = DoLangTagLookup(temp,
-                                                   kCLDLangTagsHintTable1,
-                                                   kCLDTable1Size);
-      if (entry != NULL) {
-        // First table hit
-        retval.append(entry->langcode);     // may be "code1,code2"
-        retval.append(1, ',');
-      } else {
-        // Try second table with language code truncated at first hyphen
-        char* hyphen = strchr(temp, '-');
-        if (hyphen != NULL) {*hyphen = '\0';}
-        len = strlen(temp);
-        if (len <= 3) {                 // Short enough to use
-          entry = DoLangTagLookup(temp,
-                                  kCLDLangTagsHintTable2,
-                                  kCLDTable2Size);
-          if (entry != NULL) {
-            // Second table hit
-            retval.append(entry->langcode);     // may be "code1,code2"
-            retval.append(1, ',');
-          }
-        }
-      }
-    }
-    pos = comma + 1;
-  }
-
-  // Remove trainling comma, if any
-  if (!retval.empty()) {retval.resize(retval.size() - 1);}
-  return retval;
-}
-
-
 
 //==============================================================================
 
@@ -1205,157 +1148,13 @@ static const unsigned char kLangCodeRemap[256] = {
 #undef COPY1
 #undef COPY2
 
-
-// Find opening '<' for HTML tag
-// Note: this is all somewhat insensitive to mismatched quotes
-int32_t FindTagStart(const char* utf8_body, int32_t pos, int32_t max_pos) {
-  int i = pos;
-  // Advance i by 4 if none of the next 4 bytes are '<'
-  for (i = pos; i < (max_pos - 3); i += 4) {
-    // Fast check for any <
-    const char* p = &utf8_body[i];
-    uint32_t s0123 = UNALIGNED_LOAD32(p);
-    uint32_t temp = s0123 ^ 0x3c3c3c3c;    // <<<<
-    if (((temp - 0x01010101) & (~temp & 0x80808080)) != 0) {
-      // At least one byte is '<'
-      break;
-    }
-  }
-  // Continue, advancing i by 1
-  for (; i < max_pos; ++i) {
-    if (utf8_body[i] == '<') {return i;}
-  }
-  return -1;
-}
-
-
-// Find closing '>' for HTML tag. Also stop on < and & (simplistic parsing)
-int32_t FindTagEnd(const char* utf8_body, int32_t pos, int32_t max_pos) {
-  // Always outside quotes
-  for (int i = pos; i < max_pos; ++i) {
-    char c = utf8_body[i];
-    if (c == '>') {return i;}
-    if (c == '<') {return i - 1;}
-    if (c == '&') {return i - 1;}
-  }
-  return -1;              // nothing found
-}
-
-// Find opening quote or apostrophe, skipping spaces
-// Note: this is all somewhat insensitive to mismatched quotes
-int32_t FindQuoteStart(const char* utf8_body, int32_t pos, int32_t max_pos) {
-  for (int i = pos; i < max_pos; ++i) {
-    char c = utf8_body[i];
-    if (c == '"') {return i;}
-    if (c == '\'') {return i;}
-    if (c != ' ') {return -1;}
-  }
-  return -1;
-}
-
-// Find closing quot/apos. Also stop on = > < and & (simplistic parsing)
-int32_t FindQuoteEnd(const char* utf8_body, int32_t pos, int32_t max_pos) {
-  // Always outside quotes
-  for (int i = pos; i < max_pos; ++i) {
-    char c = utf8_body[i];
-    if (c == '"') {return i;}
-    if (c == '\'') {return i;}
-    if (c == '>') {return i - 1;}
-    if (c == '=') {return i - 1;}
-    if (c == '<') {return i - 1;}
-    if (c == '&') {return i - 1;}
-  }
-  return -1;              // nothing found
-}
-
-int32_t FindEqualSign(const char* utf8_body, int32_t pos, int32_t max_pos) {
-  // Outside quotes/apostrophes loop
-  for (int i = pos; i < max_pos; ++i) {
-    char c = utf8_body[i];
-    if (c == '=') {       // Found bare equal sign inside tag
-      return i;
-    } else if (c == '"') {
-      // Inside quotes loop
-      int j;
-      for (j = i + 1; j < max_pos; ++j) {
-        if (utf8_body[j] == '"') {
-          break;
-        } else if (utf8_body[j] == '\\') {
-          ++j;
-        }
-      }
-      i = j;
-    } else if (c == '\'') {
-      // Inside apostrophes loop
-      int j;
-      for (j = i + 1; j < max_pos; ++j) {
-        if (utf8_body[j] == '\'') {
-          break;
-        } else if (utf8_body[j] == '\\') {
-          ++j;
-        }
-      }
-      i = j;
-    }
-
-  }
-  return -1;              // nothing found
-}
-
-// Scan backwards for case-insensitive string s in [min_pos..pos)
-// Bytes of s must already be lowercase, i.e. in [20..3f] or [60..7f]
-// Cheap lowercase. Control codes will masquerade as 20..3f
-bool FindBefore(const char* utf8_body,
-                 int32_t min_pos, int32_t pos, const char* s) {
-  int len = strlen(s);
-  if ((pos - min_pos) < len) {return false;}     // Too small to fit s
-
-  // Skip trailing spaces
-  int i = pos;
-  while ((i > (min_pos + len)) && (utf8_body[i - 1] == ' ')) {--i;}
-  i -= len;
-  if (i < min_pos) {return false;}   // pos - min_pos < len, so s can't be found
-
-  const char* p = &utf8_body[i];
-  for (int j = 0; j < len; ++j) {
-    if ((p[j] | 0x20) != s[j])  {return false;}    // Unequal byte
-  }
-  return true;                                     // All bytes equal at i
-}
-
-// Scan forwards for case-insensitive string s in [pos..max_pos)
-// Bytes of s must already be lowercase, i.e. in [20..3f] or [60..7f]
-// Cheap lowercase. Control codes will masquerade as 20..3f
-// Allows but does not require quoted/apostrophe string
-bool FindAfter(const char* utf8_body,
-                 int32_t pos, int32_t max_pos, const char* s) {
-  int len = strlen(s);
-  if ((max_pos - pos) < len) {return false;}     // Too small to fit s
-
-  // Skip leading spaces, quote, apostrophe
-  int i = pos;
-  while (i < (max_pos - len)) {
-    unsigned char c = utf8_body[i];
-    if ((c == ' ') || (c == '"') || (c == '\'')) {++i;}
-    else {break;}
-  }
-
-  const char* p = &utf8_body[i];
-  for (int j = 0; j < len; ++j) {
-    if ((p[j] | 0x20) != s[j])  {return false;}    // Unequal byte
-  }
-  return true;                                     // All bytes equal
-}
-
-
-
 // Copy attribute value in [pos..max_pos)
 // pos is just after an opening quote/apostrophe and max_pos is the ending one
 // String must all be on a single line.
 // Return slightly-normalized language list, empty or ending in comma
 // Does lowercasing and removes excess punctuation/space
-string CopyOneQuotedString(const char* utf8_body,
-                         int32_t pos, int32_t max_pos) {
+static string CopyOneQuotedString(const char* utf8_body,
+                                  int32_t pos, int32_t max_pos) {
   string s;
   int state = 1;        // Front is logically just after a comma
   for (int i = pos; i < max_pos; ++i) {
@@ -1379,21 +1178,10 @@ string CopyOneQuotedString(const char* utf8_body,
   return s;
 }
 
-// Find and copy attribute value: quoted string in [pos..max_pos)
-// Return slightly-normalized language list, empty or ending in comma
-string CopyQuotedString(const char* utf8_body,
-                         int32_t pos, int32_t max_pos) {
-  int32_t start_quote = FindQuoteStart(utf8_body, pos, max_pos);
-  if (start_quote < 0) {return string("");}
-  int32_t end_quote = FindQuoteEnd(utf8_body, start_quote + 1, max_pos);
-  if (end_quote < 0) {return string("");}
-
-  return CopyOneQuotedString(utf8_body, start_quote + 1, end_quote);
-}
-
 // Add hints to vector of langpriors
 // Input is from GetLangTagsFromHtml(), already lowercased
-void SetCLDLangTagsHint(const string& langtags, CLDLangPriors* langpriors) {
+static void SetCLDLangTagsHint(const string& langtags,
+                               CLDLangPriors* langpriors) {
   if (langtags.empty()) {return;}
   int commas = CountCommas(langtags);
   if (commas > 4) {return;}       // Ignore if too many language tags
@@ -1507,147 +1295,4 @@ void SetCLDLanguageHint(Language lang, CLDLangPriors* langpriors) {
   MergeCLDLangPriorsBoost(olp, langpriors);
 }
 
-
-// Make printable string of priors
-string DumpCLDLangPriors(const CLDLangPriors* langpriors) {
-  string retval;
-  for (int i = 0; i < langpriors->n; ++i) {
-    char temp[64];
-    sprintf(temp, "%s.%d ",
-             LanguageCode(GetCLDPriorLang(langpriors->prior[i])),
-             GetCLDPriorWeight(langpriors->prior[i]));
-    retval.append(temp);
-  }
-  return retval;
-}
-
-
-
-
-// Look for
-//  <html lang="en">
-//  <doc xml:lang="en">
-//  <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en-US">
-//  <meta http-equiv="content-language" content="en-GB" />
-//  <meta name="language" content="Srpski">
-//  <meta name="DC.language" scheme="RFCOMMA766" content="en">
-//  <SPAN id="msg1" class="info" lang='en'>
-//
-// Do not trigger on
-//  <!-- lang=french ...-->
-//  <font lang=postscript ...>
-//  <link href="index.fr.html" hreflang="fr-FR" xml:lang="fr-FR" />
-//  <META name="Author" lang="fr" content="Arnaud Le Hors">
-//
-// Stop fairly quickly on mismatched quotes
-//
-// Allowed language characters
-//  a-z A-Z -_ , space\t
-// Think about: GB2312, big5, shift-jis, euc-jp, ksc euc-kr
-//  zh-hans zh-TW cmn-Hani zh_cn.gb18030_CN zh-min-nan zh-yue
-//  de-x-mtfrom-en  zh-tw-x-mtfrom-en  (machine translation)
-// GB2312 => gb
-// Big5 => big
-// zh_CN.gb18030_C => zh-cn
-//
-// Remove duplicates and extra spaces as we go
-// Lowercase as we go.
-
-// Get language tag hints from HTML body
-// Normalize: remove spaces and make lowercase comma list
-
-string GetLangTagsFromHtml(const char* utf8_body, int32_t utf8_body_len,
-                           int32_t max_scan_bytes) {
-  string retval;
-  if (max_scan_bytes > utf8_body_len) {
-    max_scan_bytes = utf8_body_len;
-  }
-
-  int32_t k = 0;
-  while (k < max_scan_bytes) {
-    int32_t start_tag = FindTagStart(utf8_body, k, max_scan_bytes);
-    if (start_tag < 0) {break;}
-    int32_t end_tag = FindTagEnd(utf8_body, start_tag + 1, max_scan_bytes);
-    // FindTagEnd exits on < > &
-    if (end_tag < 0) {break;}
-
-    // Skip <!--...>
-    // Skip <font ...>
-    // Skip <script ...>
-    // Skip <link ...>
-    // Skip <img ...>
-    // Skip <a ...>
-    if (FindAfter(utf8_body, start_tag + 1, end_tag, "!--") ||
-        FindAfter(utf8_body, start_tag + 1, end_tag, "font ") ||
-        FindAfter(utf8_body, start_tag + 1, end_tag, "script ") ||
-        FindAfter(utf8_body, start_tag + 1, end_tag, "link ") ||
-        FindAfter(utf8_body, start_tag + 1, end_tag, "img ") ||
-        FindAfter(utf8_body, start_tag + 1, end_tag, "a ")) {
-      k = end_tag + 1;
-      continue;
-    }
-
-    // Remember <meta ...>
-    bool in_meta = false;
-    if (FindAfter(utf8_body, start_tag + 1, end_tag, "meta ")) {
-      in_meta = true;
-    }
-
-    // Scan for each equal sign inside tag
-    bool content_is_lang = false;
-    int32_t kk = start_tag + 1;
-    int32_t equal_sign;
-    while ((equal_sign = FindEqualSign(utf8_body, kk, end_tag)) >= 0) {
-      // eq exits on < > &
-
-      // Look inside a meta tag
-      // <meta ... http-equiv="content-language" ...>
-      // <meta ... name="language" ...>
-      // <meta ... name="dc.language" ...>
-      if (in_meta) {
-        if (FindBefore(utf8_body, kk, equal_sign, " http-equiv") &&
-            FindAfter(utf8_body, equal_sign + 1, end_tag,
-                      "content-language ")) {
-          content_is_lang = true;
-        } else if (FindBefore(utf8_body, kk, equal_sign, " name") &&
-                   (FindAfter(utf8_body, equal_sign + 1, end_tag,
-                              "dc.language ") ||
-                    FindAfter(utf8_body, equal_sign + 1, end_tag,
-                              "language "))) {
-          content_is_lang = true;
-        }
-      }
-
-      // Look inside any tag
-      // <meta ... content="lang-list" ...>
-      // <... lang="lang-list" ...>
-      // <... xml:lang="lang-list" ...>
-      if ((content_is_lang && FindBefore(utf8_body, kk, equal_sign,
-                                         " content")) ||
-          FindBefore(utf8_body, kk, equal_sign, " lang") ||
-          FindBefore(utf8_body, kk, equal_sign, ":lang")) {
-        string temp = CopyQuotedString(utf8_body, equal_sign + 1, end_tag);
-
-        // Append new lang tag(s) if not a duplicate
-        if (!temp.empty() && (retval.find(temp) == string::npos)) {
-          retval.append(temp);
-        }
-      }
-
-      kk = equal_sign + 1;
-    }
-    k = end_tag + 1;
-  }
-
-  // Strip last comma
-  if (retval.size() > 1) {
-    retval.erase(retval.size() - 1);
-  }
-  return retval;
-}
-
 }       // End namespace CLD2
-
-//==============================================================================
-
-

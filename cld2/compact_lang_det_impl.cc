@@ -305,10 +305,6 @@ static const ScoringTables kScoringtables = {
 inline bool FlagFinish(int flags) {return (flags & kCLDFlagFinish) != 0;}
 inline bool FlagSqueeze(int flags) {return (flags & kCLDFlagSqueeze) != 0;}
 inline bool FlagRepeats(int flags) {return (flags & kCLDFlagRepeats) != 0;}
-inline bool FlagTop40(int flags) {return (flags & kCLDFlagTop40) != 0;}
-inline bool FlagShort(int flags) {return (flags & kCLDFlagShort) != 0;}
-inline bool FlagHint(int flags) {return (flags & kCLDFlagHint) != 0;}
-inline bool FlagUseWords(int flags) {return (flags & kCLDFlagUseWords) != 0;}
 inline bool FlagBestEffort(int flags) {
   return (flags & kCLDFlagBestEffort) != 0;
 }
@@ -542,84 +538,6 @@ int CheapRepWordsInplace(char* isrc, int src_len, int* hash, int* tbl) {
 }
 
 
-// This alternate form overwrites redundant words, thus avoiding corrupting the
-// backmap for generating a vector of original-text ranges.
-int CheapRepWordsInplaceOverwrite(char* isrc, int src_len, int* hash, int* tbl) {
-  const uint8_t* src = reinterpret_cast<const uint8_t*>(isrc);
-  const uint8_t* srclimit = src + src_len;
-  char* dst = isrc;
-  int local_hash = *hash;
-  char* word_dst = dst;           // Start of next word
-  int good_predict_bytes = 0;
-  int word_length_bytes = 0;
-
-  while (src < srclimit) {
-    int c = src[0];
-    int incr = 1;
-    *dst++ = c;
-
-    if (c == ' ') {
-      if ((good_predict_bytes * 2) > word_length_bytes) {
-        // Word [word_dst..dst-1) is well-predicted: overwrite
-        for (char* p = word_dst; p < dst - 1; ++p) {*p = '.';}
-      }
-      word_dst = dst;              // Start of next word
-      good_predict_bytes = 0;
-      word_length_bytes = 0;
-    }
-
-    // Pick up one char and length
-    if (c < 0xc0) {
-      // One-byte or continuation byte: 00xxxxxx 01xxxxxx 10xxxxxx
-      // Do nothing more
-    } else if ((c & 0xe0) == 0xc0) {
-      // Two-byte
-      *dst++ = src[1];
-      c = (c << 8) | src[1];
-      incr = 2;
-    } else if ((c & 0xf0) == 0xe0) {
-      // Three-byte
-      *dst++ = src[1];
-      *dst++ = src[2];
-      c = (c << 16) | (src[1] << 8) | src[2];
-      incr = 3;
-    } else {
-      // Four-byte
-      *dst++ = src[1];
-      *dst++ = src[2];
-      *dst++ = src[3];
-      c = (c << 24) | (src[1] << 16) | (src[2] << 8) | src[3];
-      incr = 4;
-    }
-    src += incr;
-    word_length_bytes += incr;
-
-    int p = tbl[local_hash];            // Prediction
-    tbl[local_hash] = c;                // Update prediction
-    if (c == p) {
-      good_predict_bytes += incr;       // Count good predictions
-    }
-
-    local_hash = ((local_hash << 4) ^ c) & 0xfff;
-  }
-
-  *hash = local_hash;
-
-  if ((dst - isrc) < (src_len - 3)) {
-    // Pad and make last char clean UTF-8 by putting following spaces
-    dst[0] = ' ';
-    dst[1] = ' ';
-    dst[2] = ' ';
-    dst[3] = '\0';
-  } else  if ((dst - isrc) < src_len) {
-    // Make last char clean UTF-8 by putting following space off the end
-    dst[0] = ' ';
-  }
-
-  return static_cast<int>(dst - isrc);
-}
-
-
 // Remove portions of text that have a high density of spaces, or that are
 // overly repetitive, squeezing the remaining text in-place to the front of the
 // input buffer.
@@ -714,80 +632,6 @@ int CheapSqueezeInplace(char* isrc,
   return static_cast<int>(dst - isrc);
 }
 
-// This alternate form overwrites redundant words, thus avoiding corrupting the
-// backmap for generating a vector of original-text ranges.
-int CheapSqueezeInplaceOverwrite(char* isrc,
-                                            int src_len,
-                                            int ichunksize) {
-  char* src = isrc;
-  char* dst = src;
-  char* srclimit = src + src_len;
-  bool skipping = false;
-
-  int hash = 0;
-  // Allocate local prediction table.
-  int* predict_tbl = new int[kPredictionTableSize];
-  memset(predict_tbl, 0, kPredictionTableSize * sizeof(predict_tbl[0]));
-
-  int chunksize = ichunksize;
-  if (chunksize == 0) {chunksize = kChunksizeDefault;}
-  int space_thresh = (chunksize * kSpacesThreshPercent) / 100;
-  int predict_thresh = (chunksize * kPredictThreshPercent) / 100;
-
-  // Always keep first byte (space)
-  ++src;
-  ++dst;
-  while (src < srclimit) {
-    int remaining_bytes = srclimit - src;
-    int len = minint(chunksize, remaining_bytes);
-    // Make len land us on a UTF-8 character boundary.
-    // Ah. Also fixes mispredict because we could get out of phase
-    // Loop always terminates at trailing space in buffer
-    while ((src[len] & 0xc0) == 0x80) {++len;}  // Move past continuation bytes
-
-    int space_n = CountSpaces4(src, len);
-    int predb_n = CountPredictedBytes(src, len, &hash, predict_tbl);
-    if ((space_n >= space_thresh) || (predb_n >= predict_thresh)) {
-      // Overwrite the text [dst-n..dst)
-      if (!skipping) {
-        // Keeping-to-skipping transition; do it at a space
-        int n = BackscanToSpace(dst, static_cast<int>(dst - isrc));
-        // Text [word_dst..dst) is well-predicted: overwrite
-        for (char* p = dst - n; p < dst; ++p) {*p = '.';}
-        skipping = true;
-      }
-      // Overwrite the text [dst..dst+len)
-      for (char* p = dst; p < dst + len; ++p) {*p = '.';}
-      dst[len - 1] = ' ';    // Space at end so we can see what is happening
-    } else {
-      // Keep the text
-      if (skipping) {
-        // Skipping-to-keeping transition; do it at a space
-        int n = ForwardscanToSpace(src, len);
-        // Text [dst..dst+n) is well-predicted: overwrite
-        for (char* p = dst; p < dst + n - 1; ++p) {*p = '.';}
-        skipping = false;
-      }
-    }
-    dst += len;
-    src += len;
-  }
-
-  if ((dst - isrc) < (src_len - 3)) {
-    // Pad and make last char clean UTF-8 by putting following spaces
-    dst[0] = ' ';
-    dst[1] = ' ';
-    dst[2] = ' ';
-    dst[3] = '\0';
-  } else   if ((dst - isrc) < src_len) {
-    // Make last char clean UTF-8 by putting following space off the end
-    dst[0] = ' ';
-  }
-
-  // Deallocate local prediction table
-  delete[] predict_tbl;
-  return static_cast<int>(dst - isrc);
-}
 
 // Timing 2.8GHz P4 (dsites 2008.03.20) with 170KB input
 //  About 90 MB/sec, with or without memcpy, chunksize 48 or 4096

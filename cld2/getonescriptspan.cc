@@ -136,19 +136,6 @@ int ScriptScanner::SkipToFrontOfSpan(const char* src, int len, int* script) {
   return skip;
 }
 
-
-// These are for ASCII-only tag names
-// Compare one letter uplow to c, ignoring case of uplowp
-inline bool EqCase(char uplow, char c) {
-  return (uplow | 0x20) == c;
-}
-
-// These are for ASCII-only tag names
-// Return true for space / < > etc. all less than 0x40
-inline bool NeqLetter(char c) {
-  return c < 0x40;
-}
-
 // These are for ASCII-only tag names
 // Return true for space \n false for \r
 inline bool WS(char c) {

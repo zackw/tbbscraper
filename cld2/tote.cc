@@ -198,21 +198,6 @@ int DocTote::Find(uint16_t ikey) {
   return -1;
 }
 
-// Return current top key
-int DocTote::CurrentTopKey() {
-  int top_key = 0;
-  int top_value = -1;
-  for (int sub = 0; sub < kMaxSize_; ++sub) {
-    if (key_[sub] == kUnusedKey) {continue;}
-    if (top_value < value_[sub]) {
-      top_value = value_[sub];
-      top_key = key_[sub];
-    }
-  }
-  return top_key;
-}
-
-
 // Sort first n entries by decreasing order of value
 // If key==0 other fields are not valid, treat value as -1
 void DocTote::Sort(int n) {

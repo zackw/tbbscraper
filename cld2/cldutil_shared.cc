@@ -189,28 +189,6 @@ uint32_t QuadHashV2(const char* word_ptr, int bytecount) {
   return QuadHashV2Mix(word_ptr, bytecount, prepost);
 }
 
-// QUADGRAM wrapper with surrounding underscores (offline use)
-// Pick up 1..12 bytes plus pre/post '_' and hash them via mask/shift/add
-// OVERSHOOTS up to 3 bytes
-// For offline construction of tables
-uint32_t QuadHashV2Underscore(const char* word_ptr, int bytecount) {
-  if (bytecount == 0) {return 0;}
-  const char* local_word_ptr = word_ptr;
-  int local_bytecount = bytecount;
-  uint32_t prepost = 0;
-  if (local_word_ptr[0] == '_') {
-    prepost |= kPreSpaceIndicator;
-    ++local_word_ptr;
-    --local_bytecount;
-  }
-  if (local_word_ptr[local_bytecount - 1] == '_') {
-    prepost |= kPostSpaceIndicator;
-    --local_bytecount;
-  }
-  return QuadHashV2Mix(local_word_ptr, local_bytecount, prepost);
-}
-
-
 // OCTAGRAM
 // Pick up 1..24 bytes plus pre/post space and hash them via mask/shift/add
 // UNDERSHOOTS 1 byte, OVERSHOOTS up to 3 bytes
@@ -342,30 +320,6 @@ uint64_t OctaHash40(const char* word_ptr, int bytecount) {
 }
 
 
-// OCTAGRAM wrapper with surrounding underscores (offline use)
-// Pick up 1..24 bytes plus pre/post space and hash them via mask/shift/add
-// UNDERSHOOTS 1 byte, OVERSHOOTS up to 3 bytes
-//
-// The low 32 bits follow the pattern from above, tuned to different scripts
-// The high 8 bits are a simple sum of all bytes, shifted by 0/1/2/3 bits each
-// For offline construction of tables
-uint64_t OctaHash40underscore(const char* word_ptr, int bytecount) {
-  if (bytecount == 0) {return 0;}
-  const char* local_word_ptr = word_ptr;
-  int local_bytecount = bytecount;
-  uint64_t prepost = 0;
-  if (local_word_ptr[0] == '_') {
-    prepost |= kPreSpaceIndicator;
-    ++local_word_ptr;
-    --local_bytecount;
-  }
-  if (local_word_ptr[local_bytecount - 1] == '_') {
-    prepost |= kPostSpaceIndicator;
-    --local_bytecount;
-  }
-  return OctaHash40Mix(local_word_ptr, local_bytecount, prepost);
-}
-
 // Hash a consecutive pair of tokens/words A B
 // Old: hash is B - A, which gives too many false hits on one-char diffs
 // Now: rotate(A,13) + B
@@ -373,53 +327,4 @@ uint64_t PairHash(uint64_t worda_hash, uint64_t wordb_hash) {
    return ((worda_hash >> 13) | (worda_hash << (64 - 13))) + wordb_hash;
 }
 
-
-
-
-//----------------------------------------------------------------------------//
-// Finding groups of 1/2/4/8 letters                                          //
-//----------------------------------------------------------------------------//
-
-// src points to a letter. Find the byte length of a unigram starting there.
-int UniLen(const char* src) {
-  const char* src_end = src;
-  src_end += kAdvanceOneCharButSpace[(uint8_t)src_end[0]];
-  return src_end - src;
-}
-
-// src points to a letter. Find the byte length of a bigram starting there.
-int BiLen(const char* src) {
-  const char* src_end = src;
-  src_end += kAdvanceOneCharButSpace[(uint8_t)src_end[0]];
-  src_end += kAdvanceOneCharButSpace[(uint8_t)src_end[0]];
-  return src_end - src;
-}
-
-// src points to a letter. Find the byte length of a quadgram starting there.
-int QuadLen(const char* src) {
-  const char* src_end = src;
-  src_end += kAdvanceOneCharButSpace[(uint8_t)src_end[0]];
-  src_end += kAdvanceOneCharButSpace[(uint8_t)src_end[0]];
-  src_end += kAdvanceOneCharButSpace[(uint8_t)src_end[0]];
-  src_end += kAdvanceOneCharButSpace[(uint8_t)src_end[0]];
-  return src_end - src;
-}
-
-// src points to a letter. Find the byte length of an octagram starting there.
-int OctaLen(const char* src) {
-  const char* src_end = src;
-  int charcount = 0;
-  while (src_end[0] != ' ') {
-    src_end += UTF8OneCharLen(src);
-    ++charcount;
-    if (charcount == 8) {break;}
-  }
-  return src_end - src;
-}
-
 }       // End namespace CLD2
-
-
-
-
-
