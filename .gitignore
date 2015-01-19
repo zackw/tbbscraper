@@ -5,3 +5,4 @@
 *.pyc
 *.pyo
 __pycache__/
+/cld2/_basic_test_program
