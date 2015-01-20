@@ -26,9 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "generated_language.h"
-#include "generated_ulscript.h"
-
 namespace CLD2 {
 
 //
@@ -50,10 +47,6 @@ extern const int kLanguageToNameSize;
 extern const char* const kLanguageToName[];
 extern const int kLanguageToCodeSize;
 extern const char* const kLanguageToCode[];
-extern const int kLanguageToCNameSize;
-extern const char* const kLanguageToCName[];
-extern const int kLanguageToScriptsSize;
-extern const FourScripts kLanguageToScripts[];
 
 // Subscripted by Language
 extern const int kLanguageToPLangSize;
@@ -62,33 +55,12 @@ extern const uint8_t kLanguageToPLang[];
 extern const uint16_t kPLangToLanguageLatn[];
 extern const uint16_t kPLangToLanguageOthr[];
 
-// Alphabetical order for binary search
-extern const int kNameToLanguageSize;
-extern const CharIntPair kNameToLanguage[];
-extern const int kCodeToLanguageSize;
-
-extern const CharIntPair kCodeToLanguage[];
-
 // ULScript tables
 // Subscripted by enum ULScript
-extern const int kULScriptToNameSize;
-extern const char* const kULScriptToName[];
-extern const int kULScriptToCodeSize;
-extern const char* const kULScriptToCode[];
-extern const int kULScriptToCNameSize;
-extern const char* const kULScriptToCName[];
 extern const int kULScriptToRtypeSize;
 extern const ULScriptRType kULScriptToRtype[];
 extern const int kULScriptToDefaultLangSize;
 extern const Language kULScriptToDefaultLang[];
-
-// Alphabetical order for binary search
-extern const int kNameToULScriptSize;
-extern const CharIntPair kNameToULScript[];
-extern const int kCodeToULScriptSize;
-extern const CharIntPair kCodeToULScript[];
-
-
 
 // NOTE: The script numbers and language numbers here are not guaranteed to be
 // stable. If you want to record a result for posterity, save the ISO codes
@@ -96,10 +68,7 @@ extern const CharIntPair kCodeToULScript[];
 //
 //
 // The Unicode scripts recognized by CLD2 are numbered almost arbitrarily,
-// specified in an enum. Each script has human-readable script name and a
-// 4-letter ISO 15924 script code. Each has a C name (largely for use by
-// programs that generate declarations in cld2_generated_scripts.h). Each
-// also has a recognition type
+// specified in an enum. Each script has a recognition type
 //  r_type: 0 script-only, 1 nilgrams, 2 quadgrams, 3 CJK
 //
 // The declarations for a particular version of Unicode are machine-generated in
@@ -135,26 +104,6 @@ extern const CharIntPair kCodeToULScript[];
 
 // If the input is out of range or otherwise unrecognized, it is treated
 // as UNKNOWN_ULSCRIPT (which never participates in language recognition)
-const char* ULScriptName(ULScript ulscript) {
-  int i_ulscript = ulscript;
-  if (i_ulscript < 0) {i_ulscript = UNKNOWN_ULSCRIPT;}
-  if (i_ulscript >= NUM_ULSCRIPTS) {i_ulscript = UNKNOWN_ULSCRIPT;}
-  return kULScriptToName[i_ulscript];
-}
-
-const char* ULScriptCode(ULScript ulscript) {
-  int i_ulscript = ulscript;
-  if (i_ulscript < 0) {i_ulscript = UNKNOWN_ULSCRIPT;}
-  if (i_ulscript >= NUM_ULSCRIPTS) {i_ulscript = UNKNOWN_ULSCRIPT;}
-  return kULScriptToCode[i_ulscript];
-}
-
-const char* ULScriptDeclaredName(ULScript ulscript) {
-  int i_ulscript = ulscript;
-  if (i_ulscript < 0) {i_ulscript = UNKNOWN_ULSCRIPT;}
-  if (i_ulscript >= NUM_ULSCRIPTS) {i_ulscript = UNKNOWN_ULSCRIPT;}
-  return kULScriptToCName[i_ulscript];
-}
 
 ULScriptRType ULScriptRecognitionType(ULScript ulscript) {
   int i_ulscript = ulscript;
@@ -164,12 +113,10 @@ ULScriptRType ULScriptRecognitionType(ULScript ulscript) {
 }
 
 
-
 // The languages recognized by CLD2 are numbered almost arbitrarily,
-// specified in an enum. Each language has human-readable language name and a
-// 2- or 3-letter ISO 639 language code. Each has a C name (largely for use by
-// programs that generate declarations in cld2_generated_languagess.h).
-// Each has a list of up to four scripts in which it is currently recognized.
+// specified in an enum. Each language has human-readable language
+// name and a 2- or 3-letter ISO 639 language code.  Each has a list
+// of up to four scripts in which it is currently recognized.
 //
 // The declarations for a particular set of recognized languages are
 // machine-generated in
@@ -219,13 +166,6 @@ const char* LanguageCode(Language lang) {
   if (i_lang < 0) {i_lang = UNKNOWN_LANGUAGE;}
   if (i_lang >= NUM_LANGUAGES) {i_lang = UNKNOWN_LANGUAGE;}
   return kLanguageToCode[i_lang];
-}
-
-const char* LanguageDeclaredName(Language lang) {
-  int i_lang = lang;
-  if (i_lang < 0) {i_lang = UNKNOWN_LANGUAGE;}
-  if (i_lang >= NUM_LANGUAGES) {i_lang = UNKNOWN_LANGUAGE;}
-  return kLanguageToCName[i_lang];
 }
 
 extern const int kCloseSetSize = 10;
@@ -325,202 +265,6 @@ bool IsOthrLanguage(Language lang) {
   return (lang == kPLangToLanguageOthr[kLanguageToPLang[lang]]);
 }
 
-
-//----------------------------------------------------------------------------//
-// Other                                                                      //
-//----------------------------------------------------------------------------//
-
-// Returns mid if key found in lo <= mid < hi, else -1
-static int BinarySearch(const char* key, int lo, int hi, const CharIntPair* cipair) {
-  // binary search
-  while (lo < hi) {
-    int mid = (lo + hi) >> 1;
-    if (strcmp(key, cipair[mid].s) < 0) {
-      hi = mid;
-    } else if (strcmp(key, cipair[mid].s) > 0) {
-      lo = mid + 1;
-    } else {
-      return mid;
-    }
-  }
-  return -1;
-}
-
-inline Language MakeLang(int i) {return static_cast<Language>(i);}
-
-// Name can be either full name or ISO code, or can be ISO code embedded in
-// a language-script combination such as "ABKHAZIAN", "en", "en-Latn-GB"
-Language GetLanguageFromName(const char* src) {
-  const char* hyphen1 = strchr(src, '-');
-  const char* hyphen2 = NULL;
-  if (hyphen1 != NULL) {hyphen2 = strchr(hyphen1 + 1, '-');}
-
-  int match = -1;
-  if (hyphen1 == NULL) {
-    // Bare name. Look at full name, then code
-    match = BinarySearch(src, 0, kNameToLanguageSize, kNameToLanguage);
-    if (match >= 0) {return MakeLang(kNameToLanguage[match].i);}    // aa
-    match = BinarySearch(src, 0, kCodeToLanguageSize, kCodeToLanguage);
-    if (match >= 0) {return MakeLang(kCodeToLanguage[match].i);}    // aa
-    return UNKNOWN_LANGUAGE;
-  }
-
-  if (hyphen2 == NULL) {
-    // aa-bb. Not a full name; must be code-something. Try zh-TW then bare zh
-    match = BinarySearch(src, 0, kCodeToLanguageSize, kCodeToLanguage);
-    if (match >= 0) {return MakeLang(kCodeToLanguage[match].i);}    // aa-bb
-
-    int len = strlen(src);
-    if (len >= 16) {return UNKNOWN_LANGUAGE;}   // Real codes are shorter
-
-    char temp[16];
-    int hyphen1_offset = hyphen1 - src;
-    // Take off part after hyphen1
-    memcpy(temp, src, len);
-    temp[hyphen1_offset] = '\0';
-    match = BinarySearch(temp, 0, kCodeToLanguageSize, kCodeToLanguage);
-    if (match >= 0) {return MakeLang(kCodeToLanguage[match].i);}    // aa
-
-    return UNKNOWN_LANGUAGE;
-  }
-
-  // aa-bb-cc. Must be code-something. Try en-Latn-US, en-Latn, en-US, en
-  match = BinarySearch(src, 0, kCodeToLanguageSize, kCodeToLanguage);
-  if (match >= 0) {return MakeLang(kCodeToLanguage[match].i);}    // aa-bb-cc
-
-
-  int len = strlen(src);
-  if (len >= 16) {return UNKNOWN_LANGUAGE;}   // Real codes are shorter
-
-  char temp[16];
-  int hyphen1_offset = hyphen1 - src;
-  int hyphen2_offset = hyphen2 - src;
-  // Take off part after hyphen2
-  memcpy(temp, src, len);
-  temp[hyphen2_offset] = '\0';
-  match = BinarySearch(temp, 0, kCodeToLanguageSize, kCodeToLanguage);
-  if (match >= 0) {return MakeLang(kCodeToLanguage[match].i);}    // aa-bb
-
-
-  // Take off part between hyphen1 and hyphen2
-  int len2 = len - hyphen2_offset;
-  memcpy(temp, src, len);
-  memcpy(&temp[hyphen1_offset], hyphen2, len2);
-  temp[hyphen1_offset + len2] = '\0';
-  match = BinarySearch(temp, 0, kCodeToLanguageSize, kCodeToLanguage);
-  if (match >= 0) {return MakeLang(kCodeToLanguage[match].i);}    // aa-cc
-
-
-  // Take off everything after hyphen1
-  memcpy(temp, src, len);
-  temp[hyphen1_offset] = '\0';
-  match = BinarySearch(temp, 0, kCodeToLanguageSize, kCodeToLanguage);
-  if (match >= 0) {return MakeLang(kCodeToLanguage[match].i);}    // aa
-
-
-  return UNKNOWN_LANGUAGE;
-}
-
-
-// Name can be either full name or ISO code, or can be ISO code embedded in
-// a language-script combination such as "en-Latn-GB"
-// MORE WORK to do here. also kLanguageToScripts [4] is bogus
-// if bare language name, no script, want  zh, ja, ko to Hani, pt to Latn, etc.
-// Something like map code to Language, then Language to kLanguageToScripts[x][0]
-// ADD BIAS: kLanguageToScripts lists default script first
-// If total mismatch, reutrn Latn
-//   if (strcmp(src, "nd") == 0) {return NDEBELE;}         // [nd was wrong]
-//   if (strcmp(src, "sit-NP-Limb") == 0) {return ULScript_Limbu;}
-
-inline ULScript MakeULScr(int i) {return static_cast<ULScript>(i);}
-
-ULScript GetULScriptFromName(const char* src) {
-  const char* hyphen1 = strchr(src, '-');
-  const char* hyphen2 = NULL;
-  if (hyphen1 != NULL) {hyphen2 = strchr(hyphen1 + 1, '-');}
-
-  int match = -1;
-  if (hyphen1 == NULL) {
-    // Bare name. Look at full name, then code, then try backmapping as Language
-    match = BinarySearch(src, 0, kNameToULScriptSize, kNameToULScript);
-    if (match >= 0) {return MakeULScr(kNameToULScript[match].i);}    // aa
-    match = BinarySearch(src, 0, kCodeToULScriptSize, kCodeToULScript);
-    if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // aa
-
-    Language backmap_me = GetLanguageFromName(src);
-    if (backmap_me != UNKNOWN_LANGUAGE) {
-      return static_cast<ULScript>(kLanguageToScripts[backmap_me][0]);
-    }
-    return ULScript_Latin;
-  }
-
-  if (hyphen2 == NULL) {
-    // aa-bb. Not a full name; must be code-something. Try en-Latn, bare Latn
-    if (strcmp(src, "zh-TW") == 0) {return ULScript_Hani;}
-    if (strcmp(src, "zh-CN") == 0) {return ULScript_Hani;}
-    if (strcmp(src, "sit-NP") == 0) {return ULScript_Limbu;}
-    if (strcmp(src, "sit-Limb") == 0) {return ULScript_Limbu;}
-    if (strcmp(src, "sr-ME") == 0) {return ULScript_Latin;}
-    match = BinarySearch(src, 0, kCodeToULScriptSize, kCodeToULScript);
-    if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // aa-bb
-
-    int len = strlen(src);
-    if (len >= 16) {return ULScript_Latin;}   // Real codes are shorter
-
-    char temp[16];
-    int hyphen1_offset = hyphen1 - src;
-    int len1 = len - hyphen1_offset - 1;    // Exclude the hyphen
-    // Take off part before hyphen1
-    memcpy(temp, hyphen1 + 1, len1);
-    temp[len1] = '\0';
-    match = BinarySearch(temp, 0, kCodeToULScriptSize, kCodeToULScript);
-    if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // bb
-
-    // Take off part after hyphen1
-    memcpy(temp, src, len);
-    temp[hyphen1_offset] = '\0';
-    match = BinarySearch(temp, 0, kCodeToULScriptSize, kCodeToULScript);
-    if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // aa
-
-    return ULScript_Latin;
-  }
-
-  // aa-bb-cc. Must be code-something. Try en-Latn-US, en-Latn, en-US, en
-  if (strcmp(src, "sit-NP-Limb") == 0) {return ULScript_Limbu;}
-  if (strcmp(src, "sr-ME-Latn") == 0) {return ULScript_Latin;}
-  if (strcmp(src, "sr-ME-Cyrl") == 0) {return ULScript_Cyrillic;}
-  match = BinarySearch(src, 0, kCodeToULScriptSize, kCodeToULScript);
-  if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // aa-bb-cc
-
-  int len = strlen(src);
-  if (len >= 16) {return ULScript_Latin;}   // Real codes are shorter
-
-  char temp[16];
-  int hyphen1_offset = hyphen1 - src;
-  int hyphen2_offset = hyphen2 - src;
-  int len2 = len - hyphen2_offset - 1;                // Exclude the hyphen
-  int lenmid = hyphen2_offset - hyphen1_offset - 1;   // Exclude the hyphen
-  // Keep part between hyphen1 and hyphen2
-  memcpy(temp, hyphen1 + 1, lenmid);
-  temp[lenmid] = '\0';
-  match = BinarySearch(temp, 0, kCodeToULScriptSize, kCodeToULScript);
-  if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // bb
-
-  // Keep part after hyphen2
-  memcpy(temp, hyphen2 + 1, len2);
-  temp[len2] = '\0';
-  match = BinarySearch(temp, 0, kCodeToULScriptSize, kCodeToULScript);
-  if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // cc
-
-  // Keep part before hyphen1
-  memcpy(temp, src, len);
-  temp[hyphen1_offset] = '\0';
-  match = BinarySearch(temp, 0, kCodeToULScriptSize, kCodeToULScript);
-  if (match >= 0) {return MakeULScr(kCodeToULScript[match].i);}    // aa
-
-  return ULScript_Latin;
-}
-
 // Map script into Latin, Cyrillic, Arabic, Other
 int LScript4(ULScript ulscript) {
   if (ulscript == ULScript_Latin) {return 0;}
@@ -530,4 +274,3 @@ int LScript4(ULScript ulscript) {
 }
 
 }  // namespace CLD2
-

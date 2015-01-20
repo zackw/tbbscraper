@@ -34,10 +34,8 @@
 // ULScriptCode(ULScript ulscript) result as character strings.
 //
 // The Unicode scripts recognized by CLD2 are numbered almost arbitrarily,
-// specified in an enum. Each script has human-readable script name and a
-// 4-letter ISO 15924 script code. Each has a C name (largely for use by
-// programs that generate declarations in cld2_generated_scripts.h). Each
-// also has a recognition type
+// specified in an enum. Each has a recognition type
+//
 //  r_type: 0 script-only, 1 nilgrams, 2 quadgrams, 3 CJK
 //
 // The declarations for a particular version of Unicode are machine-generated in
@@ -75,14 +73,7 @@ namespace CLD2 {
 
 // If the input is out of range or otherwise unrecognized, it is treated
 // as ULScript_Common (which never participates in language recognition)
-const char* ULScriptName(ULScript ulscript);
-const char* ULScriptCode(ULScript ulscript);
-const char* ULScriptDeclaredName(ULScript ulscript);
 ULScriptRType ULScriptRecognitionType(ULScript ulscript);
-
-// Name can be either full name or ISO code, or can be ISO code embedded in
-// a language-script combination such as "en-Latn-GB"
-ULScript GetULScriptFromName(const char* src);
 
 // Map script into Latin, Cyrillic, Arabic, Other
 int LScript4(ULScript ulscript);
@@ -93,9 +84,7 @@ int LScript4(ULScript ulscript);
 
 // The languages recognized by CLD2 are numbered almost arbitrarily,
 // specified in an enum. Each language has human-readable language name and a
-// 2- or 3-letter ISO 639 language code. Each has a C name (largely for use by
-// programs that generate declarations in cld2_generated_languagess.h).
-// Each has a list of up to four scripts in which it is currently recognized.
+// 2- or 3-letter ISO 639 language code.
 //
 // The declarations for a particular set of recognized languages are
 // machine-generated in
@@ -129,12 +118,6 @@ int LScript4(ULScript ulscript);
 
 const char* LanguageName(Language lang);
 const char* LanguageCode(Language lang);
-const char* LanguageShortCode(Language lang);
-const char* LanguageDeclaredName(Language lang);
-
-// Name can be either full name or ISO code, or can be ISO code embedded in
-// a language-script combination such as "en-Latn-GB"
-Language GetLanguageFromName(const char* src);
 
 // Returns which set of statistically-close languages lang is in. 0 means none.
 int LanguageCloseSet(Language lang);

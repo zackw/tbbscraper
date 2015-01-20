@@ -25,9 +25,6 @@
 
 namespace CLD2 {
 
-typedef uint16_t FourScripts[4];
-typedef struct {const char* s; int i;} CharIntPair;
-
 typedef enum {
   ENGLISH                      = 0,  // en
   DANISH                       = 1,  // da
