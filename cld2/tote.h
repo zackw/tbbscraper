@@ -67,7 +67,6 @@ class DocTote {
  public:
   DocTote();
   ~DocTote();
-  void Reinit();
   void Add(uint16_t ikey, int ibytes, int score, int ireliability);
   int Find(uint16_t ikey);
   void AddClosePair(int subscr, int val) {closepair_[subscr] += val;}

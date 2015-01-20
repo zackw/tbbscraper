@@ -28,9 +28,11 @@ namespace CLD2 {
 class ScriptScanner {
  public:
   ScriptScanner(const char* buffer, std::size_t buffer_length);
-  ScriptScanner(const char* buffer, std::size_t buffer_length,
-                bool any_text, bool any_script);
-  ~ScriptScanner();
+  ~ScriptScanner()
+    {
+      delete[] script_buffer_;
+      delete[] script_buffer_lower_;
+    }
 
   // Copy next run of same-script non-tag letters to buffer [NUL terminated]
   // Force Latin and Cyrillic scripts to be lowercase
@@ -44,37 +46,15 @@ class ScriptScanner {
   // Force Latin and Cyrillic scripts to be lowercase
   void LowerScriptSpan(LangSpan* span);
 
-  // Maps byte offset in most recent GetOneScriptSpan/Lower
-  // span->text [0..text_bytes] into an additional byte offset from
-  // span->offset, to get back to corresponding text in the original
-  // input buffer.
-  // text_offset must be the first byte
-  // of a UTF-8 character, or just beyond the last character. Normally this
-  // routine is called with the first byte of an interesting range and
-  // again with the first byte of the following range.
-  int MapBack(int text_offset);
-
-  // Copy next run of non-tag characters to buffer [NUL terminated]
-  // This just removes tags and removes entities
-  // Buffer has leading space
-  bool GetOneTextSpan(LangSpan* span);
-
   // Skip over tags and non-letters
   int SkipToFrontOfSpan(const char* src, int len, int* script);
 
   const char* start_byte_;        // Starting byte of buffer to scan
   const char* next_byte_;         // First unscanned byte
-  const char* next_byte_limit_;   // Last byte + 1
   std::size_t byte_length_;       // Bytes left: next_byte_limit_ - next_byte_
 
   char* script_buffer_;           // Holds text with expanded entities
   char* script_buffer_lower_;     // Holds lowercased text
-  bool letters_marks_only_;       // To distinguish scriptspan of one
-                                  // letters/marks vs. any mixture of text
-  bool one_script_only_;          // To distinguish scriptspan of one
-                                  // script vs. any mixture of scripts
-  int exit_state_;                // For tag parser kTagParseTbl_0, based
-                                  // on letters_marks_only_
 };
 
 }  // namespace CLD2

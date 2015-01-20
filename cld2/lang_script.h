@@ -132,10 +132,6 @@ const char* LanguageCode(Language lang);
 const char* LanguageShortCode(Language lang);
 const char* LanguageDeclaredName(Language lang);
 
-// n is in 0..3. Trailing entries are filled with
-// ULScript_Common (which never participates in language recognition)
-ULScript LanguageRecognizedScript(Language lang, int n);
-
 // Name can be either full name or ISO code, or can be ISO code embedded in
 // a language-script combination such as "en-Latn-GB"
 Language GetLanguageFromName(const char* src);
@@ -172,14 +168,6 @@ Language FromPerScriptNumber(ULScript ulscript, uint8_t perscript_number);
 
 bool IsLatnLanguage(Language lang);
 bool IsOthrLanguage(Language lang);
-
-
-//----------------------------------------------------------------------------//
-// Other                                                                      //
-//----------------------------------------------------------------------------//
-
-// Utility routine to search alphabetical tables
-int BinarySearch(const char* key, int lo, int hi, const CharIntPair* cipair);
 
 }  // namespace CLD2
 

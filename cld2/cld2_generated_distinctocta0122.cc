@@ -8301,7 +8301,6 @@ static const IndirectProbBucket4 kDistinctOcta0122[kDistinctOcta0122Size] = {
 
 static const uint32_t kDistinctOcta0122SizeOne = 98; // Bucket count one-lang
 static const uint32_t kDistinctOcta0122IndSize = 98; // Largest subscript
-extern const uint32_t kDistinctOctaIndSize = kDistinctOcta0122IndSize; // Source-agnostic named constant
 static const uint32_t kDistinctOcta0122Ind[kDistinctOcta0122IndSize] = {
   // [0000]
   0x00000000, 0x00000000, 0x00001706, 0x00002a06,   // -- --  sr.un.un_400 bo.un.un_400
@@ -8346,38 +8345,6 @@ extern const CLD2TableSummary kDistinctOcta_obj = {
   kDistinctOcta0122SizeOne,
   kDistinctOcta0122Size,
   kDistinctOcta0122KeyMask,
-  kDistinctOcta0122BuildDate,
-  kDistinctOcta0122RecognizedLangScripts,
-};
-
-static const uint32_t kDistinctOcta0122_2Size = 0;    // Bucket count
-static const uint32_t kDistinctOcta0122_2KeyMask = 0xffffffff;    // Mask hash key
-
-// NOTE: Some compilers will not allow an array of structs to have a constant
-//       size of zero. Thus, we tell the code that the size is zero, but
-//       actually allocate a single element array that will never be read.
-//       More info: https://code.google.com/p/cld2/issues/detail?id=9
-static const IndirectProbBucket4 kDistinctOcta0122_2[1] = {
-  // hash_indirect[4], tokens[4] in UTF-8
-  {{0x00000000,0x00000000,0x00000000,0x00000000}} // UNUSED, see above!
-  };
-  // table_hash = ffff-ffff, unused_entries = 0 (0.00%)
-
-static const uint32_t kDistinctOcta0122_2SizeOne = 2; // Bucket count one-lang
-static const uint32_t kDistinctOcta0122_2IndSize = 2; // Largest subscript
-extern const uint32_t kDistinctOcta2IndSize = kDistinctOcta0122_2IndSize; // Source-agnostic named constant
-static const uint32_t kDistinctOcta0122_2Ind[kDistinctOcta0122_2IndSize] = {
-  // [0000] --- double_langprob_start=0002 ---
-  0x00000000, 0x00000000,                           // -- --
-                                                    //
-  };
-
-extern const CLD2TableSummary kDistinctOcta_obj2 = {
-  kDistinctOcta0122_2,
-  kDistinctOcta0122_2Ind,
-  kDistinctOcta0122_2SizeOne,
-  kDistinctOcta0122_2Size,
-  kDistinctOcta0122_2KeyMask,
   kDistinctOcta0122BuildDate,
   kDistinctOcta0122RecognizedLangScripts,
 };

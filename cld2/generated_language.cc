@@ -24,7 +24,7 @@
 namespace CLD2 {
 
 // Subscripted by enum Language
-extern const int kLanguageToNameSize = 614;
+static const int kLanguageToNameSize = 614;
 extern const char* const kLanguageToName[kLanguageToNameSize] = {
   "ENGLISH",               // 0 en
   "DANISH",                // 1 da
@@ -643,7 +643,7 @@ extern const char* const kLanguageToName[kLanguageToNameSize] = {
 };
 
 // Subscripted by enum Language
-extern const int kLanguageToCodeSize = 614;
+static const int kLanguageToCodeSize = 614;
 extern const char* const kLanguageToCode[kLanguageToCodeSize] = {
   "en",    // 0 ENGLISH
   "da",    // 1 DANISH
@@ -1262,7 +1262,7 @@ extern const char* const kLanguageToCode[kLanguageToCodeSize] = {
 };
 
 // Subscripted by enum Language
-extern const int kLanguageToCNameSize = 614;
+static const int kLanguageToCNameSize = 614;
 extern const char* const kLanguageToCName[kLanguageToCNameSize] = {
   "ENGLISH",               // 0 en
   "DANISH",                // 1 da
@@ -1881,7 +1881,7 @@ extern const char* const kLanguageToCName[kLanguageToCNameSize] = {
 };
 
 // Subscripted by enum Language
-extern const int kLanguageToScriptsSize = 614;
+static const int kLanguageToScriptsSize = 614;
 #define None ULScript_Common
 extern const FourScripts kLanguageToScripts[kLanguageToScriptsSize] = {
   {ULScript_Latin, None, None, None, },  // 0 en

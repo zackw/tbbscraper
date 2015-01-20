@@ -110,15 +110,6 @@ DocTote::DocTote() {
 DocTote::~DocTote() {
 }
 
-void DocTote::Reinit() {
-  // No need to initialize score_ or value_
-  incr_count_ = 0;
-  sorted_ = 0;
-  memset(closepair_, 0, sizeof(closepair_));
-  memset(key_, 0xFF, sizeof(key_));
-  runningscore_.Reinit();
-}
-
 // Weight reliability by ibytes
 // Also see three-way associative comments above for Tote
 void DocTote::Add(uint16_t ikey, int ibytes,

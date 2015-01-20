@@ -152,7 +152,7 @@ uint32_t BiHashV2(const char* word_ptr, int bytecount) {
 // OVERSHOOTS up to 3 bytes
 // For runtime use of tables
 // Does X86 unaligned loads
-uint32_t QuadHashV2Mix(const char* word_ptr, int bytecount, uint32_t prepost) {
+static uint32_t QuadHashV2Mix(const char* word_ptr, int bytecount, uint32_t prepost) {
   const uint32_t* word_ptr32 = reinterpret_cast<const uint32_t*>(word_ptr);
   uint32_t word0, word1, word2;
   if (bytecount <= 4) {
@@ -197,7 +197,7 @@ uint32_t QuadHashV2(const char* word_ptr, int bytecount) {
 // The high 8 bits are a simple sum of all bytes, shifted by 0/1/2/3 bits each
 // For runtime use of tables V3
 // Does X86 unaligned loads
-uint64_t OctaHash40Mix(const char* word_ptr, int bytecount, uint64_t prepost) {
+static uint64_t OctaHash40Mix(const char* word_ptr, int bytecount, uint64_t prepost) {
   const uint32_t* word_ptr32 = reinterpret_cast<const uint32_t*>(word_ptr);
   uint64_t word0;
   uint64_t word1;

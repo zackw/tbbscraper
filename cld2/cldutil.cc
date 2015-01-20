@@ -72,7 +72,7 @@ static const uint8_t kAdvanceOneCharSpaceVowel[256] = {
 
 // Used in both cldutil.cc and cldutil_shared.cc
 // Does not advance past space or tab/cr/lf/nul
-extern const uint8_t kAdvanceOneCharButSpace[256] = {
+static const uint8_t kAdvanceOneCharButSpace[256] = {
  0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
  0,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
  1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,

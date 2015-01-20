@@ -452,27 +452,6 @@ inline uint32_t OctaHashV3Lookup4(const CLD2TableSummary* gram_obj,
   return 0;
 }
 
-
-//----------------------------------------------------------------------------//
-// Finding groups of 1/2/4/8 letters                                          //
-//----------------------------------------------------------------------------//
-
-// Used in both cldutil.cc and cldutil_shared.cc
-// Does not advance past space or tab/cr/lf/nul
-extern const uint8_t kAdvanceOneCharButSpace[256];
-
-// src points to a letter. Find the byte length of a unigram starting there.
-int UniLen(const char* src);
-
-// src points to a letter. Find the byte length of a bigram starting there.
-int BiLen(const char* src);
-
-// src points to a letter. Find the byte length of a quadgram starting there.
-int QuadLen(const char* src);
-
-// src points to a letter. Find the byte length of an octagram starting there.
-int OctaLen(const char* src);
-
 }       // End namespace CLD2
 
 #endif  // I18N_ENCODINGS_CLD2_INTERNAL_NEW_CLDUTIL_SHARED_H__

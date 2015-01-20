@@ -24,7 +24,7 @@
 namespace CLD2 {
 
 // Subscripted by enum ULScript
-extern const int kULScriptToNameSize = 102;
+static const int kULScriptToNameSize = 102;
 extern const char* const kULScriptToName[kULScriptToNameSize] = {
   "Common",                // 0 Zyyy
   "Latin",                 // 1 Latn
@@ -131,7 +131,7 @@ extern const char* const kULScriptToName[kULScriptToNameSize] = {
 };
 
 // Subscripted by enum ULScript
-extern const int kULScriptToCodeSize = 102;
+static const int kULScriptToCodeSize = 102;
 extern const char* const kULScriptToCode[kULScriptToCodeSize] = {
   "Zyyy",  // 0 Common
   "Latn",  // 1 Latin
@@ -238,7 +238,7 @@ extern const char* const kULScriptToCode[kULScriptToCodeSize] = {
 };
 
 // Subscripted by enum ULScript
-extern const int kULScriptToCNameSize = 102;
+static const int kULScriptToCNameSize = 102;
 extern const char* const kULScriptToCName[kULScriptToCNameSize] = {
   "ULScript_Common",       // 0 Zyyy
   "ULScript_Latin",        // 1 Latn
@@ -345,7 +345,7 @@ extern const char* const kULScriptToCName[kULScriptToCNameSize] = {
 };
 
 // Subscripted by enum ULScript
-extern const int kULScriptToRtypeSize = 102;
+static const int kULScriptToRtypeSize = 102;
 extern const ULScriptRType kULScriptToRtype[kULScriptToRtypeSize] = {
   RTypeNone,   // 0 Zyyy
   RTypeMany,   // 1 Latn
@@ -452,7 +452,7 @@ extern const ULScriptRType kULScriptToRtype[kULScriptToRtypeSize] = {
 };
 
 // Subscripted by enum ULScript
-extern const int kULScriptToDefaultLangSize = 102;
+static const int kULScriptToDefaultLangSize = 102;
 extern const Language kULScriptToDefaultLang[kULScriptToDefaultLangSize] = {
   X_Common,              // 0 Zyyy RTypeNone
   ENGLISH,               // 1 Latn RTypeMany
@@ -670,7 +670,7 @@ extern const CharIntPair kNameToULScript[kNameToULScriptSize] = {
 
 // Alphabetical order for binary search
 extern const int kCodeToULScriptSize = 105;
-extern const CharIntPair kCodeToULScript[kNameToULScriptSize] = {
+extern const CharIntPair kCodeToULScript[kCodeToULScriptSize] = {
   {"Arab",   6},  // Arab
   {"Armi",  86},  // Armi
   {"Armn",   4},  // Armn

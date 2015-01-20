@@ -8254,7 +8254,7 @@ static const IndirectProbBucket4 kCjkDeltaBi[kCjkDeltaBiSize] = {
   };
 
 static const uint32_t kCjkDeltaBiSizeOne = 33;       // One-langprob count
-extern const uint32_t kCjkDeltaBiIndSize = 33;       // Largest subscript
+static const uint32_t kCjkDeltaBiIndSize = 33;       // Largest subscript
 static const uint32_t kCjkDeltaBiInd[kCjkDeltaBiIndSize] = {
   // [0000]
   0x00000000, 0x00001d2d, 0x00001d1c, 0x00000000,

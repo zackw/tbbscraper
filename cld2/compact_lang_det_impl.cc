@@ -332,7 +332,7 @@ inline bool FlagBestEffort(int flags) {
 // Backscan to word boundary, returning how many bytes n to go back
 // so that src - n is non-space ans src - n - 1 is space.
 // If not found in kMaxSpaceScan bytes, return 0..3 to a clean UTF-8 boundary
-int BackscanToSpace(const char* src, int limit) {
+static int BackscanToSpace(const char* src, int limit) {
   int n = 0;
   limit = minint(limit, kMaxSpaceScan);
   while (n < limit) {
@@ -350,7 +350,7 @@ int BackscanToSpace(const char* src, int limit) {
 // Forwardscan to word boundary, returning how many bytes n to go forward
 // so that src + n is non-space ans src + n - 1 is space.
 // If not found in kMaxSpaceScan bytes, return 0..3 to a clean UTF-8 boundary
-int ForwardscanToSpace(const char* src, int limit) {
+static int ForwardscanToSpace(const char* src, int limit) {
   int n = 0;
   limit = minint(limit, kMaxSpaceScan);
   while (n < limit) {
@@ -382,7 +382,7 @@ int ForwardscanToSpace(const char* src, int limit) {
 
 // TODO(dsites) make this use just one byte per UTF-8 char and incr by charlen
 
-int CountPredictedBytes(const char* isrc, int src_len, int* hash, int* tbl) {
+static int CountPredictedBytes(const char* isrc, int src_len, int* hash, int* tbl) {
   int p_count = 0;
   const uint8_t* src = reinterpret_cast<const uint8_t*>(isrc);
   const uint8_t* srclimit = src + src_len;
@@ -427,7 +427,7 @@ int CountPredictedBytes(const char* isrc, int src_len, int* hash, int* tbl) {
 
 // Counts number of spaces; a little faster than one-at-a-time
 // Doesn't count odd bytes at end
-int CountSpaces4(const char* src, int src_len) {
+static int CountSpaces4(const char* src, int src_len) {
   int s_count = 0;
   for (int i = 0; i < (src_len & ~3); i += 4) {
     s_count += (src[i] == ' ');
@@ -451,7 +451,7 @@ int CountSpaces4(const char* src, int src_len) {
 // Result Buffer ALWAYS has leading space and trailing space space space NUL,
 // if input does
 //
-int CheapRepWordsInplace(char* isrc, int src_len, int* hash, int* tbl) {
+static int CheapRepWordsInplace(char* isrc, int src_len, int* hash, int* tbl) {
   const uint8_t* src = reinterpret_cast<const uint8_t*>(isrc);
   const uint8_t* srclimit = src + src_len;
   char* dst = isrc;
@@ -539,9 +539,9 @@ int CheapRepWordsInplace(char* isrc, int src_len, int* hash, int* tbl) {
 // Result Buffer ALWAYS has leading space and trailing space space space NUL,
 // if input does
 //
-int CheapSqueezeInplace(char* isrc,
-                                            int src_len,
-                                            int ichunksize) {
+static int CheapSqueezeInplace(char* isrc,
+                               int src_len,
+                               int ichunksize) {
   char* src = isrc;
   char* dst = src;
   char* srclimit = src + src_len;
@@ -625,7 +625,7 @@ int CheapSqueezeInplace(char* isrc,
 //  Jammed byte-only both = 120 MB/sec
 //  Back to original w/slight updates, 110 MB/sec
 //
-bool CheapSqueezeTriggerTest(const char* src, int src_len, int testsize) {
+static bool CheapSqueezeTriggerTest(const char* src, int src_len, int testsize) {
   // Don't trigger at all on short text
   if (src_len < testsize) {return false;}
   int space_thresh = (testsize * kSpacesTriggerPercent) / 100;
@@ -659,7 +659,7 @@ static const int kMinReliableKeepPercent = 41;  // Remove lang if reli < this
 // little text like ej1 ej2 ej3 ej4
 // maybe fold this back in earlier
 //
-void RemoveUnreliableLanguages(DocTote* doc_tote) {
+static void RemoveUnreliableLanguages(DocTote* doc_tote) {
   // Prepass to merge some low-reliablility languages
   // TODO: this shouldn't really reach in to the internal structure of doc_tote
   for (int sub = 0; sub < doc_tote->MaxSize(); ++sub) {
@@ -738,7 +738,7 @@ void RemoveUnreliableLanguages(DocTote* doc_tote) {
 
 
 // Move all the text bytes from lower byte-count to higher one
-void MoveLang1ToLang2(int lang1_sub, int lang2_sub, DocTote* doc_tote) {
+static void MoveLang1ToLang2(int lang1_sub, int lang2_sub, DocTote* doc_tote) {
   // In doc_tote, move all the bytes lang1 => lang2
   int sum = doc_tote->Value(lang2_sub) + doc_tote->Value(lang1_sub);
   doc_tote->SetValue(lang2_sub, sum);
@@ -755,7 +755,7 @@ void MoveLang1ToLang2(int lang1_sub, int lang2_sub, DocTote* doc_tote) {
 
 // Move less likely byte count to more likely for close pairs of languages
 // If given, also update resultchunkvector
-void RefineScoredClosePairs(DocTote* doc_tote) {
+static void RefineScoredClosePairs(DocTote* doc_tote) {
   for (int sub = 0; sub < doc_tote->MaxSize(); ++sub) {
     int close_packedlang = doc_tote->Key(sub);
     int subscr = LanguageCloseSet(static_cast<Language>(close_packedlang));
@@ -786,16 +786,16 @@ void RefineScoredClosePairs(DocTote* doc_tote) {
 }
 
 // Return internal probability score (sum) per 1024 bytes
-double GetNormalizedScore(int bytecount, int score) {
+static double GetNormalizedScore(int bytecount, int score) {
   if (bytecount <= 0) {return 0.0;}
   return (score << 10) / double(bytecount);
 }
 
 // Extract return values before fixups
-void ExtractLangEtc(DocTote* doc_tote, int total_text_bytes,
-                    int* reliable_percent3, Language* language3, int* percent3,
-                    double*  normalized_score3,
-                    int* text_bytes, bool* is_reliable) {
+static void ExtractLangEtc(DocTote* doc_tote, int total_text_bytes,
+                           int* reliable_percent3, Language* language3, int* percent3,
+                           double*  normalized_score3,
+                           int* text_bytes, bool* is_reliable) {
   reliable_percent3[0] = 0;
   reliable_percent3[1] = 0;
   reliable_percent3[2] = 0;
@@ -893,7 +893,7 @@ void ExtractLangEtc(DocTote* doc_tote, int total_text_bytes,
   }
 }
 
-bool IsFIGS(Language lang) {
+static bool IsFIGS(Language lang) {
   if (lang == FRENCH) {return true;}
   if (lang == ITALIAN) {return true;}
   if (lang == GERMAN) {return true;}
@@ -901,7 +901,7 @@ bool IsFIGS(Language lang) {
   return false;
 }
 
-bool IsEFIGS(Language lang) {
+static bool IsEFIGS(Language lang) {
   if (lang == ENGLISH) {return true;}
   if (lang == FRENCH) {return true;}
   if (lang == ITALIAN) {return true;}
@@ -920,11 +920,11 @@ static const int kGoodSecondT1T2MinBytes = 15;        // <this => no second
 // reliable_percent3[] is currently unused
 //
 // Do not return Tier3 second language unless there are at least 128 bytes
-void CalcSummaryLang(int total_text_bytes,
-                     const Language* language3,
-                     const int* percent3,
-                     Language* summary_lang, bool* is_reliable,
-                     int flags) {
+static void CalcSummaryLang(int total_text_bytes,
+                            const Language* language3,
+                            const int* percent3,
+                            Language* summary_lang, bool* is_reliable,
+                            int flags) {
   // Vector of active languages; changes if we delete some
   int slot_count = 3;
   int active_slot[3] = {0, 1, 2};
@@ -1019,8 +1019,8 @@ void CalcSummaryLang(int total_text_bytes,
   }
 }
 
-void AddLangPriorBoost(Language lang, uint32_t langprob,
-                       ScoringContext* scoringcontext) {
+static void AddLangPriorBoost(Language lang, uint32_t langprob,
+                              ScoringContext* scoringcontext) {
   // This is called 0..n times with language hints
   // but we don't know the script -- so boost either or both Latn, Othr.
 
@@ -1040,8 +1040,8 @@ void AddLangPriorBoost(Language lang, uint32_t langprob,
 
 }
 
-void AddOneWhack(Language whacker_lang, Language whackee_lang,
-                 ScoringContext* scoringcontext) {
+static void AddOneWhack(Language whacker_lang, Language whackee_lang,
+                        ScoringContext* scoringcontext) {
   uint32_t langprob = MakeLangProb(whackee_lang, 1);
   // This logic avoids hr-Latn whacking sr-Cyrl, but still whacks sr-Latn
   if (IsLatnLanguage(whacker_lang) && IsLatnLanguage(whackee_lang)) {
@@ -1058,7 +1058,7 @@ void AddOneWhack(Language whacker_lang, Language whackee_lang,
  }
 }
 
-void AddCloseLangWhack(Language lang, ScoringContext* scoringcontext) {
+static void AddCloseLangWhack(Language lang, ScoringContext* scoringcontext) {
   // We do not in general want zh-Hans and zh-Hant to be close pairs,
   // but we do here.
   if (lang == CLD2::CHINESE) {
@@ -1082,8 +1082,8 @@ void AddCloseLangWhack(Language lang, ScoringContext* scoringcontext) {
 }
 
 
-void ApplyHints(const CLDHints* cld_hints,
-                ScoringContext* scoringcontext) {
+static void ApplyHints(const CLDHints* cld_hints,
+                       ScoringContext* scoringcontext) {
   CLDLangPriors lang_priors;
   InitCLDLangPriors(&lang_priors);
 

@@ -228,15 +228,6 @@ const char* LanguageDeclaredName(Language lang) {
   return kLanguageToCName[i_lang];
 }
 
-// n is in 0..3. Trailing entries are filled with
-// UNKNOWN_LANGUAGE (which never participates in language recognition)
-ULScript LanguageRecognizedScript(Language lang, int n) {
-  int i_lang = lang;
-  if (i_lang < 0) {i_lang = UNKNOWN_LANGUAGE;}
-  if (i_lang >= NUM_LANGUAGES) {i_lang = UNKNOWN_LANGUAGE;}
-  return static_cast<ULScript>(kLanguageToScripts[i_lang][n]);
-}
-
 extern const int kCloseSetSize = 10;
 
 // Returns which set of statistically-close languages lang is in. 0 means none.
@@ -340,7 +331,7 @@ bool IsOthrLanguage(Language lang) {
 //----------------------------------------------------------------------------//
 
 // Returns mid if key found in lo <= mid < hi, else -1
-int BinarySearch(const char* key, int lo, int hi, const CharIntPair* cipair) {
+static int BinarySearch(const char* key, int lo, int hi, const CharIntPair* cipair) {
   // binary search
   while (lo < hi) {
     int mid = (lo + hi) >> 1;
@@ -355,7 +346,7 @@ int BinarySearch(const char* key, int lo, int hi, const CharIntPair* cipair) {
   return -1;
 }
 
-Language MakeLang(int i) {return static_cast<Language>(i);}
+inline Language MakeLang(int i) {return static_cast<Language>(i);}
 
 // Name can be either full name or ISO code, or can be ISO code embedded in
 // a language-script combination such as "ABKHAZIAN", "en", "en-Latn-GB"
@@ -441,7 +432,7 @@ Language GetLanguageFromName(const char* src) {
 //   if (strcmp(src, "nd") == 0) {return NDEBELE;}         // [nd was wrong]
 //   if (strcmp(src, "sit-NP-Limb") == 0) {return ULScript_Limbu;}
 
-ULScript MakeULScr(int i) {return static_cast<ULScript>(i);}
+inline ULScript MakeULScr(int i) {return static_cast<ULScript>(i);}
 
 ULScript GetULScriptFromName(const char* src) {
   const char* hyphen1 = strchr(src, '-');

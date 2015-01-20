@@ -37,8 +37,6 @@ static const int kMaxScriptLowerBuffer = (kMaxScriptBuffer * 3) / 2;
 static const int kMaxScriptBytes = kMaxScriptBuffer - 32;   // Leave some room
 static const int kWithinScriptTail = 32;    // Stop at word space in last
                                             // N bytes of script buffer
-static const int kMaxExitStateLettersMarksOnly = 1;
-static const int kMaxExitStateAllText = 2;
 
 enum
 {
@@ -71,36 +69,11 @@ static int GetUTF8LetterScriptNum(const char* src) {
 ScriptScanner::ScriptScanner(const char* buffer,
                              std::size_t buffer_length)
   : start_byte_(buffer),
-  next_byte_(buffer),
-  next_byte_limit_(buffer + buffer_length),
-  byte_length_(buffer_length),
-  letters_marks_only_(true),
-  one_script_only_(true),
-  exit_state_(kMaxExitStateLettersMarksOnly) {
+    next_byte_(buffer),
+    byte_length_(buffer_length)
+{
     script_buffer_ = new char[kMaxScriptBuffer];
     script_buffer_lower_ = new char[kMaxScriptLowerBuffer];
-}
-
-// Extended version to allow spans of any non-tag text and spans of mixed script
-ScriptScanner::ScriptScanner(const char* buffer,
-                             std::size_t buffer_length,
-                             bool any_text,
-                             bool any_script)
-  : start_byte_(buffer),
-  next_byte_(buffer),
-  next_byte_limit_(buffer + buffer_length),
-  byte_length_(buffer_length),
-  letters_marks_only_(!any_text),
-  one_script_only_(!any_script),
-  exit_state_(any_text ? kMaxExitStateAllText : kMaxExitStateLettersMarksOnly) {
-    script_buffer_ = new char[kMaxScriptBuffer];
-    script_buffer_lower_ = new char[kMaxScriptLowerBuffer];
-}
-
-
-ScriptScanner::~ScriptScanner() {
-  delete[] script_buffer_;
-  delete[] script_buffer_lower_;
 }
 
 // Get to the first real letter
@@ -140,104 +113,14 @@ inline bool WS(char c) {
   return (c == ' ') || (c == '\n');
 }
 
-// Canonical CR or LF
-static const char LF = '\n';
-
-
 // The naive loop scans from next_byte_ to script_buffer_ until full.
 // But this can leave an awkward hard-to-identify short fragment at the
 // end of the input. We would prefer to make the next-to-last fragment
 // shorter and the last fragment longer.
 
-// Copy next run of non-tag characters to buffer [NUL terminated]
-// This just replaces tags with space or \n and removes entities.
-// Tags <br> <p> and <tr> are replaced with \n. Non-letter sequences
-// including \r or \n are replaced by \n. All other tags and skipped text
-// are replaced with ASCII space.
-//
-// Buffer ALWAYS has leading space and trailing space space space NUL
-bool ScriptScanner::GetOneTextSpan(LangSpan* span) {
-  span->text = script_buffer_;
-  span->text_bytes = 0;
-  span->offset = next_byte_ - start_byte_;
-  span->ulscript = UNKNOWN_ULSCRIPT;
-  span->lang = UNKNOWN_LANGUAGE;
-  span->truncated = false;
-
-  int put_soft_limit = kMaxScriptBytes - kWithinScriptTail;
-  if ((kMaxScriptBytes <= byte_length_) &&
-      (byte_length_ < (2 * kMaxScriptBytes))) {
-    // Try to split the last two fragments in half
-    put_soft_limit = byte_length_ / 2;
-  }
-
-  script_buffer_[0] = ' ';  // Always a space at front of output
-  script_buffer_[1] = '\0';
-  std::size_t take = 0;
-  int put = 1;              // Start after the initial space
-
-  if (byte_length_ == 0) {
-    return false;          // No more text to be found
-  }
-
-  // Go over alternating spans of text and tags,
-  // copying letters to buffer with single spaces for each run of non-letters
-  bool last_byte_was_space = false;
-  while (take < byte_length_) {
-    char c = next_byte_[take];
-    if (c == '\r') {c = LF;}      // Canonical CR or LF
-    if (c == '\n') {c = LF;}      // Canonical CR or LF
-
-    // Copy one byte, compressing spaces
-    if (!last_byte_was_space || !WS(c)) {
-      script_buffer_[put++] = c;      // Advance dest
-      last_byte_was_space = WS(c);
-    }
-    ++take;                         // Advance source
-
-    if (WS(c) &&
-        (put >= put_soft_limit)) {
-      // Buffer is almost full
-      span->truncated = true;
-      break;
-    }
-    if (put >= kMaxScriptBytes) {
-      // Buffer is completely full
-      span->truncated = true;
-      break;
-    }
-  }
-
-  // Almost done. Back up to a character boundary if needed
-  while ((0 < take) && ((next_byte_[take] & 0xc0) == 0x80)) {
-    // Back up over continuation byte
-    --take;
-    --put;
-  }
-
-  // Update input position
-  next_byte_ += take;
-  byte_length_ -= take;
-
-  // Put four more spaces/NUL. Worst case is abcd _ _ _ \0
-  //                          kMaxScriptBytes |   | put
-  script_buffer_[put + 0] = ' ';
-  script_buffer_[put + 1] = ' ';
-  script_buffer_[put + 2] = ' ';
-  script_buffer_[put + 3] = '\0';
-
-  span->text_bytes = put;       // Does not include the last four chars above
-  return true;
-}
-
-
 // Copy next run of same-script non-tag letters to buffer [NUL terminated]
 // Buffer ALWAYS has leading space and trailing space space space NUL
 bool ScriptScanner::GetOneScriptSpan(LangSpan* span) {
-  if (!letters_marks_only_) {
-    // Return non-tag text, including punctuation and digits
-    return GetOneTextSpan(span);
-  }
 
   span->text = script_buffer_;
   span->text_bytes = 0;
@@ -326,9 +209,7 @@ bool ScriptScanner::GetOneScriptSpan(LangSpan* span) {
           int sc2 = GetUTF8LetterScriptNum(next_byte_ + take + tlen);
           if ((sc2 != ULScript_Common) && (sc2 != spanscript)) {
             // We found a non-trivial change of script
-            if (one_script_only_) {
-              need_break = true;
-            }
+            need_break = true;
           }
         }
       }

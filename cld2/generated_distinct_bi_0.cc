@@ -33,7 +33,7 @@ static const IndirectProbBucket4 kDistinctBiTable[kDistinctBiTableSize] = {
 };
 
 static const uint32_t kDistinctBiTableSizeOne = 1;    // One-langprob count
-extern const uint32_t kDistinctBiTableIndSize = 1;       // Largest subscript
+static const uint32_t kDistinctBiTableIndSize = 1;       // Largest subscript
 static const uint32_t kDistinctBiTableInd[kDistinctBiTableIndSize] = {
   // [0000]
   0x00000000, };
