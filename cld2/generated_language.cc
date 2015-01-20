@@ -26,808 +26,814 @@ namespace CLD2 {
 // Subscripted by enum Language
 static const int kLanguageToNameSize = 614;
 extern const char* const kLanguageToName[kLanguageToNameSize] = {
-  "ENGLISH",               // 0 en
-  "DANISH",                // 1 da
-  "DUTCH",                 // 2 nl
-  "FINNISH",               // 3 fi
-  "FRENCH",                // 4 fr
-  "GERMAN",                // 5 de
-  "HEBREW",                // 6 iw
-  "ITALIAN",               // 7 it
-  "Japanese",              // 8 ja
-  "Korean",                // 9 ko
-  "NORWEGIAN",             // 10 no
-  "POLISH",                // 11 pl
-  "PORTUGUESE",            // 12 pt
-  "RUSSIAN",               // 13 ru
-  "SPANISH",               // 14 es
-  "SWEDISH",               // 15 sv
-  "Chinese",               // 16 zh
-  "CZECH",                 // 17 cs
-  "GREEK",                 // 18 el
-  "ICELANDIC",             // 19 is
-  "LATVIAN",               // 20 lv
-  "LITHUANIAN",            // 21 lt
-  "ROMANIAN",              // 22 ro
-  "HUNGARIAN",             // 23 hu
-  "ESTONIAN",              // 24 et
-  "Ignore",                // 25 xxx
-  "Unknown",               // 26 un
-  "BULGARIAN",             // 27 bg
-  "CROATIAN",              // 28 hr
-  "SERBIAN",               // 29 sr
-  "IRISH",                 // 30 ga
-  "GALICIAN",              // 31 gl
-  "TAGALOG",               // 32 tl
-  "TURKISH",               // 33 tr
-  "UKRAINIAN",             // 34 uk
-  "HINDI",                 // 35 hi
-  "MACEDONIAN",            // 36 mk
-  "BENGALI",               // 37 bn
-  "INDONESIAN",            // 38 id
-  "LATIN",                 // 39 la
-  "MALAY",                 // 40 ms
-  "MALAYALAM",             // 41 ml
-  "WELSH",                 // 42 cy
-  "NEPALI",                // 43 ne
-  "TELUGU",                // 44 te
-  "ALBANIAN",              // 45 sq
-  "TAMIL",                 // 46 ta
-  "BELARUSIAN",            // 47 be
-  "JAVANESE",              // 48 jw
-  "OCCITAN",               // 49 oc
-  "URDU",                  // 50 ur
-  "BIHARI",                // 51 bh
-  "GUJARATI",              // 52 gu
-  "THAI",                  // 53 th
-  "ARABIC",                // 54 ar
-  "CATALAN",               // 55 ca
-  "ESPERANTO",             // 56 eo
-  "BASQUE",                // 57 eu
-  "INTERLINGUA",           // 58 ia
-  "KANNADA",               // 59 kn
-  "PUNJABI",               // 60 pa
-  "SCOTS_GAELIC",          // 61 gd
-  "SWAHILI",               // 62 sw
-  "SLOVENIAN",             // 63 sl
-  "MARATHI",               // 64 mr
-  "MALTESE",               // 65 mt
-  "VIETNAMESE",            // 66 vi
-  "FRISIAN",               // 67 fy
-  "SLOVAK",                // 68 sk
-  "ChineseT",              // 69 zh-Hant
-  "FAROESE",               // 70 fo
-  "SUNDANESE",             // 71 su
-  "UZBEK",                 // 72 uz
-  "AMHARIC",               // 73 am
-  "AZERBAIJANI",           // 74 az
-  "GEORGIAN",              // 75 ka
-  "TIGRINYA",              // 76 ti
-  "PERSIAN",               // 77 fa
-  "BOSNIAN",               // 78 bs
-  "SINHALESE",             // 79 si
-  "NORWEGIAN_N",           // 80 nn
-  "81",                    // 81
-  "82",                    // 82
-  "XHOSA",                 // 83 xh
-  "ZULU",                  // 84 zu
-  "GUARANI",               // 85 gn
-  "SESOTHO",               // 86 st
-  "TURKMEN",               // 87 tk
-  "KYRGYZ",                // 88 ky
-  "BRETON",                // 89 br
-  "TWI",                   // 90 tw
-  "YIDDISH",               // 91 yi
-  "92",                    // 92
-  "SOMALI",                // 93 so
-  "UIGHUR",                // 94 ug
-  "KURDISH",               // 95 ku
-  "MONGOLIAN",             // 96 mn
-  "ARMENIAN",              // 97 hy
-  "LAOTHIAN",              // 98 lo
-  "SINDHI",                // 99 sd
-  "RHAETO_ROMANCE",        // 100 rm
-  "AFRIKAANS",             // 101 af
-  "LUXEMBOURGISH",         // 102 lb
-  "BURMESE",               // 103 my
-  "KHMER",                 // 104 km
-  "TIBETAN",               // 105 bo
-  "DHIVEHI",               // 106 dv
-  "CHEROKEE",              // 107 chr
-  "SYRIAC",                // 108 syr
-  "LIMBU",                 // 109 lif
-  "ORIYA",                 // 110 or
-  "ASSAMESE",              // 111 as
-  "CORSICAN",              // 112 co
-  "INTERLINGUE",           // 113 ie
-  "KAZAKH",                // 114 kk
-  "LINGALA",               // 115 ln
-  "116",                   // 116
-  "PASHTO",                // 117 ps
-  "QUECHUA",               // 118 qu
-  "SHONA",                 // 119 sn
-  "TAJIK",                 // 120 tg
-  "TATAR",                 // 121 tt
-  "TONGA",                 // 122 to
-  "YORUBA",                // 123 yo
-  "124",                   // 124
-  "125",                   // 125
-  "126",                   // 126
-  "127",                   // 127
-  "MAORI",                 // 128 mi
-  "WOLOF",                 // 129 wo
-  "ABKHAZIAN",             // 130 ab
-  "AFAR",                  // 131 aa
-  "AYMARA",                // 132 ay
-  "BASHKIR",               // 133 ba
-  "BISLAMA",               // 134 bi
-  "DZONGKHA",              // 135 dz
-  "FIJIAN",                // 136 fj
-  "GREENLANDIC",           // 137 kl
-  "HAUSA",                 // 138 ha
-  "HAITIAN_CREOLE",        // 139 ht
-  "INUPIAK",               // 140 ik
-  "INUKTITUT",             // 141 iu
-  "KASHMIRI",              // 142 ks
-  "KINYARWANDA",           // 143 rw
-  "MALAGASY",              // 144 mg
-  "NAURU",                 // 145 na
-  "OROMO",                 // 146 om
-  "RUNDI",                 // 147 rn
-  "SAMOAN",                // 148 sm
-  "SANGO",                 // 149 sg
-  "SANSKRIT",              // 150 sa
-  "SISWANT",               // 151 ss
-  "TSONGA",                // 152 ts
-  "TSWANA",                // 153 tn
-  "VOLAPUK",               // 154 vo
-  "ZHUANG",                // 155 za
-  "KHASI",                 // 156 kha
-  "SCOTS",                 // 157 sco
-  "GANDA",                 // 158 lg
-  "MANX",                  // 159 gv
-  "MONTENEGRIN",           // 160 sr-ME
-  "AKAN",                  // 161 ak
-  "IGBO",                  // 162 ig
-  "MAURITIAN_CREOLE",      // 163 mfe
-  "HAWAIIAN",              // 164 haw
-  "CEBUANO",               // 165 ceb
-  "EWE",                   // 166 ee
-  "GA",                    // 167 gaa
-  "HMONG",                 // 168 hmn
-  "KRIO",                  // 169 kri
-  "LOZI",                  // 170 loz
-  "LUBA_LULUA",            // 171 lua
-  "LUO_KENYA_AND_TANZANIA",  // 172 luo
-  "NEWARI",                // 173 new
-  "NYANJA",                // 174 ny
-  "OSSETIAN",              // 175 os
-  "PAMPANGA",              // 176 pam
-  "PEDI",                  // 177 nso
-  "RAJASTHANI",            // 178 raj
-  "SESELWA",               // 179 crs
-  "TUMBUKA",               // 180 tum
-  "VENDA",                 // 181 ve
-  "WARAY_PHILIPPINES",     // 182 war
-  "183",                   // 183
-  "184",                   // 184
-  "185",                   // 185
-  "186",                   // 186
-  "187",                   // 187
-  "188",                   // 188
-  "189",                   // 189
-  "190",                   // 190
-  "191",                   // 191
-  "192",                   // 192
-  "193",                   // 193
-  "194",                   // 194
-  "195",                   // 195
-  "196",                   // 196
-  "197",                   // 197
-  "198",                   // 198
-  "199",                   // 199
-  "200",                   // 200
-  "201",                   // 201
-  "202",                   // 202
-  "203",                   // 203
-  "204",                   // 204
-  "205",                   // 205
-  "206",                   // 206
-  "207",                   // 207
-  "208",                   // 208
-  "209",                   // 209
-  "210",                   // 210
-  "211",                   // 211
-  "212",                   // 212
-  "213",                   // 213
-  "214",                   // 214
-  "215",                   // 215
-  "216",                   // 216
-  "217",                   // 217
-  "218",                   // 218
-  "219",                   // 219
-  "220",                   // 220
-  "221",                   // 221
-  "222",                   // 222
-  "223",                   // 223
-  "224",                   // 224
-  "225",                   // 225
-  "226",                   // 226
-  "227",                   // 227
-  "228",                   // 228
-  "229",                   // 229
-  "230",                   // 230
-  "231",                   // 231
-  "232",                   // 232
-  "233",                   // 233
-  "234",                   // 234
-  "235",                   // 235
-  "236",                   // 236
-  "237",                   // 237
-  "238",                   // 238
-  "239",                   // 239
-  "240",                   // 240
-  "241",                   // 241
-  "242",                   // 242
-  "243",                   // 243
-  "244",                   // 244
-  "245",                   // 245
-  "246",                   // 246
-  "247",                   // 247
-  "248",                   // 248
-  "249",                   // 249
-  "250",                   // 250
-  "251",                   // 251
-  "252",                   // 252
-  "253",                   // 253
-  "254",                   // 254
-  "255",                   // 255
-  "256",                   // 256
-  "257",                   // 257
-  "258",                   // 258
-  "259",                   // 259
-  "260",                   // 260
-  "261",                   // 261
-  "262",                   // 262
-  "263",                   // 263
-  "264",                   // 264
-  "265",                   // 265
-  "266",                   // 266
-  "267",                   // 267
-  "268",                   // 268
-  "269",                   // 269
-  "270",                   // 270
-  "271",                   // 271
-  "272",                   // 272
-  "273",                   // 273
-  "274",                   // 274
-  "275",                   // 275
-  "276",                   // 276
-  "277",                   // 277
-  "278",                   // 278
-  "279",                   // 279
-  "280",                   // 280
-  "281",                   // 281
-  "282",                   // 282
-  "283",                   // 283
-  "284",                   // 284
-  "285",                   // 285
-  "286",                   // 286
-  "287",                   // 287
-  "288",                   // 288
-  "289",                   // 289
-  "290",                   // 290
-  "291",                   // 291
-  "292",                   // 292
-  "293",                   // 293
-  "294",                   // 294
-  "295",                   // 295
-  "296",                   // 296
-  "297",                   // 297
-  "298",                   // 298
-  "299",                   // 299
-  "300",                   // 300
-  "301",                   // 301
-  "302",                   // 302
-  "303",                   // 303
-  "304",                   // 304
-  "305",                   // 305
-  "306",                   // 306
-  "307",                   // 307
-  "308",                   // 308
-  "309",                   // 309
-  "310",                   // 310
-  "311",                   // 311
-  "312",                   // 312
-  "313",                   // 313
-  "314",                   // 314
-  "315",                   // 315
-  "316",                   // 316
-  "317",                   // 317
-  "318",                   // 318
-  "319",                   // 319
-  "320",                   // 320
-  "321",                   // 321
-  "322",                   // 322
-  "323",                   // 323
-  "324",                   // 324
-  "325",                   // 325
-  "326",                   // 326
-  "327",                   // 327
-  "328",                   // 328
-  "329",                   // 329
-  "330",                   // 330
-  "331",                   // 331
-  "332",                   // 332
-  "333",                   // 333
-  "334",                   // 334
-  "335",                   // 335
-  "336",                   // 336
-  "337",                   // 337
-  "338",                   // 338
-  "339",                   // 339
-  "340",                   // 340
-  "341",                   // 341
-  "342",                   // 342
-  "343",                   // 343
-  "344",                   // 344
-  "345",                   // 345
-  "346",                   // 346
-  "347",                   // 347
-  "348",                   // 348
-  "349",                   // 349
-  "350",                   // 350
-  "351",                   // 351
-  "352",                   // 352
-  "353",                   // 353
-  "354",                   // 354
-  "355",                   // 355
-  "356",                   // 356
-  "357",                   // 357
-  "358",                   // 358
-  "359",                   // 359
-  "360",                   // 360
-  "361",                   // 361
-  "362",                   // 362
-  "363",                   // 363
-  "364",                   // 364
-  "365",                   // 365
-  "366",                   // 366
-  "367",                   // 367
-  "368",                   // 368
-  "369",                   // 369
-  "370",                   // 370
-  "371",                   // 371
-  "372",                   // 372
-  "373",                   // 373
-  "374",                   // 374
-  "375",                   // 375
-  "376",                   // 376
-  "377",                   // 377
-  "378",                   // 378
-  "379",                   // 379
-  "380",                   // 380
-  "381",                   // 381
-  "382",                   // 382
-  "383",                   // 383
-  "384",                   // 384
-  "385",                   // 385
-  "386",                   // 386
-  "387",                   // 387
-  "388",                   // 388
-  "389",                   // 389
-  "390",                   // 390
-  "391",                   // 391
-  "392",                   // 392
-  "393",                   // 393
-  "394",                   // 394
-  "395",                   // 395
-  "396",                   // 396
-  "397",                   // 397
-  "398",                   // 398
-  "399",                   // 399
-  "400",                   // 400
-  "401",                   // 401
-  "402",                   // 402
-  "403",                   // 403
-  "404",                   // 404
-  "405",                   // 405
-  "406",                   // 406
-  "407",                   // 407
-  "408",                   // 408
-  "409",                   // 409
-  "410",                   // 410
-  "411",                   // 411
-  "412",                   // 412
-  "413",                   // 413
-  "414",                   // 414
-  "415",                   // 415
-  "416",                   // 416
-  "417",                   // 417
-  "418",                   // 418
-  "419",                   // 419
-  "420",                   // 420
-  "421",                   // 421
-  "422",                   // 422
-  "423",                   // 423
-  "424",                   // 424
-  "425",                   // 425
-  "426",                   // 426
-  "427",                   // 427
-  "428",                   // 428
-  "429",                   // 429
-  "430",                   // 430
-  "431",                   // 431
-  "432",                   // 432
-  "433",                   // 433
-  "434",                   // 434
-  "435",                   // 435
-  "436",                   // 436
-  "437",                   // 437
-  "438",                   // 438
-  "439",                   // 439
-  "440",                   // 440
-  "441",                   // 441
-  "442",                   // 442
-  "443",                   // 443
-  "444",                   // 444
-  "445",                   // 445
-  "446",                   // 446
-  "447",                   // 447
-  "448",                   // 448
-  "449",                   // 449
-  "450",                   // 450
-  "451",                   // 451
-  "452",                   // 452
-  "453",                   // 453
-  "454",                   // 454
-  "455",                   // 455
-  "456",                   // 456
-  "457",                   // 457
-  "458",                   // 458
-  "459",                   // 459
-  "460",                   // 460
-  "461",                   // 461
-  "462",                   // 462
-  "463",                   // 463
-  "464",                   // 464
-  "465",                   // 465
-  "466",                   // 466
-  "467",                   // 467
-  "468",                   // 468
-  "469",                   // 469
-  "470",                   // 470
-  "471",                   // 471
-  "472",                   // 472
-  "473",                   // 473
-  "474",                   // 474
-  "475",                   // 475
-  "476",                   // 476
-  "477",                   // 477
-  "478",                   // 478
-  "479",                   // 479
-  "480",                   // 480
-  "481",                   // 481
-  "482",                   // 482
-  "483",                   // 483
-  "484",                   // 484
-  "485",                   // 485
-  "486",                   // 486
-  "487",                   // 487
-  "488",                   // 488
-  "489",                   // 489
-  "490",                   // 490
-  "491",                   // 491
-  "492",                   // 492
-  "493",                   // 493
-  "494",                   // 494
-  "495",                   // 495
-  "496",                   // 496
-  "497",                   // 497
-  "498",                   // 498
-  "499",                   // 499
-  "500",                   // 500
-  "501",                   // 501
-  "502",                   // 502
-  "503",                   // 503
-  "504",                   // 504
-  "505",                   // 505
-  "NDEBELE",               // 506 nr
-  "X_BORK_BORK_BORK",      // 507 zzb
-  "X_PIG_LATIN",           // 508 zzp
-  "X_HACKER",              // 509 zzh
-  "X_KLINGON",             // 510 tlh
-  "X_ELMER_FUDD",          // 511 zze
-  "X_Common",              // 512 xx-Zyyy
-  "X_Latin",               // 513 xx-Latn
-  "X_Greek",               // 514 xx-Grek
-  "X_Cyrillic",            // 515 xx-Cyrl
-  "X_Armenian",            // 516 xx-Armn
-  "X_Hebrew",              // 517 xx-Hebr
-  "X_Arabic",              // 518 xx-Arab
-  "X_Syriac",              // 519 xx-Syrc
-  "X_Thaana",              // 520 xx-Thaa
-  "X_Devanagari",          // 521 xx-Deva
-  "X_Bengali",             // 522 xx-Beng
-  "X_Gurmukhi",            // 523 xx-Guru
-  "X_Gujarati",            // 524 xx-Gujr
-  "X_Oriya",               // 525 xx-Orya
-  "X_Tamil",               // 526 xx-Taml
-  "X_Telugu",              // 527 xx-Telu
-  "X_Kannada",             // 528 xx-Knda
-  "X_Malayalam",           // 529 xx-Mlym
-  "X_Sinhala",             // 530 xx-Sinh
-  "X_Thai",                // 531 xx-Thai
-  "X_Lao",                 // 532 xx-Laoo
-  "X_Tibetan",             // 533 xx-Tibt
-  "X_Myanmar",             // 534 xx-Mymr
-  "X_Georgian",            // 535 xx-Geor
-  "X_Hangul",              // 536 xx-Hang
-  "X_Ethiopic",            // 537 xx-Ethi
-  "X_Cherokee",            // 538 xx-Cher
-  "X_Canadian_Aboriginal",  // 539 xx-Cans
-  "X_Ogham",               // 540 xx-Ogam
-  "X_Runic",               // 541 xx-Runr
-  "X_Khmer",               // 542 xx-Khmr
-  "X_Mongolian",           // 543 xx-Mong
-  "X_Hiragana",            // 544 xx-Hira
-  "X_Katakana",            // 545 xx-Kana
-  "X_Bopomofo",            // 546 xx-Bopo
-  "X_Han",                 // 547 xx-Hani
-  "X_Yi",                  // 548 xx-Yiii
-  "X_Old_Italic",          // 549 xx-Ital
-  "X_Gothic",              // 550 xx-Goth
-  "X_Deseret",             // 551 xx-Dsrt
-  "X_Inherited",           // 552 xx-Qaai
-  "X_Tagalog",             // 553 xx-Tglg
-  "X_Hanunoo",             // 554 xx-Hano
-  "X_Buhid",               // 555 xx-Buhd
-  "X_Tagbanwa",            // 556 xx-Tagb
-  "X_Limbu",               // 557 xx-Limb
-  "X_Tai_Le",              // 558 xx-Tale
-  "X_Linear_B",            // 559 xx-Linb
-  "X_Ugaritic",            // 560 xx-Ugar
-  "X_Shavian",             // 561 xx-Shaw
-  "X_Osmanya",             // 562 xx-Osma
-  "X_Cypriot",             // 563 xx-Cprt
-  "X_Braille",             // 564 xx-Brai
-  "X_Buginese",            // 565 xx-Bugi
-  "X_Coptic",              // 566 xx-Copt
-  "X_New_Tai_Lue",         // 567 xx-Talu
-  "X_Glagolitic",          // 568 xx-Glag
-  "X_Tifinagh",            // 569 xx-Tfng
-  "X_Syloti_Nagri",        // 570 xx-Sylo
-  "X_Old_Persian",         // 571 xx-Xpeo
-  "X_Kharoshthi",          // 572 xx-Khar
-  "X_Balinese",            // 573 xx-Bali
-  "X_Cuneiform",           // 574 xx-Xsux
-  "X_Phoenician",          // 575 xx-Phnx
-  "X_Phags_Pa",            // 576 xx-Phag
-  "X_Nko",                 // 577 xx-Nkoo
-  "X_Sundanese",           // 578 xx-Sund
-  "X_Lepcha",              // 579 xx-Lepc
-  "X_Ol_Chiki",            // 580 xx-Olck
-  "X_Vai",                 // 581 xx-Vaii
-  "X_Saurashtra",          // 582 xx-Saur
-  "X_Kayah_Li",            // 583 xx-Kali
-  "X_Rejang",              // 584 xx-Rjng
-  "X_Lycian",              // 585 xx-Lyci
-  "X_Carian",              // 586 xx-Cari
-  "X_Lydian",              // 587 xx-Lydi
-  "X_Cham",                // 588 xx-Cham
-  "X_Tai_Tham",            // 589 xx-Lana
-  "X_Tai_Viet",            // 590 xx-Tavt
-  "X_Avestan",             // 591 xx-Avst
-  "X_Egyptian_Hieroglyphs",  // 592 xx-Egyp
-  "X_Samaritan",           // 593 xx-Samr
-  "X_Lisu",                // 594 xx-Lisu
-  "X_Bamum",               // 595 xx-Bamu
-  "X_Javanese",            // 596 xx-Java
-  "X_Meetei_Mayek",        // 597 xx-Mtei
-  "X_Imperial_Aramaic",    // 598 xx-Armi
-  "X_Old_South_Arabian",   // 599 xx-Sarb
-  "X_Inscriptional_Parthian",  // 600 xx-Prti
-  "X_Inscriptional_Pahlavi",  // 601 xx-Phli
-  "X_Old_Turkic",          // 602 xx-Orkh
-  "X_Kaithi",              // 603 xx-Kthi
-  "X_Batak",               // 604 xx-Batk
-  "X_Brahmi",              // 605 xx-Brah
-  "X_Mandaic",             // 606 xx-Mand
-  "X_Chakma",              // 607 xx-Cakm
-  "X_Meroitic_Cursive",    // 608 xx-Merc
-  "X_Meroitic_Hieroglyphs",  // 609 xx-Mero
-  "X_Miao",                // 610 xx-Plrd
-  "X_Sharada",             // 611 xx-Shrd
-  "X_Sora_Sompeng",        // 612 xx-Sora
-  "X_Takri",               // 613 xx-Takr
+  "English",                   // 0 en
+  "Danish",                    // 1 da
+  "Dutch",                     // 2 nl
+  "Finnish",                   // 3 fi
+  "French",                    // 4 fr
+  "German",                    // 5 de
+  "Hebrew",                    // 6 iw
+  "Italian",                   // 7 it
+  "Japanese",                  // 8 ja
+  "Korean",                    // 9 ko
+  "Norwegian",                 // 10 no
+  "Polish",                    // 11 pl
+  "Portuguese",                // 12 pt
+  "Russian",                   // 13 ru
+  "Spanish",                   // 14 es
+  "Swedish",                   // 15 sv
+  "Chinese",                   // 16 zh
+  "Czech",                     // 17 cs
+  "Greek",                     // 18 el
+  "Icelandic",                 // 19 is
+  "Latvian",                   // 20 lv
+  "Lithuanian",                // 21 lt
+  "Romanian",                  // 22 ro
+  "Hungarian",                 // 23 hu
+  "Estonian",                  // 24 et
+  "Ignore",                    // 25 zxx
+  "Unknown",                   // 26 un
+  "Bulgarian",                 // 27 bg
+  "Croatian",                  // 28 hr
+  "Serbian",                   // 29 sr
+  "Irish",                     // 30 ga
+  "Galician",                  // 31 gl
+  "Tagalog",                   // 32 tl
+  "Turkish",                   // 33 tr
+  "Ukrainian",                 // 34 uk
+  "Hindi",                     // 35 hi
+  "Macedonian",                // 36 mk
+  "Bengali",                   // 37 bn
+  "Indonesian",                // 38 id
+  "Latin",                     // 39 la
+  "Malay",                     // 40 ms
+  "Malayalam",                 // 41 ml
+  "Welsh",                     // 42 cy
+  "Nepali",                    // 43 ne
+  "Telugu",                    // 44 te
+  "Albanian",                  // 45 sq
+  "Tamil",                     // 46 ta
+  "Belarusian",                // 47 be
+  "Javanese",                  // 48 jw
+  "Occitan",                   // 49 oc
+  "Urdu",                      // 50 ur
+  "Bihari",                    // 51 bh
+  "Gujarati",                  // 52 gu
+  "Thai",                      // 53 th
+  "Arabic",                    // 54 ar
+  "Catalan",                   // 55 ca
+  "Esperanto",                 // 56 eo
+  "Basque",                    // 57 eu
+  "Interlingua",               // 58 ia
+  "Kannada",                   // 59 kn
+  "Punjabi",                   // 60 pa
+  "Scots Gaelic",              // 61 gd
+  "Swahili",                   // 62 sw
+  "Slovenian",                 // 63 sl
+  "Marathi",                   // 64 mr
+  "Maltese",                   // 65 mt
+  "Vietnamese",                // 66 vi
+  "Frisian",                   // 67 fy
+  "Slovak",                    // 68 sk
+  "Chinese (trad.)",           // 69 zh-Hant
+  "Faroese",                   // 70 fo
+  "Sundanese",                 // 71 su
+  "Uzbek",                     // 72 uz
+  "Amharic",                   // 73 am
+  "Azerbaijani",               // 74 az
+  "Georgian",                  // 75 ka
+  "Tigrinya",                  // 76 ti
+  "Persian",                   // 77 fa
+  "Bosnian",                   // 78 bs
+  "Sinhalese",                 // 79 si
+  "Norwegian Nynorsk",         // 80 nn
+  "81",                        // 81
+  "82",                        // 82
+  "Xhosa",                     // 83 xh
+  "Zulu",                      // 84 zu
+  "Guarani",                   // 85 gn
+  "Sesotho",                   // 86 st
+  "Turkmen",                   // 87 tk
+  "Kyrgyz",                    // 88 ky
+  "Breton",                    // 89 br
+  "Twi",                       // 90 tw
+  "Yiddish",                   // 91 yi
+  "92",                        // 92
+  "Somali",                    // 93 so
+  "Uighur",                    // 94 ug
+  "Kurdish",                   // 95 ku
+  "Mongolian",                 // 96 mn
+  "Armenian",                  // 97 hy
+  "Laothian",                  // 98 lo
+  "Sindhi",                    // 99 sd
+  "Romansh",                   // 100 rm
+  "Afrikaans",                 // 101 af
+  "Luxembourgish",             // 102 lb
+  "Burmese",                   // 103 my
+  "Khmer",                     // 104 km
+  "Tibetan",                   // 105 bo
+  "Dhivehi",                   // 106 dv
+  "Cherokee",                  // 107 chr
+  "Syriac",                    // 108 syr
+  "Limbu",                     // 109 lif
+  "Oriya",                     // 110 or
+  "Assamese",                  // 111 as
+  "Corsican",                  // 112 co
+  "Interlingue",               // 113 ie
+  "Kazakh",                    // 114 kk
+  "Lingala",                   // 115 ln
+  "116",                       // 116
+  "Pashto",                    // 117 ps
+  "Quechua",                   // 118 qu
+  "Shona",                     // 119 sn
+  "Tajik",                     // 120 tg
+  "Tatar",                     // 121 tt
+  "Tonga",                     // 122 to
+  "Yoruba",                    // 123 yo
+  "124",                       // 124
+  "125",                       // 125
+  "126",                       // 126
+  "127",                       // 127
+  "Maori",                     // 128 mi
+  "Wolof",                     // 129 wo
+  "Abkhazian",                 // 130 ab
+  "Afar",                      // 131 aa
+  "Aymara",                    // 132 ay
+  "Bashkir",                   // 133 ba
+  "Bislama",                   // 134 bi
+  "Dzongkha",                  // 135 dz
+  "Fijian",                    // 136 fj
+  "Greenlandic",               // 137 kl
+  "Hausa",                     // 138 ha
+  "Haitian Creole",            // 139 ht
+  "Inupiak",                   // 140 ik
+  "Inuktitut",                 // 141 iu
+  "Kashmiri",                  // 142 ks
+  "Kinyarwanda",               // 143 rw
+  "Malagasy",                  // 144 mg
+  "Nauru",                     // 145 na
+  "Oromo",                     // 146 om
+  "Rundi",                     // 147 rn
+  "Samoan",                    // 148 sm
+  "Sango",                     // 149 sg
+  "Sanskrit",                  // 150 sa
+  "Siswant",                   // 151 ss
+  "Tsonga",                    // 152 ts
+  "Tswana",                    // 153 tn
+  "Volapuk",                   // 154 vo
+  "Zhuang",                    // 155 za
+  "Khasi",                     // 156 kha
+  "Scots",                     // 157 sco
+  "Ganda",                     // 158 lg
+  "Manx",                      // 159 gv
+  "Montenegrin",               // 160 sr-ME
+  "Akan",                      // 161 ak
+  "Igbo",                      // 162 ig
+  "Mauritian Creole",          // 163 mfe
+  "Hawaiian",                  // 164 haw
+  "Cebuano",                   // 165 ceb
+  "Ewe",                       // 166 ee
+  "Ga",                        // 167 gaa
+  "Hmong",                     // 168 hmn
+  "Krio",                      // 169 kri
+  "Lozi",                      // 170 loz
+  "Tshiluba",                  // 171 lua
+  "Dholuo",                    // 172 luo
+  "Newari",                    // 173 new
+  "Nyanja",                    // 174 ny
+  "Ossetian",                  // 175 os
+  "Pampanga",                  // 176 pam
+  "Pedi",                      // 177 nso
+  "Rajasthani",                // 178 raj
+  "Seselwa",                   // 179 crs
+  "Tumbuka",                   // 180 tum
+  "Venda",                     // 181 ve
+  "Waray-Waray",               // 182 war
+  "183",                       // 183
+  "184",                       // 184
+  "185",                       // 185
+  "186",                       // 186
+  "187",                       // 187
+  "188",                       // 188
+  "189",                       // 189
+  "190",                       // 190
+  "191",                       // 191
+  "192",                       // 192
+  "193",                       // 193
+  "194",                       // 194
+  "195",                       // 195
+  "196",                       // 196
+  "197",                       // 197
+  "198",                       // 198
+  "199",                       // 199
+  "200",                       // 200
+  "201",                       // 201
+  "202",                       // 202
+  "203",                       // 203
+  "204",                       // 204
+  "205",                       // 205
+  "206",                       // 206
+  "207",                       // 207
+  "208",                       // 208
+  "209",                       // 209
+  "210",                       // 210
+  "211",                       // 211
+  "212",                       // 212
+  "213",                       // 213
+  "214",                       // 214
+  "215",                       // 215
+  "216",                       // 216
+  "217",                       // 217
+  "218",                       // 218
+  "219",                       // 219
+  "220",                       // 220
+  "221",                       // 221
+  "222",                       // 222
+  "223",                       // 223
+  "224",                       // 224
+  "225",                       // 225
+  "226",                       // 226
+  "227",                       // 227
+  "228",                       // 228
+  "229",                       // 229
+  "230",                       // 230
+  "231",                       // 231
+  "232",                       // 232
+  "233",                       // 233
+  "234",                       // 234
+  "235",                       // 235
+  "236",                       // 236
+  "237",                       // 237
+  "238",                       // 238
+  "239",                       // 239
+  "240",                       // 240
+  "241",                       // 241
+  "242",                       // 242
+  "243",                       // 243
+  "244",                       // 244
+  "245",                       // 245
+  "246",                       // 246
+  "247",                       // 247
+  "248",                       // 248
+  "249",                       // 249
+  "250",                       // 250
+  "251",                       // 251
+  "252",                       // 252
+  "253",                       // 253
+  "254",                       // 254
+  "255",                       // 255
+  "256",                       // 256
+  "257",                       // 257
+  "258",                       // 258
+  "259",                       // 259
+  "260",                       // 260
+  "261",                       // 261
+  "262",                       // 262
+  "263",                       // 263
+  "264",                       // 264
+  "265",                       // 265
+  "266",                       // 266
+  "267",                       // 267
+  "268",                       // 268
+  "269",                       // 269
+  "270",                       // 270
+  "271",                       // 271
+  "272",                       // 272
+  "273",                       // 273
+  "274",                       // 274
+  "275",                       // 275
+  "276",                       // 276
+  "277",                       // 277
+  "278",                       // 278
+  "279",                       // 279
+  "280",                       // 280
+  "281",                       // 281
+  "282",                       // 282
+  "283",                       // 283
+  "284",                       // 284
+  "285",                       // 285
+  "286",                       // 286
+  "287",                       // 287
+  "288",                       // 288
+  "289",                       // 289
+  "290",                       // 290
+  "291",                       // 291
+  "292",                       // 292
+  "293",                       // 293
+  "294",                       // 294
+  "295",                       // 295
+  "296",                       // 296
+  "297",                       // 297
+  "298",                       // 298
+  "299",                       // 299
+  "300",                       // 300
+  "301",                       // 301
+  "302",                       // 302
+  "303",                       // 303
+  "304",                       // 304
+  "305",                       // 305
+  "306",                       // 306
+  "307",                       // 307
+  "308",                       // 308
+  "309",                       // 309
+  "310",                       // 310
+  "311",                       // 311
+  "312",                       // 312
+  "313",                       // 313
+  "314",                       // 314
+  "315",                       // 315
+  "316",                       // 316
+  "317",                       // 317
+  "318",                       // 318
+  "319",                       // 319
+  "320",                       // 320
+  "321",                       // 321
+  "322",                       // 322
+  "323",                       // 323
+  "324",                       // 324
+  "325",                       // 325
+  "326",                       // 326
+  "327",                       // 327
+  "328",                       // 328
+  "329",                       // 329
+  "330",                       // 330
+  "331",                       // 331
+  "332",                       // 332
+  "333",                       // 333
+  "334",                       // 334
+  "335",                       // 335
+  "336",                       // 336
+  "337",                       // 337
+  "338",                       // 338
+  "339",                       // 339
+  "340",                       // 340
+  "341",                       // 341
+  "342",                       // 342
+  "343",                       // 343
+  "344",                       // 344
+  "345",                       // 345
+  "346",                       // 346
+  "347",                       // 347
+  "348",                       // 348
+  "349",                       // 349
+  "350",                       // 350
+  "351",                       // 351
+  "352",                       // 352
+  "353",                       // 353
+  "354",                       // 354
+  "355",                       // 355
+  "356",                       // 356
+  "357",                       // 357
+  "358",                       // 358
+  "359",                       // 359
+  "360",                       // 360
+  "361",                       // 361
+  "362",                       // 362
+  "363",                       // 363
+  "364",                       // 364
+  "365",                       // 365
+  "366",                       // 366
+  "367",                       // 367
+  "368",                       // 368
+  "369",                       // 369
+  "370",                       // 370
+  "371",                       // 371
+  "372",                       // 372
+  "373",                       // 373
+  "374",                       // 374
+  "375",                       // 375
+  "376",                       // 376
+  "377",                       // 377
+  "378",                       // 378
+  "379",                       // 379
+  "380",                       // 380
+  "381",                       // 381
+  "382",                       // 382
+  "383",                       // 383
+  "384",                       // 384
+  "385",                       // 385
+  "386",                       // 386
+  "387",                       // 387
+  "388",                       // 388
+  "389",                       // 389
+  "390",                       // 390
+  "391",                       // 391
+  "392",                       // 392
+  "393",                       // 393
+  "394",                       // 394
+  "395",                       // 395
+  "396",                       // 396
+  "397",                       // 397
+  "398",                       // 398
+  "399",                       // 399
+  "400",                       // 400
+  "401",                       // 401
+  "402",                       // 402
+  "403",                       // 403
+  "404",                       // 404
+  "405",                       // 405
+  "406",                       // 406
+  "407",                       // 407
+  "408",                       // 408
+  "409",                       // 409
+  "410",                       // 410
+  "411",                       // 411
+  "412",                       // 412
+  "413",                       // 413
+  "414",                       // 414
+  "415",                       // 415
+  "416",                       // 416
+  "417",                       // 417
+  "418",                       // 418
+  "419",                       // 419
+  "420",                       // 420
+  "421",                       // 421
+  "422",                       // 422
+  "423",                       // 423
+  "424",                       // 424
+  "425",                       // 425
+  "426",                       // 426
+  "427",                       // 427
+  "428",                       // 428
+  "429",                       // 429
+  "430",                       // 430
+  "431",                       // 431
+  "432",                       // 432
+  "433",                       // 433
+  "434",                       // 434
+  "435",                       // 435
+  "436",                       // 436
+  "437",                       // 437
+  "438",                       // 438
+  "439",                       // 439
+  "440",                       // 440
+  "441",                       // 441
+  "442",                       // 442
+  "443",                       // 443
+  "444",                       // 444
+  "445",                       // 445
+  "446",                       // 446
+  "447",                       // 447
+  "448",                       // 448
+  "449",                       // 449
+  "450",                       // 450
+  "451",                       // 451
+  "452",                       // 452
+  "453",                       // 453
+  "454",                       // 454
+  "455",                       // 455
+  "456",                       // 456
+  "457",                       // 457
+  "458",                       // 458
+  "459",                       // 459
+  "460",                       // 460
+  "461",                       // 461
+  "462",                       // 462
+  "463",                       // 463
+  "464",                       // 464
+  "465",                       // 465
+  "466",                       // 466
+  "467",                       // 467
+  "468",                       // 468
+  "469",                       // 469
+  "470",                       // 470
+  "471",                       // 471
+  "472",                       // 472
+  "473",                       // 473
+  "474",                       // 474
+  "475",                       // 475
+  "476",                       // 476
+  "477",                       // 477
+  "478",                       // 478
+  "479",                       // 479
+  "480",                       // 480
+  "481",                       // 481
+  "482",                       // 482
+  "483",                       // 483
+  "484",                       // 484
+  "485",                       // 485
+  "486",                       // 486
+  "487",                       // 487
+  "488",                       // 488
+  "489",                       // 489
+  "490",                       // 490
+  "491",                       // 491
+  "492",                       // 492
+  "493",                       // 493
+  "494",                       // 494
+  "495",                       // 495
+  "496",                       // 496
+  "497",                       // 497
+  "498",                       // 498
+  "499",                       // 499
+  "500",                       // 500
+  "501",                       // 501
+  "502",                       // 502
+  "503",                       // 503
+  "504",                       // 504
+  "505",                       // 505
+  "Ndebele",                   // 506 nr
+
+  // Pseudolanguages (and Klingon)
+  "Swedish Chef idiolect",     // 507 qab
+  "Pig Latin",                 // 508 qap
+  "L33tsp34k",                 // 509 qah
+  "Klingon",                   // 510 tlh
+  "Elmer Fudd idiolect",       // 511 qae
+
+  // Neither language nor script is recognized
+  "Unknown script",            // 512 und-Zyyy
+
+  // Script is recognized, language isn't
+  "Latin script",                  // 513 und-Latn
+  "Greek script",                  // 514 und-Grek
+  "Cyrillic script",               // 515 und-Cyrl
+  "Armenian script",               // 516 und-Armn
+  "Hebrew script",                 // 517 und-Hebr
+  "Arabic script",                 // 518 und-Arab
+  "Syriac script",                 // 519 und-Syrc
+  "Thaana script",                 // 520 und-Thaa
+  "Devanagari script",             // 521 und-Deva
+  "Bengali script",                // 522 und-Beng
+  "Gurmukhi script",               // 523 und-Guru
+  "Gujarati script",               // 524 und-Gujr
+  "Oriya script",                  // 525 und-Orya
+  "Tamil script",                  // 526 und-Taml
+  "Telugu script",                 // 527 und-Telu
+  "Kannada script",                // 528 und-Knda
+  "Malayalam script",              // 529 und-Mlym
+  "Sinhala script",                // 530 und-Sinh
+  "Thai script",                   // 531 und-Thai
+  "Lao script",                    // 532 und-Laoo
+  "Tibetan script",                // 533 und-Tibt
+  "Myanmar script",                // 534 und-Mymr
+  "Georgian script",               // 535 und-Geor
+  "Hangul script",                 // 536 und-Hang
+  "Ethiopic script",               // 537 und-Ethi
+  "Cherokee script",               // 538 und-Cher
+  "Canadian Aboriginal script",    // 539 und-Cans
+  "Ogham script",                  // 540 und-Ogam
+  "Runic script",                  // 541 und-Runr
+  "Khmer script",                  // 542 und-Khmr
+  "Mongolian script",              // 543 und-Mong
+  "Hiragana script",               // 544 und-Hira
+  "Katakana script",               // 545 und-Kana
+  "Bopomofo script",               // 546 und-Bopo
+  "Han script",                    // 547 und-Hani
+  "Yi script",                     // 548 und-Yiii
+  "Old Italic script",             // 549 und-Ital
+  "Gothic script",                 // 550 und-Goth
+  "Deseret script",                // 551 und-Dsrt
+  "Inherited script",              // 552 und-Qaai
+  "Tagalog script",                // 553 und-Tglg
+  "Hanunoo script",                // 554 und-Hano
+  "Buhid script",                  // 555 und-Buhd
+  "Tagbanwa script",               // 556 und-Tagb
+  "Limbu script",                  // 557 und-Limb
+  "Tai Le script",                 // 558 und-Tale
+  "Linear B script",               // 559 und-Linb
+  "Ugaritic script",               // 560 und-Ugar
+  "Shavian script",                // 561 und-Shaw
+  "Osmanya script",                // 562 und-Osma
+  "Cypriot script",                // 563 und-Cprt
+  "Braille script",                // 564 und-Brai
+  "Buginese script",               // 565 und-Bugi
+  "Coptic script",                 // 566 und-Copt
+  "New Tai Lue script",            // 567 und-Talu
+  "Glagolitic script",             // 568 und-Glag
+  "Tifinagh script",               // 569 und-Tfng
+  "Syloti Nagri script",           // 570 und-Sylo
+  "Old Persian script",            // 571 und-Xpeo
+  "Kharoshthi script",             // 572 und-Khar
+  "Balinese script",               // 573 und-Bali
+  "Cuneiform script",              // 574 und-Xsux
+  "Phoenician script",             // 575 und-Phnx
+  "Phags Pa script",               // 576 und-Phag
+  "Nko script",                    // 577 und-Nkoo
+  "Sundanese script",              // 578 und-Sund
+  "Lepcha script",                 // 579 und-Lepc
+  "Ol Chiki script",               // 580 und-Olck
+  "Vai script",                    // 581 und-Vaii
+  "Saurashtra script",             // 582 und-Saur
+  "Kayah Li script",               // 583 und-Kali
+  "Rejang script",                 // 584 und-Rjng
+  "Lycian script",                 // 585 und-Lyci
+  "Carian script",                 // 586 und-Cari
+  "Lydian script",                 // 587 und-Lydi
+  "Cham script",                   // 588 und-Cham
+  "Tai Tham script",               // 589 und-Lana
+  "Tai Viet script",               // 590 und-Tavt
+  "Avestan script",                // 591 und-Avst
+  "Egyptian Hieroglyphic script",  // 592 und-Egyp
+  "Samaritan script",              // 593 und-Samr
+  "Lisu script",                   // 594 und-Lisu
+  "Bamum script",                  // 595 und-Bamu
+  "Javanese script",               // 596 und-Java
+  "Meetei Mayek script",           // 597 und-Mtei
+  "Imperial Aramaic script",       // 598 und-Armi
+  "Old South Arabian script",      // 599 und-Sarb
+  "Inscriptional Parthian script", // 600 und-Prti
+  "Inscriptional Pahlavi script",  // 601 und-Phli
+  "Old Turkic script",             // 602 und-Orkh
+  "Kaithi script",                 // 603 und-Kthi
+  "Batak script",                  // 604 und-Batk
+  "Brahmi script",                 // 605 und-Brah
+  "Mandaic script",                // 606 und-Mand
+  "Chakma script",                 // 607 und-Cakm
+  "Meroitic Cursive script",       // 608 und-Merc
+  "Meroitic Hieroglyphs script",   // 609 und-Mero
+  "Miao script",                   // 610 und-Plrd
+  "Sharada script",                // 611 und-Shrd
+  "Sora Sompeng script",           // 612 und-Sora
+  "Takri script",                  // 613 und-Takr
 };
 
 // Subscripted by enum Language
 static const int kLanguageToCodeSize = 614;
 extern const char* const kLanguageToCode[kLanguageToCodeSize] = {
-  "en",    // 0 ENGLISH
-  "da",    // 1 DANISH
-  "nl",    // 2 DUTCH
-  "fi",    // 3 FINNISH
-  "fr",    // 4 FRENCH
-  "de",    // 5 GERMAN
-  "iw",    // 6 HEBREW
-  "it",    // 7 ITALIAN
+  "en",    // 0 English
+  "da",    // 1 Danish
+  "nl",    // 2 Dutch
+  "fi",    // 3 Finnish
+  "fr",    // 4 French
+  "de",    // 5 German
+  "iw",    // 6 Hebrew
+  "it",    // 7 Italian
   "ja",    // 8 Japanese
   "ko",    // 9 Korean
-  "no",    // 10 NORWEGIAN
-  "pl",    // 11 POLISH
-  "pt",    // 12 PORTUGUESE
-  "ru",    // 13 RUSSIAN
-  "es",    // 14 SPANISH
-  "sv",    // 15 SWEDISH
+  "no",    // 10 Norwegian
+  "pl",    // 11 Polish
+  "pt",    // 12 Portuguese
+  "ru",    // 13 Russian
+  "es",    // 14 Spanish
+  "sv",    // 15 Swedish
   "zh",    // 16 Chinese
-  "cs",    // 17 CZECH
-  "el",    // 18 GREEK
-  "is",    // 19 ICELANDIC
-  "lv",    // 20 LATVIAN
-  "lt",    // 21 LITHUANIAN
-  "ro",    // 22 ROMANIAN
-  "hu",    // 23 HUNGARIAN
-  "et",    // 24 ESTONIAN
-  "xxx",   // 25 Ignore
-  "un",    // 26 Unknown
-  "bg",    // 27 BULGARIAN
-  "hr",    // 28 CROATIAN
-  "sr",    // 29 SERBIAN
-  "ga",    // 30 IRISH
-  "gl",    // 31 GALICIAN
-  "tl",    // 32 TAGALOG
-  "tr",    // 33 TURKISH
-  "uk",    // 34 UKRAINIAN
-  "hi",    // 35 HINDI
-  "mk",    // 36 MACEDONIAN
-  "bn",    // 37 BENGALI
-  "id",    // 38 INDONESIAN
-  "la",    // 39 LATIN
-  "ms",    // 40 MALAY
-  "ml",    // 41 MALAYALAM
-  "cy",    // 42 WELSH
-  "ne",    // 43 NEPALI
-  "te",    // 44 TELUGU
-  "sq",    // 45 ALBANIAN
-  "ta",    // 46 TAMIL
-  "be",    // 47 BELARUSIAN
-  "jw",    // 48 JAVANESE
-  "oc",    // 49 OCCITAN
-  "ur",    // 50 URDU
-  "bh",    // 51 BIHARI
-  "gu",    // 52 GUJARATI
-  "th",    // 53 THAI
-  "ar",    // 54 ARABIC
-  "ca",    // 55 CATALAN
-  "eo",    // 56 ESPERANTO
-  "eu",    // 57 BASQUE
-  "ia",    // 58 INTERLINGUA
-  "kn",    // 59 KANNADA
-  "pa",    // 60 PUNJABI
-  "gd",    // 61 SCOTS_GAELIC
-  "sw",    // 62 SWAHILI
-  "sl",    // 63 SLOVENIAN
-  "mr",    // 64 MARATHI
-  "mt",    // 65 MALTESE
-  "vi",    // 66 VIETNAMESE
-  "fy",    // 67 FRISIAN
-  "sk",    // 68 SLOVAK
+  "cs",    // 17 Czech
+  "el",    // 18 Greek
+  "is",    // 19 Icelandic
+  "lv",    // 20 Latvian
+  "lt",    // 21 Lithuanian
+  "ro",    // 22 Romanian
+  "hu",    // 23 Hungarian
+  "et",    // 24 Estonian
+  "zxx",   // 25 Ignore
+  "und",   // 26 Unknown
+  "bg",    // 27 Bulgarian
+  "hr",    // 28 Croatian
+  "sr",    // 29 Serbian
+  "ga",    // 30 Irish
+  "gl",    // 31 Galician
+  "tl",    // 32 Tagalog
+  "tr",    // 33 Turkish
+  "uk",    // 34 Ukrainian
+  "hi",    // 35 Hindi
+  "mk",    // 36 Macedonian
+  "bn",    // 37 Bengali
+  "id",    // 38 Indonesian
+  "la",    // 39 Latin
+  "ms",    // 40 Malay
+  "ml",    // 41 Malayalam
+  "cy",    // 42 Welsh
+  "ne",    // 43 Nepali
+  "te",    // 44 Telugu
+  "sq",    // 45 Albanian
+  "ta",    // 46 Tamil
+  "be",    // 47 Belarusian
+  "jw",    // 48 Javanese
+  "oc",    // 49 Occitan
+  "ur",    // 50 Urdu
+  "bh",    // 51 Bihari
+  "gu",    // 52 Gujarati
+  "th",    // 53 Thai
+  "ar",    // 54 Arabic
+  "ca",    // 55 Catalan
+  "eo",    // 56 Esperanto
+  "eu",    // 57 Basque
+  "ia",    // 58 Interlingua
+  "kn",    // 59 Kannada
+  "pa",    // 60 Punjabi
+  "gd",    // 61 Scots Gaelic
+  "sw",    // 62 Swahili
+  "sl",    // 63 Slovenian
+  "mr",    // 64 Marathi
+  "mt",    // 65 Maltese
+  "vi",    // 66 Vietnamese
+  "fy",    // 67 Frisian
+  "sk",    // 68 Slovak
   "zh-Hant",  // 69 ChineseT
-  "fo",    // 70 FAROESE
-  "su",    // 71 SUNDANESE
-  "uz",    // 72 UZBEK
-  "am",    // 73 AMHARIC
-  "az",    // 74 AZERBAIJANI
-  "ka",    // 75 GEORGIAN
-  "ti",    // 76 TIGRINYA
-  "fa",    // 77 PERSIAN
-  "bs",    // 78 BOSNIAN
-  "si",    // 79 SINHALESE
-  "nn",    // 80 NORWEGIAN_N
+  "fo",    // 70 Faroese
+  "su",    // 71 Sundanese
+  "uz",    // 72 Uzbek
+  "am",    // 73 Amharic
+  "az",    // 74 Azerbaijani
+  "ka",    // 75 Georgian
+  "ti",    // 76 Tigrinya
+  "fa",    // 77 Persian
+  "bs",    // 78 Bosnian
+  "si",    // 79 Sinhalese
+  "nn",    // 80 Norwegian Nynorsk
   "",      // 81 81
   "",      // 82 82
-  "xh",    // 83 XHOSA
-  "zu",    // 84 ZULU
-  "gn",    // 85 GUARANI
-  "st",    // 86 SESOTHO
-  "tk",    // 87 TURKMEN
-  "ky",    // 88 KYRGYZ
-  "br",    // 89 BRETON
-  "tw",    // 90 TWI
-  "yi",    // 91 YIDDISH
+  "xh",    // 83 Xhosa
+  "zu",    // 84 Zulu
+  "gn",    // 85 Guarani
+  "st",    // 86 Sesotho
+  "tk",    // 87 Turkmen
+  "ky",    // 88 Kyrgyz
+  "br",    // 89 Breton
+  "tw",    // 90 Twi
+  "yi",    // 91 Yiddish
   "",      // 92 92
-  "so",    // 93 SOMALI
-  "ug",    // 94 UIGHUR
-  "ku",    // 95 KURDISH
-  "mn",    // 96 MONGOLIAN
-  "hy",    // 97 ARMENIAN
-  "lo",    // 98 LAOTHIAN
-  "sd",    // 99 SINDHI
-  "rm",    // 100 RHAETO_ROMANCE
-  "af",    // 101 AFRIKAANS
-  "lb",    // 102 LUXEMBOURGISH
-  "my",    // 103 BURMESE
-  "km",    // 104 KHMER
-  "bo",    // 105 TIBETAN
-  "dv",    // 106 DHIVEHI
-  "chr",   // 107 CHEROKEE
-  "syr",   // 108 SYRIAC
-  "lif",   // 109 LIMBU
-  "or",    // 110 ORIYA
-  "as",    // 111 ASSAMESE
-  "co",    // 112 CORSICAN
-  "ie",    // 113 INTERLINGUE
-  "kk",    // 114 KAZAKH
-  "ln",    // 115 LINGALA
+  "so",    // 93 Somali
+  "ug",    // 94 Uighur
+  "ku",    // 95 Kurdish
+  "mn",    // 96 Mongolian
+  "hy",    // 97 Armenian
+  "lo",    // 98 Laothian
+  "sd",    // 99 Sindhi
+  "rm",    // 100 Romansh
+  "af",    // 101 Afrikaans
+  "lb",    // 102 Luxembourgish
+  "my",    // 103 Burmese
+  "km",    // 104 Khmer
+  "bo",    // 105 Tibetan
+  "dv",    // 106 Dhivehi
+  "chr",   // 107 Cherokee
+  "syr",   // 108 Syriac
+  "lif",   // 109 Limbu
+  "or",    // 110 Oriya
+  "as",    // 111 Assamese
+  "co",    // 112 Corsican
+  "ie",    // 113 Interlingue
+  "kk",    // 114 Kazakh
+  "ln",    // 115 Lingala
   "",      // 116 116
-  "ps",    // 117 PASHTO
-  "qu",    // 118 QUECHUA
-  "sn",    // 119 SHONA
-  "tg",    // 120 TAJIK
-  "tt",    // 121 TATAR
-  "to",    // 122 TONGA
-  "yo",    // 123 YORUBA
+  "ps",    // 117 Pashto
+  "qu",    // 118 Quechua
+  "sn",    // 119 Shona
+  "tg",    // 120 Tajik
+  "tt",    // 121 Tatar
+  "to",    // 122 Tonga
+  "yo",    // 123 Yoruba
   "",      // 124 124
   "",      // 125 125
   "",      // 126 126
   "",      // 127 127
-  "mi",    // 128 MAORI
-  "wo",    // 129 WOLOF
-  "ab",    // 130 ABKHAZIAN
-  "aa",    // 131 AFAR
-  "ay",    // 132 AYMARA
-  "ba",    // 133 BASHKIR
-  "bi",    // 134 BISLAMA
-  "dz",    // 135 DZONGKHA
-  "fj",    // 136 FIJIAN
-  "kl",    // 137 GREENLANDIC
-  "ha",    // 138 HAUSA
-  "ht",    // 139 HAITIAN_CREOLE
-  "ik",    // 140 INUPIAK
-  "iu",    // 141 INUKTITUT
-  "ks",    // 142 KASHMIRI
-  "rw",    // 143 KINYARWANDA
-  "mg",    // 144 MALAGASY
-  "na",    // 145 NAURU
-  "om",    // 146 OROMO
-  "rn",    // 147 RUNDI
-  "sm",    // 148 SAMOAN
-  "sg",    // 149 SANGO
-  "sa",    // 150 SANSKRIT
-  "ss",    // 151 SISWANT
-  "ts",    // 152 TSONGA
-  "tn",    // 153 TSWANA
-  "vo",    // 154 VOLAPUK
-  "za",    // 155 ZHUANG
-  "kha",   // 156 KHASI
-  "sco",   // 157 SCOTS
-  "lg",    // 158 GANDA
-  "gv",    // 159 MANX
-  "sr-ME",  // 160 MONTENEGRIN
-  "ak",    // 161 AKAN
-  "ig",    // 162 IGBO
-  "mfe",   // 163 MAURITIAN_CREOLE
-  "haw",   // 164 HAWAIIAN
-  "ceb",   // 165 CEBUANO
-  "ee",    // 166 EWE
-  "gaa",   // 167 GA
-  "hmn",   // 168 HMONG
-  "kri",   // 169 KRIO
-  "loz",   // 170 LOZI
-  "lua",   // 171 LUBA_LULUA
-  "luo",   // 172 LUO_KENYA_AND_TANZANIA
-  "new",   // 173 NEWARI
-  "ny",    // 174 NYANJA
-  "os",    // 175 OSSETIAN
-  "pam",   // 176 PAMPANGA
-  "nso",   // 177 PEDI
-  "raj",   // 178 RAJASTHANI
-  "crs",   // 179 SESELWA
-  "tum",   // 180 TUMBUKA
-  "ve",    // 181 VENDA
-  "war",   // 182 WARAY_PHILIPPINES
+  "mi",    // 128 Maori
+  "wo",    // 129 Wolof
+  "ab",    // 130 Abkhazian
+  "aa",    // 131 Afar
+  "ay",    // 132 Aymara
+  "ba",    // 133 Bashkir
+  "bi",    // 134 Bislama
+  "dz",    // 135 Dzongkha
+  "fj",    // 136 Fijian
+  "kl",    // 137 Greenlandic
+  "ha",    // 138 Hausa
+  "ht",    // 139 Haitian Creole
+  "ik",    // 140 Inupiak
+  "iu",    // 141 Inuktitut
+  "ks",    // 142 Kashmiri
+  "rw",    // 143 Kinyarwanda
+  "mg",    // 144 Malagasy
+  "na",    // 145 Nauru
+  "om",    // 146 Oromo
+  "rn",    // 147 Rundi
+  "sm",    // 148 Samoan
+  "sg",    // 149 Sango
+  "sa",    // 150 Sanskrit
+  "ss",    // 151 Siswant
+  "ts",    // 152 Tsonga
+  "tn",    // 153 Tswana
+  "vo",    // 154 Volapuk
+  "za",    // 155 Zhuang
+  "kha",   // 156 Khasi
+  "sco",   // 157 Scots
+  "lg",    // 158 Ganda
+  "gv",    // 159 Manx
+  "sr-ME", // 160 Montenegrin
+  "ak",    // 161 AKan
+  "ig",    // 162 Igbo
+  "mfe",   // 163 Mauritian Creole
+  "haw",   // 164 Hawaiian
+  "ceb",   // 165 Cebuano
+  "ee",    // 166 Ewe
+  "gaa",   // 167 Ga
+  "hmn",   // 168 Hmong
+  "kri",   // 169 Krio
+  "loz",   // 170 Lozi
+  "lua",   // 171 Tshiluba
+  "luo",   // 172 Dholuo
+  "new",   // 173 Newari
+  "ny",    // 174 Nyanja
+  "os",    // 175 Ossetian
+  "pam",   // 176 Pampanga
+  "nso",   // 177 Pedi
+  "raj",   // 178 Rajasthani
+  "crs",   // 179 Seselwa
+  "tum",   // 180 Tumbuka
+  "ve",    // 181 Venda
+  "war",   // 182 Waray-Waray
   "",      // 183 183
   "",      // 184 184
   "",      // 185 185
@@ -1151,114 +1157,118 @@ extern const char* const kLanguageToCode[kLanguageToCodeSize] = {
   "",      // 503 503
   "",      // 504 504
   "",      // 505 505
-  "nr",    // 506 NDEBELE
-  "zzb",   // 507 X_BORK_BORK_BORK
-  "zzp",   // 508 X_PIG_LATIN
-  "zzh",   // 509 X_HACKER
-  "tlh",   // 510 X_KLINGON
-  "zze",   // 511 X_ELMER_FUDD
-  "xx-Zyyy",  // 512 X_Common
-  "xx-Latn",  // 513 X_Latin
-  "xx-Grek",  // 514 X_Greek
-  "xx-Cyrl",  // 515 X_Cyrillic
-  "xx-Armn",  // 516 X_Armenian
-  "xx-Hebr",  // 517 X_Hebrew
-  "xx-Arab",  // 518 X_Arabic
-  "xx-Syrc",  // 519 X_Syriac
-  "xx-Thaa",  // 520 X_Thaana
-  "xx-Deva",  // 521 X_Devanagari
-  "xx-Beng",  // 522 X_Bengali
-  "xx-Guru",  // 523 X_Gurmukhi
-  "xx-Gujr",  // 524 X_Gujarati
-  "xx-Orya",  // 525 X_Oriya
-  "xx-Taml",  // 526 X_Tamil
-  "xx-Telu",  // 527 X_Telugu
-  "xx-Knda",  // 528 X_Kannada
-  "xx-Mlym",  // 529 X_Malayalam
-  "xx-Sinh",  // 530 X_Sinhala
-  "xx-Thai",  // 531 X_Thai
-  "xx-Laoo",  // 532 X_Lao
-  "xx-Tibt",  // 533 X_Tibetan
-  "xx-Mymr",  // 534 X_Myanmar
-  "xx-Geor",  // 535 X_Georgian
-  "xx-Hang",  // 536 X_Hangul
-  "xx-Ethi",  // 537 X_Ethiopic
-  "xx-Cher",  // 538 X_Cherokee
-  "xx-Cans",  // 539 X_Canadian_Aboriginal
-  "xx-Ogam",  // 540 X_Ogham
-  "xx-Runr",  // 541 X_Runic
-  "xx-Khmr",  // 542 X_Khmer
-  "xx-Mong",  // 543 X_Mongolian
-  "xx-Hira",  // 544 X_Hiragana
-  "xx-Kana",  // 545 X_Katakana
-  "xx-Bopo",  // 546 X_Bopomofo
-  "xx-Hani",  // 547 X_Han
-  "xx-Yiii",  // 548 X_Yi
-  "xx-Ital",  // 549 X_Old_Italic
-  "xx-Goth",  // 550 X_Gothic
-  "xx-Dsrt",  // 551 X_Deseret
-  "xx-Qaai",  // 552 X_Inherited
-  "xx-Tglg",  // 553 X_Tagalog
-  "xx-Hano",  // 554 X_Hanunoo
-  "xx-Buhd",  // 555 X_Buhid
-  "xx-Tagb",  // 556 X_Tagbanwa
-  "xx-Limb",  // 557 X_Limbu
-  "xx-Tale",  // 558 X_Tai_Le
-  "xx-Linb",  // 559 X_Linear_B
-  "xx-Ugar",  // 560 X_Ugaritic
-  "xx-Shaw",  // 561 X_Shavian
-  "xx-Osma",  // 562 X_Osmanya
-  "xx-Cprt",  // 563 X_Cypriot
-  "xx-Brai",  // 564 X_Braille
-  "xx-Bugi",  // 565 X_Buginese
-  "xx-Copt",  // 566 X_Coptic
-  "xx-Talu",  // 567 X_New_Tai_Lue
-  "xx-Glag",  // 568 X_Glagolitic
-  "xx-Tfng",  // 569 X_Tifinagh
-  "xx-Sylo",  // 570 X_Syloti_Nagri
-  "xx-Xpeo",  // 571 X_Old_Persian
-  "xx-Khar",  // 572 X_Kharoshthi
-  "xx-Bali",  // 573 X_Balinese
-  "xx-Xsux",  // 574 X_Cuneiform
-  "xx-Phnx",  // 575 X_Phoenician
-  "xx-Phag",  // 576 X_Phags_Pa
-  "xx-Nkoo",  // 577 X_Nko
-  "xx-Sund",  // 578 X_Sundanese
-  "xx-Lepc",  // 579 X_Lepcha
-  "xx-Olck",  // 580 X_Ol_Chiki
-  "xx-Vaii",  // 581 X_Vai
-  "xx-Saur",  // 582 X_Saurashtra
-  "xx-Kali",  // 583 X_Kayah_Li
-  "xx-Rjng",  // 584 X_Rejang
-  "xx-Lyci",  // 585 X_Lycian
-  "xx-Cari",  // 586 X_Carian
-  "xx-Lydi",  // 587 X_Lydian
-  "xx-Cham",  // 588 X_Cham
-  "xx-Lana",  // 589 X_Tai_Tham
-  "xx-Tavt",  // 590 X_Tai_Viet
-  "xx-Avst",  // 591 X_Avestan
-  "xx-Egyp",  // 592 X_Egyptian_Hieroglyphs
-  "xx-Samr",  // 593 X_Samaritan
-  "xx-Lisu",  // 594 X_Lisu
-  "xx-Bamu",  // 595 X_Bamum
-  "xx-Java",  // 596 X_Javanese
-  "xx-Mtei",  // 597 X_Meetei_Mayek
-  "xx-Armi",  // 598 X_Imperial_Aramaic
-  "xx-Sarb",  // 599 X_Old_South_Arabian
-  "xx-Prti",  // 600 X_Inscriptional_Parthian
-  "xx-Phli",  // 601 X_Inscriptional_Pahlavi
-  "xx-Orkh",  // 602 X_Old_Turkic
-  "xx-Kthi",  // 603 X_Kaithi
-  "xx-Batk",  // 604 X_Batak
-  "xx-Brah",  // 605 X_Brahmi
-  "xx-Mand",  // 606 X_Mandaic
-  "xx-Cakm",  // 607 X_Chakma
-  "xx-Merc",  // 608 X_Meroitic_Cursive
-  "xx-Mero",  // 609 X_Meroitic_Hieroglyphs
-  "xx-Plrd",  // 610 X_Miao
-  "xx-Shrd",  // 611 X_Sharada
-  "xx-Sora",  // 612 X_Sora_Sompeng
-  "xx-Takr",  // 613 X_Takri
+  "nr",    // 506 Ndebele
+  "qab",   // 507 Swedish Chef idiolect
+  "qap",   // 508 Pig Latin
+  "qah",   // 509 L33tsp34k
+  "tlh",   // 510 Klingon
+  "qae",   // 511 Elmer Fudd idiolect
+
+  // neither script nor language is recognized
+  "und-Zyyy",  // 512 Unknown script
+
+  // script recognized, language unrecognized
+  "und-Latn",  // 513 Latin script
+  "und-Grek",  // 514 Greek script
+  "und-Cyrl",  // 515 Cyrillic script
+  "und-Armn",  // 516 Armenian script
+  "und-Hebr",  // 517 Hebrew script
+  "und-Arab",  // 518 Arabic script
+  "und-Syrc",  // 519 Syriac script
+  "und-Thaa",  // 520 Thaana script
+  "und-Deva",  // 521 Devanagari script
+  "und-Beng",  // 522 Bengali script
+  "und-Guru",  // 523 Gurmukhi script
+  "und-Gujr",  // 524 Gujarati script
+  "und-Orya",  // 525 Oriya script
+  "und-Taml",  // 526 Tamil script
+  "und-Telu",  // 527 Telugu script
+  "und-Knda",  // 528 Kannada script
+  "und-Mlym",  // 529 Malayalam script
+  "und-Sinh",  // 530 Sinhala script
+  "und-Thai",  // 531 Thai script
+  "und-Laoo",  // 532 Lao script
+  "und-Tibt",  // 533 Tibetan script
+  "und-Mymr",  // 534 Myanmar script
+  "und-Geor",  // 535 Georgian script
+  "und-Hang",  // 536 Hangul script
+  "und-Ethi",  // 537 Ethiopic script
+  "und-Cher",  // 538 Cherokee script
+  "und-Cans",  // 539 Canadian Aboriginal script
+  "und-Ogam",  // 540 Ogham script
+  "und-Runr",  // 541 Runic script
+  "und-Khmr",  // 542 Khmer script
+  "und-Mong",  // 543 Mongolian script
+  "und-Hira",  // 544 Hiragana script
+  "und-Kana",  // 545 Katakana script
+  "und-Bopo",  // 546 Bopomofo script
+  "und-Hani",  // 547 Han script
+  "und-Yiii",  // 548 Yi script
+  "und-Ital",  // 549 Old Italic script
+  "und-Goth",  // 550 Gothic script
+  "und-Dsrt",  // 551 Deseret script
+  "und-Qaai",  // 552 Inherited script
+  "und-Tglg",  // 553 Tagalog script
+  "und-Hano",  // 554 Hanunoo script
+  "und-Buhd",  // 555 Buhid script
+  "und-Tagb",  // 556 Tagbanwa script
+  "und-Limb",  // 557 Limbu script
+  "und-Tale",  // 558 Tai Le script
+  "und-Linb",  // 559 Linear B script
+  "und-Ugar",  // 560 Ugaritic script
+  "und-Shaw",  // 561 Shavian script
+  "und-Osma",  // 562 Osmanya script
+  "und-Cprt",  // 563 Cypriot script
+  "und-Brai",  // 564 Braille script
+  "und-Bugi",  // 565 Buginese script
+  "und-Copt",  // 566 Coptic script
+  "und-Talu",  // 567 New Tai Lue script
+  "und-Glag",  // 568 Glagolitic script
+  "und-Tfng",  // 569 Tifinagh script
+  "und-Sylo",  // 570 Syloti Nagri script
+  "und-Xpeo",  // 571 Old Persian script
+  "und-Khar",  // 572 Kharoshthi script
+  "und-Bali",  // 573 Balinese script
+  "und-Xsux",  // 574 Cuneiform script
+  "und-Phnx",  // 575 Phoenician script
+  "und-Phag",  // 576 Phags Pa script
+  "und-Nkoo",  // 577 Nko script
+  "und-Sund",  // 578 Sundanese script
+  "und-Lepc",  // 579 Lepcha script
+  "und-Olck",  // 580 Ol Chiki script
+  "und-Vaii",  // 581 Vai script
+  "und-Saur",  // 582 Saurashtra script
+  "und-Kali",  // 583 Kayah Li script
+  "und-Rjng",  // 584 Rejang script
+  "und-Lyci",  // 585 Lycian script
+  "und-Cari",  // 586 Carian script
+  "und-Lydi",  // 587 Lydian script
+  "und-Cham",  // 588 Cham script
+  "und-Lana",  // 589 Tai Tham script
+  "und-Tavt",  // 590 Tai Viet script
+  "und-Avst",  // 591 Avestan script
+  "und-Egyp",  // 592 Egyptian Hieroglyphs script
+  "und-Samr",  // 593 Samaritan script
+  "und-Lisu",  // 594 Lisu script
+  "und-Bamu",  // 595 Bamum script
+  "und-Java",  // 596 Javanese script
+  "und-Mtei",  // 597 Meetei Mayek script
+  "und-Armi",  // 598 Imperial Aramaic script
+  "und-Sarb",  // 599 Old South Arabian script
+  "und-Prti",  // 600 Inscriptional Parthian script
+  "und-Phli",  // 601 Inscriptional Pahlavi script
+  "und-Orkh",  // 602 Old Turkic script
+  "und-Kthi",  // 603 Kaithi script
+  "und-Batk",  // 604 Batak script
+  "und-Brah",  // 605 Brahmi script
+  "und-Mand",  // 606 Mandaic script
+  "und-Cakm",  // 607 Chakma script
+  "und-Merc",  // 608 Meroitic Cursive script
+  "und-Mero",  // 609 Meroitic Hieroglyphs script
+  "und-Plrd",  // 610 Miao script
+  "und-Shrd",  // 611 Sharada script
+  "und-Sora",  // 612 Sora Sompeng script
+  "und-Takr",  // 613 Takri script
 };
 
 // Subscripted by enum Language
