@@ -81,7 +81,7 @@
 #define I18N_ENCODINGS_CLD2_PUBLIC_COMPACT_LANG_DET_H_
 
 #include <cstddef>
-#include "generated_language.h"
+#include "lang_script.h"
 #include "encodings.h"
 
 namespace CLD2 {
@@ -105,11 +105,6 @@ namespace CLD2 {
 
   // Public use flags, debug output controls
   static const unsigned int kCLDFlagScoreAsQuads = 0x0100;
-  static const unsigned int kCLDFlagHtml =         0x0200;
-  static const unsigned int kCLDFlagCr =           0x0400;
-  static const unsigned int kCLDFlagVerbose =      0x0800;
-  static const unsigned int kCLDFlagQuiet =        0x1000;
-  static const unsigned int kCLDFlagEcho =         0x2000;
   static const unsigned int kCLDFlagBestEffort =   0x4000;
 
 /***
@@ -121,17 +116,6 @@ Flag meanings:
    to be detected via quadgrams. This can be a useful refinement when looking
    for meaningful text in these languages, instead of just character sets.
    The default tables do not support this use.
- kCLDFlagHtml
-   For each detection call, write an HTML file to stderr, showing the text
-   chunks and their detected languages.
- kCLDFlagCr
-   In that HTML file, force a new line for each chunk.
- kCLDFlagVerbose
-   In that HTML file, show every lookup entry.
- kCLDFlagQuiet
-   In that HTML file, suppress most of the output detail.
- kCLDFlagEcho
-  Echo every input buffer to stderr.
  kCLDFlagBestEffort
   Give best-effort answer, instead of UNKNOWN_LANGUAGE. May be useful for
   short text if the caller prefers an approximate answer over none.

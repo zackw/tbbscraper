@@ -1,0 +1,4 @@
+_basic_test_program
+cld2.cpp
+*.so
+build/
