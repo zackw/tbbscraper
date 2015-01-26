@@ -7,6 +7,8 @@ setup(name='html_extractor',
       package_dir={'html_extractor':''},
       ext_modules=cythonize([
           Extension("relative_urls", ["relative_urls.pyx"]),
+          Extension("grapheme_counter", ["grapheme_counter.pyx",
+                                         "gbp_tbl.c"]),
           Extension("_extractor", ["_extractor.pyx"],
                     libraries=["gumbo"])
       ])

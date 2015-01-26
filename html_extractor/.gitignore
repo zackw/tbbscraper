@@ -1,3 +1,6 @@
 *.c
 *.so
 build/
+gbp_tbl.c
+gbp_tbl.h
+gbp_tbl.pxd
