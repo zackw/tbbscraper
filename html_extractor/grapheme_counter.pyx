@@ -5,7 +5,6 @@
 # files gbp_tbl.*.
 
 from gbp_tbl cimport *
-#from libc.stdio cimport fputs, stderr
 
 # Input normalization per http://docs.cython.org/src/tutorial/strings.html
 cdef unicode _ustring(s):
@@ -29,10 +28,7 @@ cpdef n_grapheme_clusters(text):
     for cpoint in utext:
         cur = GBP_GetClass(cpoint)
         if GBP_CLUSTER_BOUNDARY[<unsigned>prev][<unsigned>cur]:
-            #fputs("{} | {}\n".format(prev, cur).encode("ascii"), stderr)
             n += 1
-        #else:
-        #    fputs("{} {}\n".format(prev, cur).encode("ascii"), stderr)
 
         prev = cur
 

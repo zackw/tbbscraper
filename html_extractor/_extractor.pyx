@@ -4,6 +4,7 @@ walking as well as the parsing in C(ython).
 """
 
 from gumbo cimport *
+from boilerplate_removal import *
 from relative_urls cimport urljoin, urljoin_outbound
 
 from re import compile as _Regexp
@@ -47,88 +48,6 @@ cdef inline unicode get_htmlattr(GumboElement *element, bytes name):
     if attr is NULL:
         return None
     return attr.value.decode("utf-8")
-
-cdef inline bint is_heading(GumboTag tag):
-    """Elements that introduce "heading content" according to HTML5.
-    Note that <header> does *not* count as "heading content".
-    (What we want here is the outline, not the page-header.)
-    """
-    return tag in (GUMBO_TAG_H1,
-                   GUMBO_TAG_H2,
-                   GUMBO_TAG_H3,
-                   GUMBO_TAG_H4,
-                   GUMBO_TAG_H5,
-                   GUMBO_TAG_H6,
-                   GUMBO_TAG_HGROUP)
-
-cdef inline bint discards_contents(GumboTag tag):
-    """Elements that do not display their children.  <canvas> is excluded
-    from this list because we want to capture its fallback content, if any.
-    """
-    return tag in (GUMBO_TAG_AUDIO,
-                   GUMBO_TAG_EMBED,
-                   GUMBO_TAG_HEAD,
-                   GUMBO_TAG_IFRAME,
-                   GUMBO_TAG_IMG,
-                   GUMBO_TAG_NOFRAMES,
-                   GUMBO_TAG_NOSCRIPT,
-                   GUMBO_TAG_OBJECT,
-                   GUMBO_TAG_SCRIPT,
-                   GUMBO_TAG_STYLE,
-                   GUMBO_TAG_TEMPLATE,
-                   GUMBO_TAG_VIDEO)
-
-cdef inline bint forces_word_break(GumboTag tag):
-   """Elements whose presence forces a word break.  For instance,
-   "con<i>sis</i>tent" should produce "consistent", but
-   "con<p>sis</p>tent" should produce "con sis tent".
-
-   The list is of the elements whose presence should _not_ force
-   a word break, because that list is shorter. """
-   return tag not in (GUMBO_TAG_A,
-                      GUMBO_TAG_ABBR,
-                      GUMBO_TAG_B,
-                      GUMBO_TAG_BASEFONT,
-                      GUMBO_TAG_BDI,
-                      GUMBO_TAG_BDO,
-                      GUMBO_TAG_BIG,
-                      GUMBO_TAG_BLINK,
-                      GUMBO_TAG_CITE,
-                      GUMBO_TAG_CODE,
-                      GUMBO_TAG_DATA,
-                      GUMBO_TAG_DEL,
-                      GUMBO_TAG_DFN,
-                      GUMBO_TAG_EM,
-                      GUMBO_TAG_FONT,
-                      GUMBO_TAG_I,
-                      GUMBO_TAG_INS,
-                      GUMBO_TAG_KBD,
-                      GUMBO_TAG_MALIGNMARK,
-                      GUMBO_TAG_MARK,
-                      GUMBO_TAG_MGLYPH,
-                      GUMBO_TAG_MI,
-                      GUMBO_TAG_MN,
-                      GUMBO_TAG_MO,
-                      GUMBO_TAG_MS,
-                      GUMBO_TAG_MTEXT,
-                      GUMBO_TAG_NOBR,
-                      GUMBO_TAG_PLAINTEXT,
-                      GUMBO_TAG_RB,
-                      GUMBO_TAG_RP,
-                      GUMBO_TAG_RT,
-                      GUMBO_TAG_RUBY,
-                      GUMBO_TAG_S,
-                      GUMBO_TAG_SAMP,
-                      GUMBO_TAG_SMALL,
-                      GUMBO_TAG_SPAN,
-                      GUMBO_TAG_STRIKE,
-                      GUMBO_TAG_STRONG,
-                      GUMBO_TAG_SUB,
-                      GUMBO_TAG_SUP,
-                      GUMBO_TAG_TIME,
-                      GUMBO_TAG_TT,
-                      GUMBO_TAG_U,
-                      GUMBO_TAG_VAR)
 
 # Main tree walker.  Since this gets compiled now, we are safe to just
 # go ahead and use recursive function calls.
@@ -323,18 +242,18 @@ cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
         if href:
             state.url = urljoin(state.url, href)
 
-    # Empty elements may still force word breaks.
-    elt_forces_word_break = forces_word_break(elt.tag)
+    tclass = classify_tag(elt.tag)
+    elt_is_head           = elt.tag == GUMBO_TAG_HEAD
+    elt_is_title          = elt.tag == GUMBO_TAG_TITLE
+    elt_is_heading        = tclass  == TC_HEADING
+    elt_discards_contents = tclass  == TC_DISCARD
+    elt_forces_word_break = (tclass != TC_INLINE and eclass != TC_LINK)
+
     if elt_forces_word_break:
         walk_text(" ", state)
 
     if elt.children.length == 0:
         return True # empty element, we're done
-
-    elt_is_head           = elt.tag == GUMBO_TAG_HEAD
-    elt_is_title          = elt.tag == GUMBO_TAG_TITLE
-    elt_is_heading        = is_heading(elt.tag)
-    elt_discards_contents = discards_contents(elt.tag)
 
     state.depth += 1
     if elt_discards_contents:
