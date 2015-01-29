@@ -14,6 +14,8 @@ grapheme_counter.$M: grapheme_counter.$O gbp_tbl.$O
 	$(CC) $(LINKER_ARGS)
 relative_urls.$M: relative_urls.$O
 	$(CC) $(LINKER_ARGS)
+boilerplate_removal.$M: boilerplate_removal.$O
+	$(CC) $(LINKER_ARGS)
 
 # gbp_tbl.* are generated from GraphemeBreakProperty.txt.
 # The % signs tell Make that one invocation creates all three.
@@ -31,8 +33,8 @@ clean:
 
 # Header dependencies
 _extractor.c: _extractor.pyx gumbo.pxd relative_urls.pxd
-boilerplate_removal.c: boilerplate_removal.pyx gumbo.pxd
-grapheme_counter.c: grapheme_counter.pyx gbp_tbl.pxd
+boilerplate_removal.c: boilerplate_removal.pyx gumbo.pxd grapheme_counter.pxd
+grapheme_counter.c: grapheme_counter.pyx grapheme_counter.pxd gbp_tbl.pxd
 relative_urls.c: relative_urls.pyx relative_urls.pxd
 
 _extractor.$O: _extractor.c

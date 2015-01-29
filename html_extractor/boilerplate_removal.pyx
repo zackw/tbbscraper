@@ -26,6 +26,7 @@
 # drawing inspiration from the above (and others).
 
 from gumbo cimport *
+from boilerplate_removal cimport *
 
 from grapheme_counter cimport n_grapheme_clusters
 from unicodedata import normalize as unicode_norm
@@ -49,7 +50,7 @@ cdef unicode _normalizev(text):
 
 # Length of the canonicalized serialization of a tag attribute.
 # Attribute names are (supposed to be) ASCII.
-cdef size_t attr_len(GumboAttribute* attr):
+cdef Py_ssize_t attr_len(GumboAttribute* attr) except -1:
     return (4 + # space, equals sign, two quote marks
             len(attr.name.decode('ascii')) +
             n_grapheme_clusters(_normalize1(attr.value.decode('utf-8'))))
@@ -287,3 +288,5 @@ cdef class BlockTreeNode:
         for c in self.children:
             self.totaltagchars += c.totaltagchars
             self.totaltextchars += c.totaltextchars
+
+        return True

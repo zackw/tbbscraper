@@ -5,6 +5,7 @@
 # files gbp_tbl.*.
 
 from gbp_tbl cimport *
+from grapheme_counter cimport *
 
 # Input normalization per http://docs.cython.org/src/tutorial/strings.html
 cdef unicode _ustring(s):
@@ -16,7 +17,7 @@ cdef unicode _ustring(s):
     else:
         raise TypeError("expected a string")
 
-cpdef n_grapheme_clusters(text):
+cpdef Py_ssize_t n_grapheme_clusters(text) except -1:
     cdef unicode utext = _ustring(text)
 
     # Setting the "previous character"'s class to GBP_Control at the
