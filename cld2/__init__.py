@@ -1,1 +1,1 @@
-from .cld2 import detect
+from .cld2 import *
