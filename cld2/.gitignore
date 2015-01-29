@@ -1,4 +1,5 @@
 _basic_test_program
-cld2.cpp
+cld2.cc
+python-vars.mk
 *.so
 build/
