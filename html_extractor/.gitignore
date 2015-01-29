@@ -1,6 +1,6 @@
 *.c
 *.so
-build/
+python-vars.mk
 gbp_tbl.c
 gbp_tbl.h
 gbp_tbl.pxd

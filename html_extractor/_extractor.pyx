@@ -4,7 +4,7 @@ walking as well as the parsing in C(ython).
 """
 
 from gumbo cimport *
-from boilerplate_removal import *
+from boilerplate_removal cimport *
 from relative_urls cimport urljoin, urljoin_outbound
 
 from re import compile as _Regexp
@@ -247,7 +247,7 @@ cdef bint walk_element(GumboElement *elt, GumboParseFlags flags,
     elt_is_title          = elt.tag == GUMBO_TAG_TITLE
     elt_is_heading        = tclass  == TC_HEADING
     elt_discards_contents = tclass  == TC_DISCARD
-    elt_forces_word_break = (tclass != TC_INLINE and eclass != TC_LINK)
+    elt_forces_word_break = (tclass != TC_INLINE and tclass != TC_LINK)
 
     if elt_forces_word_break:
         walk_text(" ", state)
