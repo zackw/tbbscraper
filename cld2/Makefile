@@ -29,16 +29,12 @@ CLD2_CORE_OBJS = \
 	cld2_generated_quad0122.$O \
 	$(NULL)
 
-all: cld2.$M _basic_test_program
-
-_basic_test_program: _basic_test_program.$O $(CLD2_CORE_OBJS)
-	$(CXX) $^ -o $@
+all: cld2.$M
 
 cld2.$M: cld2.$O $(CLD2_CORE_OBJS)
 	$(CXX) $(LINKER_ARGS)
 
 clean:
-	-rm -f _basic_test_program _basic_test_program.$O
 	-rm -f cld2.$M cld2.$O cld2.cc
 	-rm -f $(CLD2_CORE_OBJS)
 	-rm -f python-vars.mk
