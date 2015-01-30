@@ -4,8 +4,8 @@ walking as well as the parsing in C(ython).
 """
 
 from gumbo cimport *
-from boilerplate_removal cimport *
-from relative_urls cimport urljoin, urljoin_outbound
+from .boilerplate_removal cimport *
+from .relative_urls cimport urljoin, urljoin_outbound
 
 from re import compile as _Regexp
 from re import DOTALL  as _Re_DOTALL

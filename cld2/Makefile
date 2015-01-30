@@ -35,9 +35,11 @@ cld2.$M: cld2.$O $(CLD2_CORE_OBJS)
 	$(CXX) $(LINKER_ARGS)
 
 clean:
-	-rm -f cld2.$M cld2.$O cld2.cc
-	-rm -f $(CLD2_CORE_OBJS)
-	-rm -f python-vars.mk
+	-rm -f \
+	  cld2.$M cld2.$O cld2.cc \
+	  $(CLD2_CORE_OBJS) \
+	  python-vars.mk
+	-rm -rf __pycache__
 
 # Python boilerplate
 python-vars.mk:

@@ -26,9 +26,8 @@
 # drawing inspiration from the above (and others).
 
 from gumbo cimport *
-from boilerplate_removal cimport *
+from .grapheme_counter cimport n_grapheme_clusters
 
-from grapheme_counter cimport n_grapheme_clusters
 from unicodedata import normalize as unicode_norm
 from re import compile as regex
 
@@ -46,7 +45,7 @@ cdef unicode _normalize1(unicode text):
     return _whitespace.sub(" ", unicode_norm('NFKC', text)).strip()
 
 cdef unicode _normalizev(text):
-    return normalize1("".join(text))
+    return _normalize1("".join(text))
 
 # Length of the canonicalized serialization of a tag attribute.
 # Attribute names are (supposed to be) ASCII.
@@ -275,7 +274,7 @@ cdef class BlockTreeNode:
             raise RuntimeError("add_child called on finalized BlockTreeNode")
         if child._textv is not None:
             raise RuntimeError("add_child given a non-finalized BlockTreeNode")
-        self.children.append(text)
+        self.children.append(child)
         return True
 
     cdef bint finalize(self) except False:

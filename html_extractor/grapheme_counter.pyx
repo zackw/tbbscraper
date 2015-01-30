@@ -5,7 +5,6 @@
 # files gbp_tbl.*.
 
 from gbp_tbl cimport *
-from grapheme_counter cimport *
 
 # Input normalization per http://docs.cython.org/src/tutorial/strings.html
 cdef unicode _ustring(s):

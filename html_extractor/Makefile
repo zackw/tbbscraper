@@ -6,8 +6,9 @@ CYTHON = cython3 -3
 all: # is the default.
 include python-vars.mk
 
-all: _extractor.$M grapheme_counter.$M relative_urls.$M
+all: _extractor.$M grapheme_counter.$M relative_urls.$M boilerplate_removal.$M
 
+_extractor.$M: LIBS = -lgumbo
 _extractor.$M: _extractor.$O
 	$(CC) $(LINKER_ARGS)
 grapheme_counter.$M: grapheme_counter.$O gbp_tbl.$O
@@ -17,10 +18,10 @@ relative_urls.$M: relative_urls.$O
 boilerplate_removal.$M: boilerplate_removal.$O
 	$(CC) $(LINKER_ARGS)
 
-# gbp_tbl.* are generated from GraphemeBreakProperty.txt.
-# The % signs tell Make that one invocation creates all three.
-gbp_tbl.c% gbp_tbl.h% gbp_tbl.pxd%: gbp_tblgen.py GraphemeBreakProperty.txt
-	$(PYTHON) gbp_tblgen.py
+# gbp_tbl.* are generated from GraphemeBreakProperty.txt.  Writing this
+# as a pattern rule tells Make that one invocation creates all three.
+%_tbl.c %_tbl.h %_tbl.pxd: %_tblgen.py GraphemeBreakProperty.txt
+	$(PYTHON) $<
 
 clean:
 	-rm -f \
@@ -30,6 +31,7 @@ clean:
 	   boilerplate_removal.$M boilerplate_removal.$O boilerplate_removal.c \
 	   gbp_tbl.$O gbp_tbl.c gbp_tbl.h gbp_tbl.pxd \
 	   python-vars.mk
+	-rm -rf __pycache__
 
 # Header dependencies
 _extractor.c: _extractor.pyx gumbo.pxd relative_urls.pxd
