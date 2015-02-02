@@ -15,6 +15,7 @@ unicode_utils.$M: unicode_utils.$O gbp_tbl.$O
 	$(CC) $(LINKER_ARGS)
 relative_urls.$M: relative_urls.$O
 	$(CC) $(LINKER_ARGS)
+boilerplate_removal.$M: LIBS = -lgumbo
 boilerplate_removal.$M: boilerplate_removal.$O
 	$(CC) $(LINKER_ARGS)
 

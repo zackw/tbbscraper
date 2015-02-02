@@ -253,3 +253,10 @@ cdef extern from "gumbo.h":
 
     void gumbo_destroy_output(const GumboOptions *options,
                               GumboOutput *output)
+
+cdef inline unicode get_htmlattr(GumboElement *element, bytes name):
+    """Extract an attribute value from an HTML element."""
+    cdef GumboAttribute* attr = gumbo_get_attribute(&element.attributes, name)
+    if attr is NULL:
+        return None
+    return attr.value.decode("utf-8")

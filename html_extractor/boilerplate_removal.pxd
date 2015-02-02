@@ -24,16 +24,21 @@ cdef class BlockTreeNode:
     # Internal state
     cdef list _textv
     cdef int  _depth
+    cdef double _weight
 
     # Exposed state
     cdef readonly unicode text
     cdef readonly TagClass tagclass
     cdef readonly list children
-    cdef readonly size_t tagchars, \
+
+    # Note: these are all 'double' because there's some weighting
+    # which may cause any of them to take on non-integer values.
+    cdef readonly double tagchars, \
                          textchars, \
                          totaltagchars, \
-                         totaltextchars
-    cdef readonly double textdensity, totaltextdensity
+                         totaltextchars, \
+                         textdensity, \
+                         totaltextdensity
 
     cdef bint _dump_tree(self, outf, textwrap, int depth,
                          double thresh) except False
@@ -58,4 +63,4 @@ cdef class BlockTreeBuilder:
     cdef bint exit_elt(self, TagClass tclass) except False
     cdef bint add_text(self, unicode text) except False
 
-cpdef unicode extract_content(BlockTreeNode tree)
+cpdef object extract_content(BlockTreeNode tree)

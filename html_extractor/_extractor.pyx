@@ -27,13 +27,6 @@ cdef inline list prune_outbound_urls(unicode doc, list urls):
             pruned.add(adjusted)
     return sorted(pruned)
 
-cdef inline unicode get_htmlattr(GumboElement *element, bytes name):
-    """Extract an attribute value from an HTML element."""
-    cdef GumboAttribute* attr = gumbo_get_attribute(&element.attributes, name)
-    if attr is NULL:
-        return None
-    return attr.value.decode("utf-8")
-
 cdef inline bint _X_(GumboElement *element, bytes attr,
                      list links) except False:
     """Helper: If ATTR is present on ELEMENT, extract its value, strip
@@ -347,9 +340,11 @@ cdef class ExtractedContent:
     dom_stats    - DomStatistics object calculated from this page.
     """
 
-    cdef public unicode url, title, text_content
-    cdef public object text_pruned
-    cdef public object links, resources, headings, dom_stats
+    cdef readonly unicode url, title, text_content
+    cdef readonly unicode text_pruned
+    cdef readonly object blocktree # for debugging
+    cdef readonly double threshold # ditto
+    cdef readonly object links, resources, headings, dom_stats
 
     def __init__(self, url, page):
 
@@ -390,4 +385,8 @@ cdef class ExtractedContent:
         self.headings     = walker.headings
         self.links        = walker.links
         self.resources    = walker.resources
-        self.text_pruned  = extract_content(walker.builder.tree)
+        self.blocktree    = walker.builder.tree
+
+        tp, thresh        = extract_content(self.blocktree)
+        self.text_pruned  = tp
+        self.threshold    = thresh

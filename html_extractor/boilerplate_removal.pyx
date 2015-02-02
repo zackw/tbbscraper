@@ -30,10 +30,11 @@
 # from paper #1; the "total text density" metric and the self-tuning
 # threshold are more from paper #2.
 
-cimport gumbo
 from gumbo cimport *
 from .unicode_utils cimport n_grapheme_clusters, \
     normalize_text, not_all_whitespace
+
+from math import log
 
 __all__ = [
     "classify_tag",
@@ -247,6 +248,7 @@ cdef class BlockTreeNode:
         self.children = []
         assert depth >= 0
         self._depth = depth
+        self._weight = 1.0
 
     cdef bint _dump_tree(self, outf, textwrap,
                          int depth, double thresh) except False:
@@ -255,8 +257,11 @@ cdef class BlockTreeNode:
         if self.totaltextdensity >= thresh:
             outf.write("\033[7m")
 
-        outf.write("{}{}: local {:.3f} ({}/{}) total {:.3f} ({}/{})\n"
+        outf.write("{}{} w{:.3f}: "
+                   "local {:.3f} ({:.3f}/{:.3f}) "
+                   "total {:.3f} ({:.3f}/{:.3f})\n"
                    .format(indent, TAGCLASS_LABELS[self.tagclass],
+                           self._weight,
                            self.textdensity,
                            self.textchars, self.tagchars,
                            self.totaltextdensity,
@@ -298,7 +303,7 @@ cdef class BlockTreeNode:
 
            Note: this function is not responsible for deciding whether to
            split the block, and it does not inspect the children of the
-           element.  All it does is update tagchars."""
+           element.  All it does is update tagchars and _weight."""
         if self._textv is None:
             raise RuntimeError("add_tag called on finalized BlockTreeNode")
 
@@ -308,6 +313,22 @@ cdef class BlockTreeNode:
 
         for i in range(tag.attributes.length):
             self.tagchars += attr_len(<GumboAttribute*> tag.attributes.data[i])
+
+        # Weight adjustment.  This is the only place where we look at
+        # HTML5 and ARIA semantics.
+        if tag.tag in (GUMBO_TAG_MAIN, GUMBO_TAG_ARTICLE):
+            self._weight *= 2.0
+
+        elif tag.tag in (GUMBO_TAG_HEADER, GUMBO_TAG_FOOTER, GUMBO_TAG_NAV,
+                         GUMBO_TAG_ASIDE):
+            self._weight *= 0.5
+
+        else:
+            role = get_htmlattr(tag, b"role")
+            if role in ("main", "article"):
+                self._weight *= 2.0
+            elif role in ("banner", "complementary", "contentinfo"):
+                self._weight *= 0.5
 
         return True
 
@@ -327,25 +348,27 @@ cdef class BlockTreeNode:
         self._textv = None
         self._depth = -1
 
-        self.textchars = n_grapheme_clusters(self.text)
+        self.textchars = n_grapheme_clusters(self.text) * self._weight
+
+        # Tag characters only count logarithmically.
+        # This effectively gives a bonus to long runs of text even if they
+        # have lots of tags.
+        if self.tagchars == 0:
+            self.tagchars = 1
+        else:
+            self.tagchars = 1 + log(self.tagchars)
+
         self.totaltagchars = self.tagchars
         self.totaltextchars = self.textchars
         for cc in self.children:
             c = <BlockTreeNode>cc
+            c._weight *= self._weight
             c.finalize()
             self.totaltagchars += c.totaltagchars
             self.totaltextchars += c.totaltextchars
 
-        if self.tagchars == 0:
-            self.textdensity = self.textchars
-        else:
-            self.textdensity = self.textchars / <double>self.tagchars
-
-        if self.totaltagchars == 0:
-            self.totaltextdensity = self.totaltextchars
-        else:
-            self.totaltextdensity = self.totaltextchars / \
-                                    <double>self.totaltagchars
+        self.textdensity = self.textchars / self.tagchars
+        self.totaltextdensity = self.totaltextchars / self.totaltagchars
 
         return True
 
@@ -452,8 +475,12 @@ cdef class BlockTreeBuilder:
         # Paragraph and link tags merge with a previous or parent
         # which is either TC_PARA or TC_HEADING; in the latter case
         # they convert it to TC_PARA.
+        # Paragraph tags do not count toward the tag weight of the
+        # block, but link tags do.
         elif tclass in (TC_PARA, TC_LINK):
             self.maybe_resume_prev_or_parent(self.depth, False)
+            if tclass == TC_PARA:
+                return True
 
         # Graphic elements never induce blocks, and their contents
         # are discarded, but their own attributes count toward the
@@ -544,40 +571,43 @@ cdef double choose_threshold(BlockTreeNode root) except -1:
     # block in the whole page; then, take the _minimum_ density
     # in the path from that block to the body as the threshold."
 
-    assert root.tagclass == TC_ROOT
-    assert len(root.children) == 1
 
-    body = <BlockTreeNode> root.children[0]
-    target = find_max_density(body, None)
-    path   = find_path_to_max_density(body, target)
+    target = find_max_density(root, None)
+    path   = find_path_to_max_density(root, target)
 
     return min((<BlockTreeNode>x).totaltextdensity for x in path)
 
 #
 # Paper 2's description of how content is actually selected is very
 # confusing and possibly internally inconsistent.  So we do the simple
-# thing, which is to select all blocks whose totaltextdensity is above
-# the threshold, whether or not their parents are above the threshold.
-# This is not perfect; in particular it can lose real content when
-# there are a lot of <div>s in the middle of the content area.  But
-# it's good enough for our purposes.
+# thing, which is to prune from the tree all blocks whose totaltextdensity
+# is below the threshold, even if some of their children are above it.
+# This is not perfect; in particular it can lose real content when there
+# are a lot of <div>s in the middle of the content area.  But it's good
+# enough for our purposes.
 #
 
 cdef bint do_extract_content(BlockTreeNode node,
                              double thresh,
                              list output) except False:
-    if node.totaltextdensity > thresh:
-        output.append(node.text)
 
-    for c in node.children:
-        do_extract_content(<BlockTreeNode>c, thresh, output)
+    if node.totaltextdensity >= thresh:
+        output.append(node.text)
+        for c in node.children:
+            do_extract_content(<BlockTreeNode>c, thresh, output)
 
     return True
 
-cpdef unicode extract_content(BlockTreeNode root):
-    cdef broot = <BlockTreeNode>root
-    cdef double thresh = choose_threshold(broot)
+cpdef object extract_content(BlockTreeNode root):
 
+    # All of the content is always inside the <body>, and there may be
+    # a tremendous amount of clutter on the <html> tag itself
+    # (e.g. because of Modernizr), so we skip over the <html> block.
+    assert root.tagclass == TC_ROOT
+    assert len(root.children) == 1
+    root = <BlockTreeNode>root.children[0]
+
+    thresh = choose_threshold(root)
     selected_blocks = []
-    do_extract_content(broot, thresh, selected_blocks)
-    return " ".join(selected_blocks)
+    do_extract_content(root, thresh, selected_blocks)
+    return (" ".join(selected_blocks), thresh)
