@@ -6,12 +6,12 @@ CYTHON = cython3 -3
 all: # is the default.
 include python-vars.mk
 
-all: _extractor.$M grapheme_counter.$M relative_urls.$M boilerplate_removal.$M
+all: _extractor.$M unicode_utils.$M relative_urls.$M boilerplate_removal.$M
 
 _extractor.$M: LIBS = -lgumbo
 _extractor.$M: _extractor.$O
 	$(CC) $(LINKER_ARGS)
-grapheme_counter.$M: grapheme_counter.$O gbp_tbl.$O
+unicode_utils.$M: unicode_utils.$O gbp_tbl.$O
 	$(CC) $(LINKER_ARGS)
 relative_urls.$M: relative_urls.$O
 	$(CC) $(LINKER_ARGS)
@@ -26,7 +26,7 @@ boilerplate_removal.$M: boilerplate_removal.$O
 clean:
 	-rm -f \
 	   _extractor.$M _extractor.$O _extractor.c \
-	   grapheme_counter.$M grapheme_counter.$O grapheme_counter.c \
+	   unicode_utils.$M unicode_utils.$O unicode_utils.c \
 	   relative_urls.$M relative_urls.$O relative_urls.c \
 	   boilerplate_removal.$M boilerplate_removal.$O boilerplate_removal.c \
 	   gbp_tbl.$O gbp_tbl.c gbp_tbl.h gbp_tbl.pxd \
@@ -34,14 +34,15 @@ clean:
 	-rm -rf __pycache__
 
 # Header dependencies
-_extractor.c: _extractor.pyx gumbo.pxd relative_urls.pxd
-boilerplate_removal.c: boilerplate_removal.pyx gumbo.pxd grapheme_counter.pxd
-grapheme_counter.c: grapheme_counter.pyx grapheme_counter.pxd gbp_tbl.pxd
+_extractor.c: _extractor.pyx gumbo.pxd relative_urls.pxd \
+  boilerplate_removal.pxd unicode_utils.pxd
+boilerplate_removal.c: boilerplate_removal.pyx gumbo.pxd unicode_utils.pxd
+unicode_utils.c: unicode_utils.pyx unicode_utils.pxd gbp_tbl.pxd
 relative_urls.c: relative_urls.pyx relative_urls.pxd
 
 _extractor.$O: _extractor.c
 gbp_tbl.$O: gbp_tbl.c gbp_tbl.h
-grapheme_counter.$O: grapheme_counter.c gbp_tbl.h
+unicode_utils.$O: unicode_utils.c gbp_tbl.h
 relative_urls.$O: relative_urls.c
 
 # Python boilerplate
