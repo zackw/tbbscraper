@@ -425,7 +425,8 @@ cdef class BlockTreeBuilder:
         # Otherwise, this block might be mergeable with its immediate
         # previous sibling.
         else:
-            pclass = (<BlockTreeNode>self.stack[-1]).children[-1].tagclass
+            pclass = (<BlockTreeNode>(<BlockTreeNode>self.stack[-1])
+                                      .children[-1]).tagclass
             if (tclass == pclass or
                 (tclass == TC_PARA and pclass == TC_HEADING)):
 
@@ -575,7 +576,12 @@ cdef double choose_threshold(BlockTreeNode root) except -1:
     target = find_max_density(root, None)
     path   = find_path_to_max_density(root, target)
 
-    return min((<BlockTreeNode>x).totaltextdensity for x in path)
+    # This isn't just min(x.totaltextdensity for x in path) because
+    # cython 0.20 doesn't support genexps in cdefs. (0.21 does.)
+    densities = []
+    for x in path:
+        densities.append((<BlockTreeNode>x).totaltextdensity)
+    return min(densities)
 
 #
 # Paper 2's description of how content is actually selected is very
