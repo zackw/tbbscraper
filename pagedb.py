@@ -151,8 +151,8 @@ class PageObservation:
            dom_stats        - DOMStatistics object counting tags and
                               tree depth.
 
-       NOTE: retrieving the raw HTML content and the capture log is currently
-             not implemented.
+       NOTE: retrieving the capture log is currently not implemented.
+
     """
 
     def __init__(self, db, run, locale, country, url_id, url,
@@ -181,6 +181,8 @@ class PageObservation:
         self._links               = None
         self._resources           = None
         self._dom_stats           = None
+
+        self._html_content        = None
 
     # Used by PageDB.get_observations_for_text.
     def _augment(self, document=None, document_with_bp=None):
@@ -233,6 +235,14 @@ class PageObservation:
                                                      self.locale,
                                                      self.url_id)
         return self._dom_stats
+
+    @property
+    def html_content(self):
+        if self._html_content is None:
+            self._html_content = self._db.get_html_content(self.run,
+                                                           self.locale,
+                                                           self.url_id)
+        return self._html_content
 
 
 class PageDB:
@@ -547,3 +557,14 @@ class PageDB:
                     " WHERE run = %s AND locale = %s AND url = %s",
                     (run, locale, url_id))
         return DOMStatistics(json.loads(zlib.decompress(cur.fetchone()[0])))
+
+    # This query is a little more complicated because the HTML content
+    # is only stored in the captured_pages table for the original run.
+    def get_html_content(self, run, locale, url_id):
+        cur = self._db.cursor()
+        cur.execute("SELECT c.html_content"
+                    "  FROM ts_run_{n}.captured_pages c"
+                    "  JOIN ts_analysis.url_strings u ON u.r{n}id = c.url"
+                    " WHERE c.locale = %s AND u.id = %s".format(n=run),
+                    (locale, url_id))
+        return zlib.decompress(cur.fetchone()[0])
