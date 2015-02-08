@@ -4,86 +4,136 @@
 -- captures.  This includes, for instance, text content, outbound
 -- links, and language assessment.  Some metadata from the
 -- captured_pages table is also replicated, for convenience.
---
--- This url_strings table is not to be confused with the url_strings
--- table in any ts_run_<N> schema; it holds ONLY outbound links.
+
+SET search_path TO ts_analysis;
+
+BEGIN;
+
+-- Mapping from ISO 639 language codes to common English names.
+CREATE TABLE language_codes (
+   code  TEXT NOT NULL PRIMARY KEY,
+   name  TEXT NOT NULL
+);
+
+-- This url_strings table holds all of the URLs in these tables.
+-- For convenience, it also holds crossreference columns which give
+-- the matching URL numbers in the other schemas.  Note that not all
+-- URLs are necessarily _in_ those tables.
 
 CREATE TABLE url_strings (
-    id    SERIAL  NOT NULL PRIMARY KEY,
-    url   TEXT    NOT NULL UNIQUE CHECK (url <> '')
+    id    SERIAL   NOT NULL PRIMARY KEY,
+    url   TEXT     NOT NULL UNIQUE CHECK (url <> ''),
+    r1id  INTEGER,
+    r2id  INTEGER,
+    r3id  INTEGER
+);
+
+-- Merge of all the capture_detail tables.  Because capture_detail IDs
+-- are not used to index anything else, we don't bother with
+-- crossreference columns.
+CREATE TABLE capture_detail (
+    id     SERIAL   NOT NULL PRIMARY KEY,
+    detail TEXT     NOT NULL UNIQUE CHECK (detail <> '')
 );
 
 -- Many pages contain exactly the same text content, even if their
--- HTML was not the same.  Therefore, text content is stored in an
--- ancillary table so it can be deduplicated.
-CREATE TABLE page_text_content (
-    -- foreign key for joins
+-- HTML was not the same.  We store page text and properties derived
+-- from it in this table, uniquely.
+CREATE TABLE page_text (
+    -- Serial number, for joins
     id       SERIAL  NOT NULL PRIMARY KEY,
 
-    -- SHA256 (raw) hash of uncompressed text, for deduplication
-    hash     BYTEA   NOT NULL UNIQUE CHECK (hash <> ''),
+    -- Does this text include site boilerplate?
+    has_boilerplate BOOLEAN NOT NULL,
+
+    -- ISO 639 two- or three-letter code: best estimate of the
+    -- text's language.
+    lang_code       TEXT NOT NULL,
+
+    -- Confidence in the language estimate (percentage)
+    lang_conf       REAL NOT NULL,
 
     -- Actual contents, zlib-compressed.
     contents BYTEA   NOT NULL
 );
+
 -- Do not waste effort trying to recompress 'contents' in the storage
--- layer, since it is already compressed.  Similarly for 'hash', which
--- is incompressible and should be inline anyway.
-ALTER TABLE page_text_content
-   ALTER COLUMN hash     SET STORAGE PLAIN,
-   ALTER COLUMN contents SET STORAGE EXTERNAL;
+-- layer, since it is already compressed.
+-- lang_code is guaranteed to be two or three characters at most.
+ALTER TABLE page_text
+   ALTER COLUMN contents SET STORAGE EXTERNAL,
+   ALTER COLUMN lang_code SET STORAGE PLAIN;
 
--- Many pages also contain exactly the same set of outbound links.
--- (Even more pages contain *nearly* the same set of outbound links,
--- but taking that into account would substantially complicate usage.)
--- Each element of the urls array is an entry in url_strings; postgres
--- does not currently support declaring that as a foreign-key
--- constraint.  The database relies on the application always to
--- generate url vectors with no duplicates, sorted in ascending order
--- by code number.
-CREATE TABLE page_link_sets (
-   -- foreign key for joins
-   id   SERIAL    NOT NULL PRIMARY KEY,
-   urls INTEGER[] NOT NULL
-);
--- The 'urls' field can easily become too long to be the target of a
--- regular UNIQUE CONSTRAINT, so we do this instead.
--- MD5 is the only strong hash built into postgres.
-CREATE UNIQUE INDEX page_link_clusters_urls_idx
-    ON page_link_clusters (md5(array_to_string(urls,',')));
+-- Index for deduplication.  The 'contents' field is frequently too
+-- large to be the target of a regular index, so we use a function
+-- index instead.  MD5 is the only strong hash built into postgres;
+-- application code does not assume there are no collisions.
+CREATE INDEX page_text_contents_idx
+    ON page_text (md5(contents));
 
--- This is the main table.  Pay attention to the 'run' field.
--- The 'url' and 'redir_url' fields index "url_strings", and
--- (locale, url) indexes "captured_pages", IN THE SCHEMA
--- CORRESPONDING TO THE RUN NUMBER.
+-- Backward map from page contents to field observations.  The primary
+-- key is (document, url, locale, run) where 'document' is the text after
+-- boilerplate removal (index into the page_texts table), 'url' is the
+-- URL at which this text was observed, 'locale' is the country code
+-- from which it was observed, and 'run' is the run number.  There are
+-- then some ancillary data specific to the observation rather than the
+-- document, mostly copied over from ts_run_<run>.captured_pages.
 --
--- Yes, this is awkward (and prevents us applying a foreign-key
--- constraint to the url field), but the collection process can't
--- easily be changed now.  pagedb.py will paper over this wrinkle
--- as long as you don't need to look at anything *besides* the text
--- of the URL(s).
-CREATE TABLE page_extracted_content (
-   run         INTEGER NOT NULL CHECK (run >= 1),
+-- If you need to join back to ts_run_<run>.whatever to get at data
+-- that's not captured here, beware that the URL numbers are different
+-- in each of those schemas! You will need to look up the correct
+-- number in url_strings.r<run>id in *this* schema.
+--
+CREATE TABLE page_observations (
+   -- Note: this field always points to a row of 'page_text' for which
+   -- has_boilerplate is FALSE.
+   document    INTEGER NOT NULL REFERENCES page_text(id),
+   url         INTEGER NOT NULL REFERENCES url_strings(id),
+
+   -- This field is an ISO 631 country code, possibly with a
+   -- disambiguating suffix.  It is not declared as a foreign key for
+   -- the locale_data table because of the suffixes.
    locale      TEXT    NOT NULL CHECK (locale <> ''),
-   url         INTEGER NOT NULL CHECK (url >= 1),
+
+   -- Which data collection run is this from?  This tells you which
+   -- ts_run_<n> schema to look in for more data.
+   run         INTEGER NOT NULL CHECK (run >= 1),
+
+   -- Which sources provided us with this URL?  One or more of the
+   -- following codes: a=Alexa, c=Citizenlab, h=Herdict, p=Pinboard,
+   -- s=Staticlist, t=Tweeted, u=Twitter user profile.
+   sources     TEXT    NOT NULL CHECK (sources <> ''),
+
+   -- More extracted data.
+   -- 'document_with_bp' always points to a row of page_text for which
+   -- has_boilerplate is TRUE.
+   -- The other four are compressed JSON blobs.
+   document_with_bp  INTEGER NOT NULL REFERENCES page_text(id),
+   links        BYTEA NOT NULL,
+   resources    BYTEA NOT NULL,
+   headings     BYTEA NOT NULL,
+   dom_stats    BYTEA NOT NULL,
 
    -- metadata denormalized from captured_pages
    access_time TIMESTAMP WITHOUT TIME ZONE NOT NULL,
    result      ts_run_1.capture_result NOT NULL,
-   redir_url   INTEGER NOT NULL CHECK (redir_url >= 1),
-
-   -- extracted data; add more columns as necessary
-   text_content INTEGER NOT NULL REFERENCES page_text_content(id),
-   links        INTEGER NOT NULL REFERENCES page_link_sets(id),
-   resources    INTEGER NOT NULL REFERENCES page_link_sets(id),
-
-   lang_code    TEXT,
-   lang_conf    REAL,
+   detail      INTEGER NOT NULL REFERENCES capture_detail(id),
+   redir_url   INTEGER NOT NULL REFERENCES url_strings(id),
 
    -- The ordering on this index is chosen to facilitate lookups and joins.
-   UNIQUE (locale, url, run)
+   UNIQUE (document, url, locale, run)
 );
--- These fields are guaranteed to be two or three characters at most.
-ALTER TABLE page_extracted_content
-      ALTER COLUMN locale SET STORAGE PLAIN,
-      ALTER COLUMN lang_code SET STORAGE PLAIN;
+CREATE UNIQUE INDEX page_observations_rlu_idx
+    ON page_observations(run, locale, url);
+
+ALTER TABLE page_observations
+      -- These fields are guaranteed to be two or three characters at most.
+      ALTER COLUMN locale    SET STORAGE PLAIN,
+      ALTER COLUMN sources   SET STORAGE PLAIN,
+      -- These fields are already compressed by the application.
+      ALTER COLUMN links     SET STORAGE EXTERNAL,
+      ALTER COLUMN resources SET STORAGE EXTERNAL,
+      ALTER COLUMN headings  SET STORAGE EXTERNAL,
+      ALTER COLUMN dom_stats SET STORAGE EXTERNAL;
+
+COMMIT;

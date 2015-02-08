@@ -7,7 +7,7 @@ from libcpp cimport bool as bool_t
 
 cimport compact_lang_det
 from compact_lang_det cimport UNKNOWN_ENCODING, UNKNOWN_LANGUAGE, \
-                              LanguageCode, LanguageName
+                              NUM_LANGUAGES, LanguageCode, LanguageName
 
 cdef class Language:
     """Wrapper around the Language enumeration that CLD2 uses to report
@@ -92,5 +92,17 @@ cpdef detect(text, lang_hint=None, tld_hint=None):
         rv.append(Language(top3[b], score3[b], pct3[b]))
     if top3[c] != <int>UNKNOWN_LANGUAGE:
         rv.append(Language(top3[c], score3[c], pct3[c]))
+
+    return rv
+
+cpdef get_all_languages():
+    """Returns a dictionary mapping language codes to language names for
+    all languages supported by this version of cld2."""
+    rv = {}
+    for i in range(NUM_LANGUAGES):
+        lname = LanguageName(<compact_lang_det.Language>i).decode("ascii")
+        lcode = LanguageCode(<compact_lang_det.Language>i).decode("ascii")
+        if lcode != "":
+            rv[lcode] = lname
 
     return rv

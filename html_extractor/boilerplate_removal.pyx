@@ -55,10 +55,10 @@ TAGCLASS_LABELS = [
 ]
 
 # Length of the canonicalized serialization of a tag attribute.
-# Attribute names are (supposed to be) ASCII.
+# Attribute names are supposed to be ASCII, but sometimes they aren't.
 cdef inline Py_ssize_t attr_len(GumboAttribute* attr) except -1:
     return (4 + # space, equals sign, two quote marks
-            len(attr.name.decode('ascii')) +
+            n_grapheme_clusters(normalize_text(attr.name.decode('utf-8'))) +
             n_grapheme_clusters(normalize_text(attr.value.decode('utf-8'))))
 
 cdef TagClass classify_tag(GumboTag tag):
@@ -609,9 +609,8 @@ cpdef object extract_content(BlockTreeNode root):
     # All of the content is always inside the <body>, and there may be
     # a tremendous amount of clutter on the <html> tag itself
     # (e.g. because of Modernizr), so we skip over the <html> block.
-    assert root.tagclass == TC_ROOT
-    assert len(root.children) == 1
-    root = <BlockTreeNode>root.children[0]
+    if root.tagclass == TC_ROOT and len(root.children) == 1:
+        root = <BlockTreeNode>root.children[0]
 
     thresh = choose_threshold(root)
     selected_blocks = []

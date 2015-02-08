@@ -5,6 +5,7 @@ from libcpp cimport bool
 cdef extern from "compact_lang_det.h" namespace "CLD2":
     ctypedef enum Language:
         UNKNOWN_LANGUAGE
+        NUM_LANGUAGES
 
     ctypedef enum Encoding:
         UNKNOWN_ENCODING

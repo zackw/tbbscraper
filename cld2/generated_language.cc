@@ -51,7 +51,7 @@ extern const char* const kLanguageToName[kLanguageToNameSize] = {
   "Romanian",                  // 22 ro
   "Hungarian",                 // 23 hu
   "Estonian",                  // 24 et
-  "Ignore",                    // 25 zxx
+  "Not speech",                // 25 zxx (unclear how actually used)
   "Unknown",                   // 26 un
   "Bulgarian",                 // 27 bg
   "Croatian",                  // 28 hr
