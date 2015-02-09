@@ -567,4 +567,6 @@ class PageDB:
                     "  JOIN ts_analysis.url_strings u ON u.r{n}id = c.url"
                     " WHERE c.locale = %s AND u.id = %s".format(n=run),
                     (locale, url_id))
-        return zlib.decompress(cur.fetchone()[0])
+        blob = cur.fetchone()[0]
+        if not blob: return ''
+        return zlib.decompress(blob)
