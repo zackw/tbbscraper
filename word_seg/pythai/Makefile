@@ -13,7 +13,7 @@ libthai.$M: libthai.$O
 
 clean:
 	-rm -f \
-	  libthai.$M libthai.$O
+	  libthai.$M libthai.$O \
 	  python-vars.mk
 	-rm -rf __pycache__
 
