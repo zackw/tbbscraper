@@ -535,28 +535,29 @@ class PageDB:
         cur.execute("SELECT headings FROM ts_analysis.page_observations"
                     " WHERE run = %s AND locale = %s AND url = %s",
                     (run, locale, url_id))
-        return json.loads(zlib.decompress(cur.fetchone()[0]))
+        return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
 
     def get_links(self, run, locale, url_id):
         cur = self._db.cursor()
         cur.execute("SELECT links FROM ts_analysis.page_observations"
                     " WHERE run = %s AND locale = %s AND url = %s",
                     (run, locale, url_id))
-        return json.loads(zlib.decompress(cur.fetchone()[0]))
+        return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
 
     def get_resources(self, run, locale, url_id):
         cur = self._db.cursor()
         cur.execute("SELECT resources FROM ts_analysis.page_observations"
                     " WHERE run = %s AND locale = %s AND url = %s",
                     (run, locale, url_id))
-        return json.loads(zlib.decompress(cur.fetchone()[0]))
+        return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
 
     def get_dom_stats(self, run, locale, url_id):
         cur = self._db.cursor()
         cur.execute("SELECT dom_stats FROM ts_analysis.page_observations"
                     " WHERE run = %s AND locale = %s AND url = %s",
                     (run, locale, url_id))
-        return DOMStatistics(json.loads(zlib.decompress(cur.fetchone()[0])))
+        return DOMStatistics(
+            json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8")))
 
     # This query is a little more complicated because the HTML content
     # is only stored in the captured_pages table for the original run.
@@ -567,4 +568,9 @@ class PageDB:
                     "  JOIN ts_analysis.url_strings u ON u.r{n}id = c.url"
                     " WHERE c.locale = %s AND u.id = %s".format(n=run),
                     (locale, url_id))
-        return zlib.decompress(cur.fetchone()[0])
+        # The blob in the database might be NULL or the empty string;
+        # either makes zlib barf.
+        blob = cur.fetchone()[0]
+        if not blob:
+            return ""
+        return zlib.decompress(blob).decode("utf-8")
