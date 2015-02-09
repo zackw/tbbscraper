@@ -1,6 +1,7 @@
-*.c
-*.so
-python-vars.mk
+_extractor.c
+boilerplate_removal.c
+relative_urls.c
+unicode_utils.c
 gbp_tbl.c
 gbp_tbl.h
 gbp_tbl.pxd
