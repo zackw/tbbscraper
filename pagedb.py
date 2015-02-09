@@ -7,53 +7,9 @@ import psycopg2
 import zlib
 import json
 import random
+from collections import defaultdict
 
 __all__ = ['PageText', 'PageObservation', 'DOMStatistics', 'PageDB']
-
-# From https://code.activestate.com/recipes/577970-simplified-lru-cache/
-# We use this instead of functools.lru_cache because that isn't flexible
-# enough; in particular we need to separate get and put operations.  See
-# PageDB for how this is used.
-class lru_cache:
-    def __init__(self, maxsize=1024):
-        # Link layout:     [PREV, NEXT, KEY, VALUE]
-        self.root = root = [None, None, None, None]
-        self.cache = cache = {}
-
-        last = root
-        for i in range(maxsize):
-            key = object()
-            cache[key] = last[1] = last = [last, root, key, None]
-        root[0] = last
-
-    def get(self, key):
-        cache = self.cache
-        root = self.root
-        link = cache.get(key)
-        if link is None:
-            return None
-
-        link_prev, link_next, _, value = link
-        link_prev[1] = link_next
-        link_next[0] = link_prev
-        last = root[0]
-        last[1] = root[0] = link
-        link[0] = last
-        link[1] = root
-        return value
-
-    def put(self, key, value):
-        cache = self.cache
-        root = self.root
-        root[2] = key
-        root[3] = value
-        oldroot = root
-        root = self.root = root[1]
-        root[2], oldkey = None, root[2]
-        root[3], oldvalue = None, root[3]
-        del cache[oldkey]
-        cache[key] = oldroot
-        return value
 
 class PageText:
     """The text of at least one page.  Corresponds to one row of the
@@ -120,8 +76,12 @@ class DOMStatistics:
     """
 
     def __init__(self, blob):
-        self.tags          = blob["tags"]
-        self.tags_at_depth = blob["tags_at_depth"]
+        if not blob:
+            self.tags = {}
+            self.tags_at_depth = {}
+        else:
+            self.tags          = blob["tags"]
+            self.tags_at_depth = blob["tags_at_depth"]
 
 class PageObservation:
     """A page as observed from a particular locale.  Corresponds to one
@@ -158,7 +118,10 @@ class PageObservation:
     def __init__(self, db, run, locale, country, url_id, url,
                  access_time, result, detail, redir_url,
                  document_id, document_with_bp_id,
-                 document=None, document_with_bp=None):
+                 *,
+                 document=None, document_with_bp=None,
+                 headings=None, links=None, resources=None,
+                 dom_stats=None, html_content=None):
 
         self._db                  = db
 
@@ -177,19 +140,12 @@ class PageObservation:
         self._document_with_bp_id = document_with_bp_id
         self._document_with_bp    = document_with_bp
 
-        self._headings            = None
-        self._links               = None
-        self._resources           = None
-        self._dom_stats           = None
+        self._headings            = headings
+        self._links               = links
+        self._resources           = resources
+        self._dom_stats           = dom_stats
 
-        self._html_content        = None
-
-    # Used by PageDB.get_observations_for_text.
-    def _augment(self, document=None, document_with_bp=None):
-        if document is not None:
-            self._document = document
-        if document_with_bp is not None:
-            self._document_with_bp = document_with_bp
+        self._html_content        = html_content
 
     @property
     def document(self):
@@ -255,13 +211,12 @@ class PageDB:
            processing."""
 
         self._locales    = None
-        self._text_cache = lru_cache(131072)
-        self._obs_cache  = lru_cache(131072 * 8)
+        self._runs       = None
         self._cursor_tag = "pagedb_qtmp_{}_{}".format(os.getpid(), id(self))
         self._cursor_ctr = 0
 
         if exclude_partial_locales:
-            self._exclude_partial_where = "locale NOT IN ('cn', 'jp_kobe')"
+            self._exclude_partial_where = "o.locale NOT IN ('cn', 'jp_kobe')"
             self._exclude_partial_list  = frozenset(('cn', 'jp_kobe'))
         else:
             self._exclude_partial_where = ""
@@ -295,11 +250,27 @@ class PageDB:
         if self._locales is None:
             cur = self._db.cursor()
             cur.execute("SELECT locale FROM ts_analysis.captured_locales")
-            self._locales = sorted([
+            self._locales = sorted(
                 row[0] for row in cur
                 if row[0] not in self._exclude_partial_list
-            ])
+            )
         return self._locales
+
+    @property
+    def runs(self):
+        """Retrieve a list of all runs indexed in ts_analysis.url_strings.
+           (Right now that means run 0 is not included.)
+        """
+        if self._runs is None:
+            cur = self._db.cursor()
+            cur.execute("SELECT CAST(n AS INTEGER) FROM ("
+                        "SELECT SUBSTRING(column_name FROM 'r([0-9]+)id') AS n"
+                        "  FROM information_schema.columns"
+                        " WHERE table_schema = 'ts_analysis'"
+                        "   AND table_name = 'url_strings') _"
+                        " WHERE n <> ''")
+            self._runs = sorted(row[0] for row in cur)
+        return self._runs
 
     #
     # Methods for retrieving pages or observations in bulk.
@@ -350,12 +321,7 @@ class PageDB:
         cur.execute(query)
         try:
             for row in cur:
-                key = row[0] # id
-                txt = self._text_cache.get(key)
-                if txt is None:
-                    txt = PageText(self, *row)
-                    self._text_cache.put(key, txt)
-                yield txt
+                yield PageText(self, *row)
 
         finally:
             cur.close()
@@ -391,6 +357,7 @@ class PageDB:
                               where_clause="",
                               ordered='url',
                               limit=None,
+                              load=[],
                               constructor_kwargs={}):
         """Retrieve page observations from the database matching the
            where_clause.  This is a generator, which produces one
@@ -407,19 +374,85 @@ class PageDB:
            'ordered' may be None for unordered, 'url' to sort by URL id
            (_not_ actual URL text), or 'locale' to sort by locale.
 
+           'load' is a list of PageObservation attributes to load
+           eagerly from the database: zero or more of 'headings',
+           'links', 'resources', 'dom_stats', and 'html_content'.
+           If you know you're going to use these for every observation,
+           requesting them up front is more efficient than allowing them
+           to be loaded lazily.
+
            'constructor_kwargs' is for passing additional arguments to the
            PageObservation constructor; external code should not need it.
         """
+        columns = { "run"                 : "o.run",
+                    "locale"              : "o.locale",
+                    "country"             : "cc.name",
+                    "url_id"              : "o.url",
+                    "url"                 : "u.url",
+                    "access_time"         : "o.access_time",
+                    "result"              : "o.result",
+                    "detail"              : "o.detail",
+                    "redir_url"           : "v.url",
+                    "document_id"         : "o.document",
+                    "document_with_bp_id" : "o.document_with_bp" }
 
-        query = ("SELECT o.run, o.locale, cc.name, o.url, u.url, "
-                 "       o.access_time, o.result, d.detail, v.url, "
-                 "       o.document, o.document_with_bp"
-                 "  FROM ts_analysis.page_observations o"
-                 "  JOIN ts_analysis.capture_detail d ON o.detail = d.id"
-                 "  JOIN ts_analysis.locale_data cc"
-                 "       ON SUBSTRING(o.locale FOR 2) = cc.cc2"
-                 "  JOIN ts_analysis.url_strings u ON o.url = u.id"
-                 "  LEFT JOIN ts_analysis.url_strings v ON o.redir_url = v.id")
+        joins = [
+            "FROM ts_analysis.page_observations o",
+            "JOIN ts_analysis.capture_detail d ON o.detail = d.id",
+            "JOIN ts_analysis.locale_data cc"
+            "     ON SUBSTRING(o.locale FOR 2) = cc.cc2",
+            "JOIN ts_analysis.url_strings u ON o.url = u.id",
+            "LEFT JOIN ts_analysis.url_strings v ON o.redir_url = v.id",
+        ]
+
+        unpackers = defaultdict(lambda: (lambda x: x))
+
+        if "headings" in load:
+            columns["headings"] = "o.headings"
+            unpackers["headings"] = \
+                lambda x: (json.loads(zlib.decompress(x).decode("utf-8"))
+                           if x else [])
+        if "links" in load:
+            columns["links"] = "o.links"
+            unpackers["links"] = \
+                lambda x: (json.loads(zlib.decompress(x).decode("utf-8"))
+                           if x else [])
+        if "resources" in load:
+            columns["resources"] = "o.resources"
+            unpackers["resources"] = \
+                lambda x: (json.loads(zlib.decompress(x).decode("utf-8"))
+                           if x else [])
+        if "dom_stats" in load:
+            columns["dom_stats"] = "o.dom_stats"
+            unpackers["dom_stats"] = \
+                lambda x: DOMStatistics(json.loads(zlib.decompress(x)
+                                                   .decode("utf-8"))
+                                        if x else {})
+        if "html_content" in load:
+            # This is extra-hairy because the HTML content is only
+            # stored in the captured_pages table for the original run,
+            # and that means we have to join _all of them_.
+            # The access_time condition is necessary to handle cases where
+            # the same locale visited the same URL more than once.
+            coalesce = []
+            for run in self.runs:
+                coalesce.append("r{n}.html_content".format(n=run))
+                joins.append(
+                    "LEFT JOIN ts_run_{n}.captured_pages r{n}"
+                    "       ON o.locale = r{n}.locale AND u.r{n}id = r{n}.url"
+                    "      AND o.access_time = r{n}.access_time"
+                    .format(n=run))
+            columns["html_content"] = "COALESCE(" + ",".join(coalesce) + ")"
+            unpackers["html_content"] = \
+                lambda x: (zlib.decompress(x).decode("utf-8")
+                           if x else "")
+
+        # Fix a column ordering.
+        column_order = list(enumerate(columns.keys()))
+
+        query = "SELECT " + ",".join(columns[oc[1]] for oc in column_order)
+        query += " "
+        query += " ".join(joins)
 
         if where_clause and self._exclude_partial_where:
             query += " WHERE ({}) AND ({})".format(where_clause,
@@ -452,15 +485,11 @@ class PageDB:
         cur.execute(query)
         try:
             for row in cur:
-                # run, locale, url_id
-                key = (row[0], row[1], row[3])
-                obs = self._obs_cache.get(key)
-                if obs is not None:
-                    obs._augment(**constructor_kwargs)
-                else:
-                    obs = PageObservation(self, *row, **constructor_kwargs)
-                    self._obs_cache.put(key, obs)
-                yield obs
+                data = constructor_kwargs.copy()
+                for slot, label in column_order:
+                    data[label] = unpackers[label](row[slot])
+
+                yield PageObservation(self, **data)
         finally:
             cur.close()
 
@@ -509,21 +538,15 @@ class PageDB:
                                                constructor_kwargs=args))
 
     def get_page_text(self, id):
-        txt = self._text_cache.get(id)
-        if txt is None:
-            cur = self._db.cursor()
-            cur.execute("SELECT p.id, p.has_boilerplate, p.lang_code,"
-                        "       lc.name, p.lang_conf, p.contents"
-                        "  FROM ts_analysis.page_text p"
-                        "  JOIN ts_analysis.language_codes lc"
-                        "    ON p.lang_code = lc.code"
-                        " WHERE p.id = %s", (id,))
-            txt = PageText(self, *cur.fetchone())
-            self._text_cache.put(id, txt)
-        return txt
+        cur = self._db.cursor()
+        cur.execute("SELECT p.id, p.has_boilerplate, p.lang_code,"
+                    "       lc.name, p.lang_conf, p.contents"
+                    "  FROM ts_analysis.page_text p"
+                    "  JOIN ts_analysis.language_codes lc"
+                    "    ON p.lang_code = lc.code"
+                    " WHERE p.id = %s", (id,))
+        return PageText(self, *cur.fetchone())
 
-    # Caching happens at the level of PageText and PageObservation objects,
-    # so these do not need to involve the cache.
     def get_raw_page_contents(self, id):
         cur = self._db.cursor()
         cur.execute("SELECT contents FROM ts_analysis.page_text"
