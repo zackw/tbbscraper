@@ -1,6 +1,6 @@
 # All the work is in the subdirectories.
 
-SUBDIRS = cld2 html_extractor
+SUBDIRS = cld2 html_extractor word_seg/mmseg word_seg/dongdu word_seg/pythai
 
 all: $(SUBDIRS)
 clean: $(SUBDIRS:=-clean)

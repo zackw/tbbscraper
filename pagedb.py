@@ -187,9 +187,9 @@ class PageObservation:
     # Used by PageDB.get_observations_for_text.
     def _augment(self, document=None, document_with_bp=None):
         if document is not None:
-            self.document = document
+            self._document = document
         if document_with_bp is not None:
-            self.document_with_bp = document_with_bp
+            self._document_with_bp = document_with_bp
 
     @property
     def document(self):
