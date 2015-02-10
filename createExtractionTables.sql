@@ -136,4 +136,43 @@ ALTER TABLE page_observations
       ALTER COLUMN headings  SET STORAGE EXTERNAL,
       ALTER COLUMN dom_stats SET STORAGE EXTERNAL;
 
+-- Per-language, corpus-wide statistics.
+-- The 'data' column will always be a compressed JSON blob;
+-- currently, that blob is always a { word: number } dictionary.
+-- Current values of 'stat' are:
+--   cwf - Corpus word frequency: total occurrences of this word in the corpus.
+--   rdf - Raw document frequency: total number of documents containing this word
+--   idf - Inverse document frequency: log(n_docs/rdf) per word
+CREATE TABLE corpus_stats (
+   stat            TEXT    NOT NULL CHECK (stat <> ''),
+   lang            TEXT    NOT NULL CHECK (lang <> ''),
+   has_boilerplate BOOLEAN NOT NULL,
+   n_documents     INTEGER NOT NULL CHECK (n_documents >= 1),
+   data            BYTEA   NOT NULL,
+   PRIMARY KEY(stat, lang, has_boilerplate)
+);
+ALTER TABLE corpus_stats
+  ALTER COLUMN stat SET STORAGE PLAIN,
+  ALTER COLUMN lang SET STORAGE PLAIN,
+  ALTER COLUMN data SET STORAGE EXTERNAL;
+
+-- Per-document statistics.
+-- As above, the 'data' column will always be a compressed JSON blob.
+-- Current values of 'stat' are:
+--   tfidf - Term frequency-inverse document frequency
+-- Note 'data' is allowed to be NULL to facilitate concurrent population
+-- of this table.
+CREATE TABLE page_text_stats (
+  stat            TEXT    NOT NULL CHECK (stat <> ''),
+  text_id         INTEGER NOT NULL REFERENCES page_text(id),
+  data            BYTEA,
+  PRIMARY KEY(stat, text_id)
+);
+ALTER TABLE page_text_stats
+  ALTER COLUMN stat SET STORAGE PLAIN,
+  ALTER COLUMN data SET STORAGE EXTERNAL;
+
+-- so we can efficiently look up all stats for a page
+CREATE INDEX page_text_stats_tid_idx ON page_text_stats(text_id);
+
 COMMIT;

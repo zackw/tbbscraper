@@ -212,6 +212,8 @@ class PageDB:
 
         self._locales    = None
         self._runs       = None
+        self._lang_codes = None
+        self._lang_names = None
         self._cursor_tag = "pagedb_qtmp_{}_{}".format(os.getpid(), id(self))
         self._cursor_ctr = 0
 
@@ -271,6 +273,33 @@ class PageDB:
                         " WHERE n <> ''")
             self._runs = sorted(row[0] for row in cur)
         return self._runs
+
+    @property
+    def lang_codes(self):
+        """Retrieve a list of all available language codes.  Cost similar
+           to locales.
+        """
+        if self._lang_codes is None:
+            cur = self._db.cursor()
+            cur.execute("SELECT code FROM ts_analysis.captured_languages"
+                        " ORDER BY code")
+            self._lang_codes = [row[0] for row in cur]
+        return self._lang_codes
+
+    @property
+    def lang_names(self):
+        """Retrieve a list of all available language names.  Note that the
+           order of this list matches the order of language _codes_, i.e.
+           zip(db.lang_codes, db.lang_names) produces a correct mapping.
+        """
+        if self._lang_names is None:
+            cur = self._db.cursor()
+            cur.execute("SELECT lc.name FROM ts_analysis.language_codes lc"
+                        "  JOIN ts_analysis.captured_languages cl"
+                        "    ON cl.code = lc.code"
+                        " ORDER BY cl.code")
+            self._locales = [row[0] for row in cur]
+        return self._locales
 
     #
     # Methods for retrieving pages or observations in bulk.
@@ -597,3 +626,120 @@ class PageDB:
         if not blob:
             return ""
         return zlib.decompress(blob).decode("utf-8")
+
+    #
+    # Corpus-wide and per-document statistics.
+    #
+    def get_corpus_statistic(self, stat, lang, has_boilerplate):
+        cur = self._db.cursor()
+        cur.execute("SELECT n_documents, data FROM ts_analysis.corpus_stats"
+                    " WHERE stat = %s AND lang = %s AND has_boilerplate = %s",
+                    (stat, lang, has_boilerplate))
+        row = cur.fetchone()
+        if row:
+            return (row[0], json.loads(zlib.decompress(row[1]).decode('utf-8')))
+        else:
+            return (0, {})
+
+    def update_corpus_statistics(self, lang, has_boilerplate, n_documents,
+                                 statistics):
+        cur = self._db.cursor()
+
+        # This is the big-hammer exclusive-lockout approach to upsert.
+        # It's possible that SHARE ROW EXCLUSIVE would be good enough,
+        # but I don't really understand the difference between
+        # EXCLUSIVE and SHARE ROW EXCLUSIVE, so I'm being conservative.
+        try:
+            cur.execute("BEGIN")
+            cur.execute("LOCK ts_analysis.corpus_stats IN EXCLUSIVE MODE")
+
+            for stat, data in statistics:
+                blob = zlib.compress(json.dumps(data, separators=(',',':'))
+                                     .encode("utf-8"))
+
+                # try UPDATE first, if it affects zero rows, then INSERT
+                cur.execute("UPDATE ts_analysis.corpus_stats"
+                            "   SET n_documents = %s, data = %s"
+                            " WHERE stat=%s AND lang=%s AND has_boilerplate=%s",
+                            (n_documents, blob, stat, lang, has_boilerplate))
+
+                if cur.rowcount == 0:
+                    cur.execute("INSERT INTO ts_analysis.corpus_stats"
+                                " (stat, lang, has_boilerplate, "
+                                "  n_documents, data)"
+                                " VALUES (%s, %s, %s, %s, %s)",
+                                (stat, lang, has_boilerplate,
+                                 n_documents, blob))
+
+            self._db.commit()
+
+        except:
+            self._db.rollback()
+            raise
+
+    def update_corpus_statistic(self, stat, lang, has_boilerplate,
+                                n_documents, data):
+        self.update_corpus_statistics(lang, has_boilerplate, n_documents,
+                                      [(stat, data)])
+
+    def get_text_statistic(self, stat, text_id):
+        cur = self._db.cursor()
+        cur.execute("SELECT data FROM ts_analysis.page_text_stats"
+                    " WHERE stat = %s AND text_id = %s",
+                    (stat, text_id))
+        row = cur.fetchone()
+        if row and row[0]:
+            return json.loads(zlib.decompress(row[0]).decode('utf-8'))
+        return {}
+
+    def prepare_text_statistic(self, stat):
+        cur = self._db.cursor()
+
+        # For document statistics, we take a two-phase approach to the
+        # upsert problem.  This function wields the big-lockout
+        # hammer, but all it does is ensure that every document in
+        # page_text has a row for this statistic in page_text_stats;
+        # the actual data will be null.  This allows update_text_statistic
+        # to just do a regular old UPDATE and not worry about missing rows.
+        try:
+            cur.execute("BEGIN")
+            cur.execute("LOCK ts_analysis.page_text_stats IN EXCLUSIVE MODE")
+            cur.execute("INSERT INTO ts_analysis.page_text_stats"
+                        "  (stat, text_id)"
+                        "SELECT %s AS stat, p.id AS text_id"
+                        "  FROM ts_analysis.page_text p"
+                        " WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM ts_analysis.page_text_stats ps"
+                        "   WHERE ps.stat = %s AND ps.text_id = p.id)",
+                        (stat, stat))
+            self._db.commit()
+
+        except:
+            self._db.rollback()
+            raise
+
+    def update_text_statistic(self, stat, text_id, data):
+        cur = self._db.cursor()
+        blob = zlib.compress(json.dumps(data, separators=(',',':'))
+                             .encode("utf-8"))
+        cur.execute("UPDATE ts_analysis.page_text_stats"
+                    "   SET data = %s"
+                    " WHERE stat = %s AND text_id = %s",
+                    (blob, stat, text_id))
+        if cur.rowcount == 0:
+            raise RuntimeError("%s/%s: no row in page_text_stats"
+                               % (stat, text_id))
+
+    # Transaction manager issues a regular database transaction.
+    def __enter__(self):
+        cur = self._db.cursor()
+        cur.execute("BEGIN")
+        cur.close()
+        return self
+
+    def __exit__(self, ty, vl, tb):
+        if ty is None:
+            self._db.commit()
+        else:
+            self._db.rollback()
+        return False

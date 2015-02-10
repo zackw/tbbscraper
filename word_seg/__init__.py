@@ -62,8 +62,10 @@ def _prep_cleanup_re():
     for c in range(0x10FFFF):
         x = chr(c)
         cat = unicodedata.category(x)
-        if cat in ('Ps', 'Pe', 'Pi', 'Pf', 'Po',
-                   'Zs', 'Zl', 'Zp', 'Cc', 'Cf'):
+        # All punctuation, all whitespace, C0 and C1 controls,
+        # and "format effectors" (e.g. ZWNJ, RLE).  Cn (unassigned),
+        # Cs (surrogate), and Co (private use) are not stripped.
+        if cat[0] in ('P', 'Z') or cat in ('Cc', 'Cf'):
             unwanted_chars.append(x)
     return (re.compile("^[" + "".join(unwanted_chars) + "]+"),
             re.compile("[" + "".join(unwanted_chars) + "]+$"))
@@ -72,11 +74,14 @@ _left_cleanup_re, _right_cleanup_re = _prep_cleanup_re()
 
 def cleanup_iter(seq):
     for item in seq:
-        item = _left_cleanup_re.sub("",
-                    _right_cleanup_re.sub("",
-                        item))
+        # Microoptimization: if 'item' is not the empty string after
+        # _left_cleanup_re then it will still not be the empty string
+        # after _right_cleanup_re and casefold, so we can hoist the
+        # empty-string check to immediately after _left_cleanup_re.
+        item = _left_cleanup_re.sub("", item)
         if item:
-            yield item
+            yield _right_cleanup_re.sub("", item).casefold()
+
 
 def segment(lang, text):
     """TEXT is believed to be in language LANG (an ISO 639 code); segment
