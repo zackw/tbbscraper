@@ -99,6 +99,8 @@ def crossmap_capture_detail(db, schema):
 def do_content_extraction(args):
     page, url, locale, sources, access_time, result, detail, ourl, rurl = args
     page = zlib.decompress(page)
+    pagelen = len(page)
+    pagehash = hashlib.sha256(page).digest()
     extr = html_extractor.ExtractedContent(url, page)
     langs = cld2.detect(extr.text_pruned)
     return (zlib.compress(extr.text_pruned.encode("utf-8")),
@@ -116,8 +118,9 @@ def do_content_extraction(args):
             result,
             detail,
             ourl,
-            rurl)
-
+            rurl,
+            pagelen,
+            pagehash)
 
 def add_page_text(wcur, text, has_boilerplate, lang_code, lang_conf):
     wcur.execute("SELECT id FROM ts_analysis.page_text"
@@ -212,7 +215,8 @@ def preprocess_observations(db, schema, pool):
                                               squash_memoryviews(block)):
                 text_pruned, text_content, headings, links, resources, \
                     dom_stats, lang_code, lang_conf, locale, sources, \
-                    access_time, result, detail, ourl, rurl = result
+                    access_time, result, detail, ourl, rurl, \
+                    pagelen, pagehash = result
 
                 detail = detailmap[detail]
                 ourl   = urlmap[ourl]
@@ -225,8 +229,8 @@ def preprocess_observations(db, schema, pool):
 
                 cur.execute("INSERT INTO ts_analysis.page_observations "
                             "VALUES ("
-                            "%s,%s,%s,%s,%s,%s,%s,"
-                            "%s,%s,%s,%s,%s,%s,%s)",
+                            "%s,%s,%s,%s,%s,%s,%s,%s,"
+                            "%s,%s,%s,%s,%s,%s,%s,%s)",
                             (pruned_id,
                              ourl,
                              locale,
@@ -240,7 +244,9 @@ def preprocess_observations(db, schema, pool):
                              access_time,
                              result,
                              detail,
-                             rurl))
+                             rurl,
+                             pagelen,
+                             pagehash))
             #endfor
 
             db.commit()

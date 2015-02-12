@@ -119,6 +119,8 @@ CREATE TABLE page_observations (
    result      ts_run_1.capture_result NOT NULL,
    detail      INTEGER NOT NULL REFERENCES capture_detail(id),
    redir_url   INTEGER NOT NULL REFERENCES url_strings(id),
+   html_length INTEGER NOT NULL, -- byte length of uncompressed UTF-8-coded HTML
+   html_sha2   BYTEA   NOT NULL, -- SHA256 hash of uncompressed UTF-8-coded HTML
 
    -- The ordering on this index is chosen to facilitate lookups and joins.
    UNIQUE (document, url, locale, run)
@@ -134,7 +136,9 @@ ALTER TABLE page_observations
       ALTER COLUMN links     SET STORAGE EXTERNAL,
       ALTER COLUMN resources SET STORAGE EXTERNAL,
       ALTER COLUMN headings  SET STORAGE EXTERNAL,
-      ALTER COLUMN dom_stats SET STORAGE EXTERNAL;
+      ALTER COLUMN dom_stats SET STORAGE EXTERNAL,
+      -- Secure hashes are incompressible.
+      ALTER COLUMN html_sha2 SET STORAGE EXTERNAL;
 
 -- Per-language, corpus-wide statistics.
 -- The 'data' column will always be a compressed JSON blob;

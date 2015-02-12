@@ -98,6 +98,11 @@ class PageObservation:
            result           - High-level result code.
            detail           - More detailed result code.
            redir_url        - URL of the page after following redirections.
+           html_len         - Length of the HTML as received from phantom,
+                              in UTF-8 bytes.
+           html_hash        - Strong hash (currently SHA-256) of the HTML
+                              as received from phantom, for duplicate page
+                              detection.
 
            document         - PageText object: the text of the page,
                               boilerplate stripped.
@@ -116,7 +121,7 @@ class PageObservation:
     """
 
     def __init__(self, db, run, locale, country, url_id, url,
-                 access_time, result, detail, redir_url,
+                 access_time, result, detail, redir_url, html_len, html_hash,
                  document_id, document_with_bp_id,
                  *,
                  document=None, document_with_bp=None,
@@ -134,6 +139,8 @@ class PageObservation:
         self.result               = result
         self.detail               = detail
         self.redir_url            = redir_url
+        self.html_len             = html_len
+        self.html_hash            = html_hash
 
         self._document_id         = document_id
         self._document            = document
@@ -422,6 +429,8 @@ class PageDB:
                     "result"              : "o.result",
                     "detail"              : "o.detail",
                     "redir_url"           : "v.url",
+                    "html_len"            : "o.html_length",
+                    "html_hash"           : "o.html_sha2",
                     "document_id"         : "o.document",
                     "document_with_bp_id" : "o.document_with_bp" }
 
