@@ -33,7 +33,7 @@ def _segment_vi(text):
     global _dongdu_segm
     if _dongdu_segm is None:
         _dongdu_segm = dongdu.Segmenter()
-    return _dongdu_segm.segment(text)
+    return _dongdu_segm.segment(text.strip())
 
 # Thai: libthai/pythai
 def _segment_th(text):
