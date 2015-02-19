@@ -6,6 +6,7 @@ import pagedb
 import sys
 import word_seg
 import math
+import time
 
 # Each multiprocess worker needs its own connection to the database.
 # The simplest way to accomplish this is with a global variable, which
@@ -58,12 +59,8 @@ def compute_idf(n_documents, raw_doc_freq):
              for word, doc_freq in raw_doc_freq.items() }
 
 def compute_tfidf(db, lang, text, idf):
-    # There are a bunch of adjustments that one might want to apply to
-    # tf, idf, or their combination in the literature (e.g. "cosine
-    # normalization" or "augmented tf" to reduce the significance of
-    # document length) but it's unclear that any of them are relevant
-    # to this use scenario (all the literature I've found is about
-    # document *retrieval*).
+    # This is baseline tf-idf: no corrections for document length or
+    # anything like that.
     tf = collections.Counter()
     for word in word_seg.segment(lang, text.contents):
         tf[word] += 1
@@ -73,10 +70,30 @@ def compute_tfidf(db, lang, text, idf):
 
     db.update_text_statistic('tfidf', text.id, tf)
 
+def compute_nfidf(db, lang, text, idf):
+    # This is "augmented normalized" tf-idf: the term frequency within
+    # each document is normalized by the maximum term frequency within
+    # that document, so long documents cannot over-influence scoring
+    # of the entire corpus.
+    tf = collections.Counter()
+    for word in word_seg.segment(lang, text.contents):
+        tf[word] += 1
+
+    try:
+        max_tf = max(tf.values())
+    except ValueError:
+        max_tf = 1
+
+    for word in tf.keys():
+        tf[word] = (0.5 + (0.5 * tf[word])/max_tf) * idf[word]
+
+    db.update_text_statistic('nfidf', text.id, tf)
+
 def process_language(lang):
     db = DATABASE
 
     idf = corpus_wide_statistics(lang, db)
+    ndoc, idf = db.get_corpus_statistic('idf', lang, False)
 
     # Note: the entire get_page_texts() operation must be enclosed in a
     # single transaction; committing in the middle will invalidate the
@@ -86,26 +103,32 @@ def process_language(lang):
                 where_clause="p.has_boilerplate=false and p.lang_code='{}'"
                 .format(lang)):
             compute_tfidf(db, lang, text, idf)
+            compute_nfidf(db, lang, text, idf)
 
     return lang
 
 def prep_database(dbname):
     db = pagedb.PageDB(dbname)
-    db.prepare_text_statistic('tfidf')
-    return set(db.lang_codes)
+    langs  = db.prepare_text_statistic('tfidf')
+    langs |= db.prepare_text_statistic('nfidf')
+    return langs
+
+def fmt_interval(interval):
+    m, s = divmod(interval, 60)
+    h, m = divmod(m, 60)
+    return "{}:{:>02}:{:>05.2f}".format(int(h), int(m), s)
 
 def main():
     lang_codes = prep_database(sys.argv[1])
-    lang_codes.discard('und')
-    lang_codes.discard('zxx')
 
     pool = multiprocessing.Pool(initializer=worker_init,
                                 initargs=(sys.argv[1],))
 
+    start = time.time()
+    sys.stderr.write("{}: processing {} languages...\n"
+                     .format(fmt_interval(0), len(lang_codes)))
     for finished in pool.imap_unordered(process_language, lang_codes):
-        sys.stdout.write(finished)
-        sys.stdout.write(' ')
-
-    sys.stdout.write('\n')
+        sys.stderr.write("{}: {}\n".format(fmt_interval(time.time() - start),
+                                           finished))
 
 main()

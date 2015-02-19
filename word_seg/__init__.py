@@ -3,6 +3,7 @@ from . import tinysegmenter
 from . import dongdu
 from . import pythai
 from . import minipunkt
+from . import arabic
 
 from collections import defaultdict
 import re
@@ -33,11 +34,20 @@ def _segment_vi(text):
     global _dongdu_segm
     if _dongdu_segm is None:
         _dongdu_segm = dongdu.Segmenter()
+    # dongdu returns nothing at all for input beginning with whitespace!
     return _dongdu_segm.segment(text.strip())
 
 # Thai: libthai/pythai
 def _segment_th(text):
     return pythai.split(text)
+
+# Arabic and related languages: SNLP
+_arabic_segm = None
+def _segment_ar(text):
+    global _arabic_segm
+    if _arabic_segm is None:
+        _arabic_segm = arabic.Segmenter()
+    return _arabic_segm.segment(text)
 
 # default: minipunkt
 _punkt_wt = None
@@ -53,6 +63,16 @@ _segmenters = defaultdict(lambda: _segment_default, {
     'ja':      _segment_ja,
     'vi':      _segment_vi,
     'th':      _segment_th,
+
+    # The Arabic segmenter is trained on the _language_, not the
+    # _script_, but should still do acceptably well (better than the
+    # generic, anyway) on the other common languages written with that
+    # script.
+    'ar':      _segment_ar,
+    'fa':      _segment_ar,
+    'ku':      _segment_ar,
+    'ps':      _segment_ar,
+    'ur':      _segment_ar
 })
 
 # Some segmenters leave punctuation and whitespace in the output,

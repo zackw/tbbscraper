@@ -25,9 +25,13 @@ class PageText:
           contents        - The text itself (lazily uncompressed).
           observations    - Array of PageObservation objects: all the page
                             observations that have this text.
+          tfidf           - Raw tf-idf scores for each word in the text.
+          nfidf           - Augmented normalized tf-idf scores ditto.
     """
     def __init__(self, db, id, has_boilerplate,
-                 lang_code, lang_name, lang_conf, contents):
+                 lang_code, lang_name, lang_conf,
+                 *,
+                 contents=None, tfidf=None, nfidf=None):
         self._db             = db
         self.id              = id
         self.has_boilerplate = has_boilerplate
@@ -35,24 +39,18 @@ class PageText:
         self.lang_name       = lang_name
         self.lang_conf       = lang_conf
 
-        # For memory efficiency, contents are only uncompressed on
-        # request, and may even be lazily loaded from the database.
-        self._raw_contents      = contents
-        self._unpacked_contents = None
-
-        # Similarly, observations are lazily loaded.
-        self._observations      = None
+        # For memory efficiency, contents, observations, and statistics
+        # are lazily loaded from the database.
+        self._contents       = contents
+        self._observations   = None
+        self._tfidf          = None
+        self._nfidf          = None
 
     @property
     def contents(self):
-        if self._raw_contents is None:
-            self._raw_contents = self._db.get_raw_page_contents(self.id)
-
-        if self._unpacked_contents is None:
-            self._unpacked_contents = \
-                zlib.decompress(self._raw_contents).decode("utf-8")
-
-        return self._unpacked_contents
+        if self._contents is None:
+            self._contents = self._db.get_contents_for_text(self.id)
+        return self._contents
 
     @property
     def observations(self):
@@ -60,6 +58,18 @@ class PageText:
             self._observations = \
                 self._db.get_observations_for_text(self)
         return self._observations
+
+    @property
+    def tfidf(self):
+        if self._tfidf is None:
+            self._tfidf = self._db.get_text_statistic('tfidf', self.id)
+        return self._tfidf
+
+    @property
+    def nfidf(self):
+        if self._nfidf is None:
+            self._nfidf = self._db.get_text_statistic('nfidf', self.id)
+        return self._nfidf
 
 class DOMStatistics:
     """Statistics about the DOM structure.  Has two attributes:
@@ -314,7 +324,8 @@ class PageDB:
     def get_page_texts(self, *,
                        where_clause="",
                        ordered=None,
-                       limit=None):
+                       limit=None,
+                       load=["contents"]):
         """Retrieve page texts from the database matching the where_clause.
            This is a generator, which produces one PageText object per row.
 
@@ -327,12 +338,49 @@ class PageDB:
 
            'limit' may be either None for no limit, or a positive integer;
            in the latter case at most that many page texts are produced.
+
+           'load' is a list of PageText attributes to load eagerly from the
+           database: zero or more of 'contents', 'tfidf', and 'nfidf'.
+           If you know you're going to use these for every observation,
+           requesting them up front is more efficient than allowing them
+           to be loaded lazily.
         """
 
-        query = ("SELECT p.id, p.has_boilerplate, p.lang_code,"
-                 "       lc.name, p.lang_conf, p.contents"
-                 "  FROM ts_analysis.page_text p"
-                 "  JOIN ts_analysis.language_codes lc ON p.lang_code = lc.code")
+        columns = { "id"              : "p.id",
+                    "has_boilerplate" : "p.has_boilerplate",
+                    "lang_code"       : "p.lang_code",
+                    "lang_name"       : "lc.name",
+                    "lang_conf"       : "p.lang_conf" }
+
+        joins = ["  FROM ts_analysis.page_text p",
+                 "  JOIN ts_analysis.language_codes lc ON p.lang_code = lc.code"]
+
+        unpackers = defaultdict(lambda: (lambda x: x))
+
+        if "contents" in load:
+            columns["contents"] = "p.contents"
+            unpackers["contents"] = lambda x: zlib.decompress(x).decode("utf-8")
+        if "tfidf" in load:
+            joins.append("LEFT JOIN ts_analysis.page_text_stats s1"
+                         "       ON s1.stat = 'tfidf' AND s1.text_id = p.id")
+            columns["tfidf"] = "s1.data"
+            unpackers["tfidf"] = lambda x: \
+                json.loads(zlib.decompress(x).decode('utf-8')) \
+                if x else {}
+        if "nfidf" in load:
+            joins.append("LEFT JOIN ts_analysis.page_text_stats s1"
+                         "       ON s1.stat = 'nfidf' AND s1.text_id = p.id")
+            columns["nfidf"] = "s1.data"
+            unpackers["nfidf"] = lambda x: \
+                json.loads(zlib.decompress(x).decode('utf-8')) \
+                if x else {}
+
+        # Fix a column ordering.
+        column_order = list(enumerate(columns.keys()))
+
+        query = "SELECT " + ",".join(columns[oc[1]] for oc in column_order)
+        query += " "
+        query += " ".join(joins)
 
         if where_clause:
             query += " WHERE ({})".format(where_clause)
@@ -357,7 +405,9 @@ class PageDB:
         cur.execute(query)
         try:
             for row in cur:
-                yield PageText(self, *row)
+                data = { label: unpackers[label](row[slot])
+                         for slot, label in column_order }
+                yield PageText(self, **data)
 
         finally:
             cur.close()
@@ -427,7 +477,7 @@ class PageDB:
                     "url"                 : "u.url",
                     "access_time"         : "o.access_time",
                     "result"              : "o.result",
-                    "detail"              : "o.detail",
+                    "detail"              : "d.detail",
                     "redir_url"           : "v.url",
                     "html_len"            : "o.html_length",
                     "html_hash"           : "o.html_sha2",
@@ -585,11 +635,12 @@ class PageDB:
                     " WHERE p.id = %s", (id,))
         return PageText(self, *cur.fetchone())
 
-    def get_raw_page_contents(self, id):
+    def get_contents_for_text(self, id):
         cur = self._db.cursor()
         cur.execute("SELECT contents FROM ts_analysis.page_text"
                     " WHERE id = %s", (id,))
-        return cur.fetchone()[0]
+
+        return zlib.decompress(cur.fetchone()[0]).decode("utf-8")
 
     def get_headings(self, run, locale, url_id):
         cur = self._db.cursor()
@@ -721,7 +772,16 @@ class PageDB:
                         "  SELECT 1 FROM ts_analysis.page_text_stats ps"
                         "   WHERE ps.stat = %s AND ps.text_id = p.id)",
                         (stat, stat))
+            cur.execute("SELECT lang_code FROM ts_analysis.page_text p"
+                        "   LEFT JOIN ts_analysis.page_text_stats ps"
+                        "   ON ps.stat = %s AND ps.text_id = p.id"
+                        "   WHERE ps.data IS NULL",
+                        (stat,))
+            rv = set(row[0] for row in cur)
+            rv.discard("und")
+            rv.discard("zxx")
             self._db.commit()
+            return rv
 
         except:
             self._db.rollback()

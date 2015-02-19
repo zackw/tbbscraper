@@ -270,17 +270,18 @@ def preprocess_all_observations(db, schemas):
 
 def main():
     db = psycopg2.connect("dbname="+sys.argv[1])
-    cur = db.cursor()
-    cur.execute("SET search_path TO ''")
-    cur.execute("SELECT DISTINCT table_schema FROM information_schema.tables "
-                " WHERE table_schema LIKE 'ts_run_%'")
-    schemas = set(int(row[0][len("ts_run_"):]) for row in cur)
-    schemas.remove(0)
+    #cur = db.cursor()
+    #cur.execute("SET search_path TO ''")
+    #cur.execute("SELECT DISTINCT table_schema FROM information_schema.tables "
+    #            " WHERE table_schema LIKE 'ts_run_%'")
+    #schemas = set(int(row[0][len("ts_run_"):]) for row in cur)
+    #schemas.remove(0)
+    schemas = [3]
 
-    #for schema in schemas:
-    #    merge_url_strings(db, schema)
-    #    merge_capture_detail(db, schema)
-    #
+    for schema in schemas:
+        merge_url_strings(db, schema)
+        merge_capture_detail(db, schema)
+    
     #populate_language_codes(db)
     preprocess_all_observations(db, sorted(schemas))
 
