@@ -724,15 +724,13 @@ class CaptureTask:
                 else:
                     self.detail = strsignal(-exitcode)
 
-        self.log = zlib.compress(json.dumps(self.log).encode('utf-8'))
-
     def report(self):
         self.pickup_results()
         return {
             'ourl':    self.original_url,
             'status':  self.status,
             'detail':  self.detail,
-            'log':     self.log,
+            'log':     zlib.compress(json.dumps(self.log).encode('utf-8')),
             'canon':   self.canon_url,
             'content': self.content,
             'render':  self.render
@@ -1022,12 +1020,14 @@ class CaptureDispatcher:
             callback(None, [None])
 
         # Sort key for locales to which work can be assigned.
+        # Consider locales that currently have no workers at all first.
         # Consider locales with more work to do first.
         # Consider locales whose proxy is 'direct' first.
         # Consider locales named 'us' first.
         # As a final tie breaker use alphabetical order of locale name.
         def locale_order(l):
-            return (-l.todo,
+            return (l.n_workers != 0,
+                    -l.todo,
                     l.proxy_method is not DirectProxy,
                     l.locale != 'us',
                     l.locale)
