@@ -9,6 +9,7 @@
 # There is NO WARRANTY.
 
 import curses
+import datetime
 import fcntl
 import locale
 import os
@@ -48,15 +49,60 @@ class Monitor:
        thread-related failure may occur."""
 
     # Public API.
-    def report_status(self, status, thread=None):
-        """Each worker thread should call this method at intervals to
-           report its status.  The status may be any text you like.
-           Writing a single ASCII NUL (that is, "\x00") clears the
-           thread's status line.  The thread= argument can override
+
+    def set_status_prefix(self, prefix, thread=None):
+        """Each worker thread may set a prefix to be prepended to each of
+           its status reports.  The thread= argument can override
            which thread the message is deemed to be from."""
         if thread is None:
             thread = threading.get_ident()
-        self._tasks.put((self._STATUS, self._line_indexes[thread], status))
+        self._last_prefix[thread] = prefix
+        self._tasks.put((self._STATUS, thread))
+
+    def report_status(self, status, thread=None):
+        """Each worker thread should call this method at intervals to
+           report its status.  The status may be any text you like.
+           The thread= argument can override which thread the message
+           is deemed to be from.
+        """
+        if thread is None:
+            thread = threading.get_ident()
+        self._last_status[thread] = status
+        self._tasks.put((self._STATUS, thread))
+
+    def report_error(self, status, thread=None):
+        """Like report_status, but also writes the STATUS to the global
+           error log."""
+        if thread is None:
+            thread = threading.get_ident()
+        self.report_status(status, thread)
+
+        prefix = self._last_prefix[thread]
+        if prefix:
+            prefix = "{} {} ({}): ".format(
+                datetime.datetime.now().isoformat(sep=' '),
+                thread, prefix)
+        else:
+            prefix = "{} {}: ".format(
+                datetime.datetime.now().isoformat(sep=' '),
+                thread)
+        self._error_log.write(prefix + status + "\n")
+        self._error_log.flush()
+
+    def report_exception(self, einfo=None, thread=None):
+        """Like report_error, but the status is taken from 'einfo' and a
+           complete traceback is written to the global error log."""
+        if einfo is None:
+            einfo = sys.exc_info()
+        if thread is None:
+            thread = threading.get_ident()
+        status = traceback.format_exception_only(einfo[0], einfo[1])[0][:-1]
+
+        self.report_error(status, thread)
+        for chunk in traceback.format_exception(*einfo):
+            for line in chunk.splitlines():
+                self._error_log.write("| " + line + "\n")
+        self._error_log.flush()
 
     def add_work_thread(self, worker_fn, *args, **kwargs):
         """The initial worker thread (the one that executes the
@@ -107,10 +153,13 @@ class Monitor:
         """
         self._worker_event_queues.append( (queue, desired_stop_message) )
 
-    def __init__(self, main, *args, banner="", **kwargs):
+    def __init__(self, main, *args, banner="", error_log="error-log",
+                 **kwargs):
         try:
             locale.setlocale(locale.LC_ALL, '')
             self._encoding = locale.getpreferredencoding()
+
+            self.open_error_log(error_log)
 
             # Establish signal handling before doing anything else.
             for sig in self._SIGNALS:
@@ -153,6 +202,8 @@ class Monitor:
             self._line_attrs = []
             self._line_indexes = {}
             self._line_indexes_used = 0
+            self._last_prefix = {}
+            self._last_status = {}
 
             self._initscr_plus()
 
@@ -190,6 +241,20 @@ class Monitor:
     _EXIT    = 0
 
     # Internal methods.
+
+    def open_error_log(self, error_log):
+        error_log = error_log + "." + datetime.date.today().isoformat()
+        suffix = ""
+        n = 0
+        while True:
+            try:
+                self._error_log = open(error_log + suffix + ".txt", "xt")
+                return
+            except FileExistsError:
+                n += 1
+                if n == 1000:
+                    raise
+                suffix = ".{}".format(n)
 
     # Stub signal handler.  All the signals are actually fielded via
     # the wakeup_fd mechanism.
@@ -272,10 +337,18 @@ class Monitor:
     def _work_thread_fn(self, worker_fn, args, kwargs):
         thread = threading.current_thread()
         with self._counters_lock:
+            idx = self._line_indexes_used
+            self._line_indexes[thread.ident] = idx
+            while idx >= len(self._lines):
+                self._lines.append(b"")
+                self._line_attrs.append(curses.A_NORMAL)
+
+            self._line_indexes_used += 1
             self._n_work_threads += 1
             self._active_work_threads += 1
-            self._line_indexes[thread.ident] = self._line_indexes_used
-            self._line_indexes_used += 1
+
+        self._last_prefix[thread.ident] = ""
+        self._last_status[thread.ident] = ""
 
         try:
             worker_fn(self, thread, *args, **kwargs)
@@ -345,16 +418,7 @@ class Monitor:
     def _compute_banner(self):
         return self._compute_banner_internal().encode(self._encoding)
 
-    def _do_status(self, idx, text):
-        while idx >= len(self._lines):
-            self._lines.append("")
-            self._line_attrs.append(curses.A_NORMAL)
-
-        if text == "\x00":
-            self._line_attrs[idx] = curses.A_NORMAL
-        else:
-            self._lines[idx] = text.encode(self._encoding)
-
+    def _redraw_line(self, idx):
         y = (self._max_y - 1) - idx
         if y < 1: return # the top line is reserved for the banner
         self._scr.addnstr(y, 0,
@@ -362,6 +426,21 @@ class Monitor:
                           self._line_attrs[idx])
         self._scr.clrtoeol()
         self._scr.refresh()
+
+    def _do_status(self, thread):
+        idx = self._line_indexes[thread]
+        prefix = self._last_prefix[thread]
+        status = self._last_status[thread]
+
+        if not prefix:
+            text = status
+        elif prefix[-1] == ' ':
+            text = prefix + status
+        else:
+            text = prefix + ": " + status
+
+        self._lines[idx] = text.encode(self._encoding)
+        self._redraw_line(idx)
 
     def _do_redraw(self):
         # Unconditionally query the OS for the size of the window whenever
@@ -387,7 +466,16 @@ class Monitor:
             self._line_attrs[i] = curses.A_BOLD
         self._do_redraw()
 
+    def _unflag_thread(self):
+        thread = threading.get_ident()
+        idx = self._line_indexes[thread]
+        self._line_attrs[idx] = curses.A_NORMAL
+        self._tasks.put((self._STATUS, thread))
+
     def _do_pause_or_stop(self):
+        # Note: this function is called on a worker thread, not the
+        # display thread.
+
         if not self._resume_event.is_set():
             # If the stop event is set and the resume event is clear,
             # that means pause.  Pausing doesn't map nicely onto any
@@ -402,7 +490,7 @@ class Monitor:
                 self._active_work_threads -= 1
                 if not self._active_work_threads:
                     self._tasks.put((self._DONE, True))
-            self.report_status("\x00")
+            self._unflag_thread()
             self._resume_event.wait()
             with self._counters_lock:
                 self._active_work_threads += 1
@@ -412,9 +500,8 @@ class Monitor:
             # Raising SystemExit on a thread only terminates that
             # thread.  The worker wrapper routine will take care of
             # signaling an exit when all threads are done.
-            self.report_status("\x00")
+            self._unflag_thread()
             raise SystemExit
-
 
     def _do_suspend(self, signo, old_addmsg):
         def drain_input(fd):
@@ -514,3 +601,114 @@ class Monitor:
                 self._addmsg = ("*** {}:{} *** Crashing."
                                 .format(type(e).__name__, str(e)))
                 self._do_redraw()
+
+class Worker:
+    """Skeleton for a work thread that takes messages from a dispatcher.
+       Subclasses should implement the process_batch method and
+       override the _prefix property (used for mon.set_status_prefix).
+
+       The _mon property is guaranteed to be a Monitor object.
+       process_batch may (indeed, should) make use of
+       self._mon.report_status and self._mon.set_status_prefix as it
+       sees fit.  All other properties defined in this base class
+       should be considered private.
+
+       If a batch might take a very long time to process, the
+       process_batch method should call self.is_interrupted() at
+       appropriate intervals, and return as soon as possible if it
+       returns True.  Whatever process_batch returns will be passed
+       back to the dispatcher.  If process_batch throws an exception,
+       that will also be reported to the dispatcher.
+
+       The dispatcher, which must be the 'disp' object passed to
+       __init__, can queue work on a Worker by calling its queue_batch
+       method.  It can direct a Worker to terminate (after completing
+       any previously queued work) by calling its 'finished' method.
+       'disp' must itself implement three methods:
+       complete_batch(worker, results), fail_batch(worker, exc_info),
+       and drop_worker(worker), where 'worker' is the Worker object,
+       'results' is whatever process_batch returned, and 'exc_info' is
+       sys.exc_info() for the exception that process_batch threw.  The
+       dispatcher is responsible for keeping track of the correlation
+       among workers, batches, and results or failures.
+
+    """
+
+    def __init__(self, disp):
+        self._disp = disp
+        self._mon = None
+        self._batch_queue = queue.PriorityQueue()
+        self._serializer = 0
+        self._prefix = ""
+
+    # batch queue message types/priorities
+    _INTERRUPT = 1
+    _BATCH     = 2
+    _DONE      = 3
+
+    # dispatcher-to-worker API
+    def queue_batch(self, *args, **kwargs):
+        # PriorityQueue messages must be totally ordered.  We don't
+        # want to have to worry about whether 'args' and 'kwargs' are
+        # sortable, so all _BATCH messages have a serial number, and
+        # therefore are guaranteed to be processed in the same order
+        # as calls to queue_batch.
+        self._batch_queue.put((self._BATCH, self._serializer, args, kwargs))
+        self._serializer += 1
+
+    def finished(self):
+        self._batch_queue.put((self._DONE,))
+
+    # subclass API
+    def process_batch(self, *args, **kwargs):
+        raise NotImplemented
+
+    def is_interrupted(self):
+        # There is no way to peek at the contents of a PriorityQueue, but
+        # because messages are totally ordered, we can just call get() and
+        # then put() without perturbing anything.
+        try:
+            x = self._batch_queue.get_nowait()
+            rv = x[0] == self._INTERRUPT
+            self._batch_queue.put(x)
+            return rv
+        except queue.Empty:
+            return False
+
+    # main loop
+    def __call__(self, mon, thr):
+        self._mon = mon
+        self._mon.register_event_queue(self._batch_queue, (self._INTERRUPT,))
+        self._mon.set_status_prefix(self._prefix)
+
+        try:
+            while True:
+                try:
+                    self.mon.report_status("idle")
+                    msg = self.batch_queue.get()
+
+                    if msg[0] == self._MON_INTERRUPT:
+                        self.mon.maybe_pause_or_stop()
+
+                    elif msg[0] == self._DONE:
+                        self.mon.report_status("done")
+                        return
+
+                    elif msg[0] == self._BATCH:
+                        _, _, args, kwargs = msg
+                        try:
+                            result = self.process_batch(*args, **kwargs)
+                            self._disp.complete_batch(self, result)
+                        except Exception:
+                            self._disp.fail_batch(self, sys.exc_info())
+                            raise
+
+                    else:
+                        self.mon.report_error("invalid batch queue message {!r}"
+                                              .format(msg))
+
+                except Exception:
+                    self.mon.report_exception()
+
+        finally:
+            self.disp.drop_worker(self)
