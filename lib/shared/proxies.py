@@ -8,49 +8,58 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 # There is NO WARRANTY.
 
+import datetime
 import fcntl
 import glob
 import locale
 import os
 import random
+import re
 import select
 import subprocess
+import time
 
 # Utilities
 
 # This is a module global because locale.getpreferredencoding(True) is
 # not safe to call off-main-thread.
-PREFERRED_ENCODING = locale.getpreferredencoding(True)
+DEFAULT_ENCODING = locale.getpreferredencoding(True)
 
-def nonblocking_readlines(*files):
+def multiplex_readlines(*files, timeout=None):
     """Generator which yields lines from one or more file objects, which
        are used only for their fileno() and as identifying labels,
-       without blocking.  Files open in text mode are decoded
-       according to their own stated encoding; files open in binary
-       mode are decoded according to locale.getpreferredencoding().
-       Newline determination is universal.  For convenience, any Nones
-       in 'files' are silently ignored.
+       in whatever order data becomes available on each.
 
-       Each yield is (fileobj, string); trailing whitespace is stripped
-       from the string.  EOF on a particular file is indicated as
-       (fileobj, None), after which that file is dropped from the poll
-       set.  The generator will terminate once all files have closed.
+       Files open in text mode are decoded according to their own
+       stated encoding; files open in binary mode are decoded
+       according to locale.getpreferredencoding().  Newline
+       determination is universal.  For convenience, any Nones in
+       'files' are silently ignored.
 
-       If there is no data available on any of the files still open,
-       (None, "") is produced in an endless stream until there is data
-       again; caller is expected to sleep for a while.
+       Each yield is (fileobj, string); trailing whitespace is
+       stripped from the string.  EOF on a particular file is
+       indicated as (fileobj, None), which occurs only once; when it
+       occurs, fileobj has already been closed and dropped from the
+       pollset.  The generator will terminate once all files have
+       closed.
+
+       If timeout is not None, it is the maximum amount of time to
+       block waiting for data, in milliseconds; if the timeout
+       expires, (None, None) will be yielded.
     """
 
     class NonblockingBuffer:
-        def __init__(self, fp, default_encoding):
+        def __init__(self, fp):
             self.fp  = fp
             self.fd  = fp.fileno()
             self.buf = bytearray()
             self.is_open = True
+            self.yielded_this_cycle = False
             try:
                 self.enc = fp.encoding
             except AttributeError:
-                self.enc = default_encoding
+                global DEFAULT_ENCODING
+                self.enc = DEFAULT_ENCODING
 
             fl = fcntl.fcntl(self.fd, fcntl.F_GETFL)
             fcntl.fcntl(self.fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
@@ -66,6 +75,8 @@ def nonblocking_readlines(*files):
                     self.buf.extend(block)
                 else:
                     self.is_open = False
+                    # We don't close the file here because the generator
+                    # needs to remove the fd from the poll set first.
 
             return len(self.buf) > 0 or not self.is_open
 
@@ -74,19 +85,23 @@ def nonblocking_readlines(*files):
                 return (self.fp, chunk.decode(self.enc).rstrip())
 
             buf = self.buf
+            self.yielded_this_cycle = False
             while len(buf) > 0:
                 r = buf.find(b'\r')
                 n = buf.find(b'\n')
                 if r == -1 and n == -1:
                     if not self.is_open:
+                        self.yielded_this_cycle = True
                         yield emit1(buf)
                         buf.clear()
 
                 elif r == -1 or r > n:
+                    self.yielded_this_cycle = True
                     yield emit1(buf[:n])
                     buf = buf[(n+1):]
 
                 elif n == -1 or n > r:
+                    self.yielded_this_cycle = True
                     yield emit1(buf[:r])
                     if n == r+1:
                         buf = buf[(r+2):]
@@ -95,36 +110,52 @@ def nonblocking_readlines(*files):
 
             self.buf = buf
             if not self.is_open:
+                self.yielded_this_cycle = True
                 yield (self.fp, None)
 
-    global PREFERRED_ENCODING
     poller = select.poll()
     buffers = {}
     for fp in files:
         if fp is None: continue
         fd = fp.fileno()
-        buffers[fd] = NonblockingBuffer(fp, PREFERRED_ENCODING)
+        buffers[fd] = NonblockingBuffer(fp)
         poller.register(fd, select.POLLIN)
 
+    if timeout is not None:
+        last_emit = time.clock_gettime(time.CLOCK_MONOTONIC)
+
     while buffers:
-        # for efficiency, we do actually block for a short while here
-        events = poller.poll(50)
-        if not events:
-            yield (None, "")
-            continue
+        events = poller.poll(timeout)
+        emitted = False
+        if events:
+            may_emit = []
+            for fd, ev in events:
+                buf = buffers[fd]
+                if buf.absorb():
+                    may_emit.append(buf)
+                if not buf.is_open:
+                    del buffers[fd]
+                    poller.unregister(fd)
+                    buf.fp.close()
 
-        may_emit = []
-        for fd, ev in events:
-            buf = buffers[fd]
-            if buf.absorb():
-                may_emit.append(buf)
-            if not buf.is_open:
-                buf.fp.close()
-                del buffers[fd]
-                poller.unregister(fd)
+            for buf in may_emit:
+                yield from buf.emit()
+                emitted |= buf.yielded_this_cycle
 
-        for buf in may_emit:
-            yield from buf.emit()
+        # If some of the file descriptors are slowly producing very
+        # long lines, we might not actually emit any data for longer
+        # than the timeout, even though the system call never blocks
+        # for too long.  Therefore, we must manually check whether
+        # any data has been emitted within the timeout interval.
+        if timeout is not None:
+            now = time.clock_gettime(time.CLOCK_MONOTONIC)
+            if emitted:
+                last_emit = now
+            else:
+                if now - last_emit > timeout:
+                    yield (None, None)
+                    last_emit = now
+
 
 # End of utilities
 
@@ -147,6 +178,8 @@ class Proxy:
         self._pavg   = None
         self._alpha  = 2/11
         self._statm  = ""
+        self._log    = self._open_logfile()
+        self._mpipe  = None
 
     def __call__(self, mon, thr):
         """Main proxy-supervision loop."""
@@ -154,13 +187,28 @@ class Proxy:
         self._mon    = mon
         self._thrdid = thr.ident
 
-        while True:
-            try:
-                self._proxy_supervision_loop()
-                break
-            except Exception:
-                self._mon.report_exception()
-                self.stop()
+        mpipe_r = None
+        mpipe_w = None
+        try:
+            mpipe_r, mpipe_w = os.pipe()
+            self._mon.register_event_pipe(mpipe_w, b"INT\n")
+            self._mpipe = os.fdopen(mpipe_r, "rt", encoding="ascii")
+
+            while True:
+                try:
+                    self._proxy_supervision_loop()
+                    break
+                except Exception:
+                    self._mon.report_exception()
+                    self.stop()
+
+        finally:
+            if mpipe_w is not None:
+                os.close(mpipe_w)
+            if self._mpipe is not None:
+                self._mpipe.close()
+            elif mpipe_r is not None:
+                os.close(mpipe_r)
 
     # Subclasses should (normally; note DirectProxy) implement these
     # methods.
@@ -180,12 +228,14 @@ class Proxy:
         """Stop the proxy.  Does not wait for it to terminate."""
         raise NotImplemented
 
-    def _handle_proxy_status(self, line, is_stderr, online_cb):
+    def _handle_proxy_status(self, line, is_stderr):
         """Handle a line of output from the proxy.  LINE is either a string,
            or None; the latter indicates EOF.  is_stderr is a boolean,
            indicating whether output was on stdout or stderr.
-           Call online_cb with no arguments to signal that the proxy is now
-           online and operational."""
+
+           Return True to signal that the proxy is now online and
+           operational, False otherwise.
+        """
         raise NotImplemented
 
     # External API
@@ -208,26 +258,27 @@ class Proxy:
         self._detail = msg
         self._mon.report_status(msg, thread=self._thrdid)
 
-    def update_stats(self, nsucc, nfail, sec_per_url):
+    def update_stats(self, nsucc, nfail, sec_per_job):
         self._nsucc += nsucc
         self._nfail += nfail
 
         if self._pavg is None:
-            self._pavg = sec_per_url
+            self._pavg = sec_per_job
         else:
             self._pavg = self._pavg  * (1-self._alpha) + \
-                         sec_per_url *    self._alpha
+                         sec_per_job *    self._alpha
 
-        self._statm = ("{} captured, {} failures | "
-                       "last {:.2f}, avg {:.2f} URLs/hr/wkr | "
+        self._statm = ("{} complete, {} failures | "
+                       "last {:.2f}, avg {:.2f} jobs/hr/wkr | "
                        .format(self._nsucc,
                                self._nfail,
-                               3600/sec_per_url,
+                               3600/sec_per_job,
                                3600/self._pavg))
         self._update_prefix()
 
     def stop(self):
-        self._set_offline()
+        if self._online:
+            self._set_offline()
         if self._proc:
             self._stop_proxy()
             self._proc.wait()
@@ -236,7 +287,7 @@ class Proxy:
     def finished(self):
         if not self._done:
             self._done = True
-            self.stop()
+        self.stop()
 
     # Internal.
     def _update_prefix(self):
@@ -245,47 +296,67 @@ class Proxy:
                                             "up  " if self._online else "down",
                                             self._statm))
 
+    def _open_logfile(self):
+        fp = open("proxy_" + self.label().replace(":","_") + ".log", "at")
+        fp.write("\n")
+        return fp
+
+    def _log_proxy_status(self, line, is_stderr):
+        self._log.write("{} [{}]: {}: {}\n".format(
+            datetime.datetime.utcnow().isoformat(' '),
+            "up" if self._online else "down",
+            "err" if is_stderr else "out",
+            line.strip()))
+
     def _set_online(self):
         self._online = True
         self._update_prefix()
-        self.disp.proxy_online(self)
+        self._disp.proxy_online(self)
 
     def _set_offline(self):
         self._online = False
         self._update_prefix()
-        self.disp.proxy_offline(self)
+        self._disp.proxy_offline(self)
 
     def _proxy_supervision_loop(self):
         backoff = 0
         forced_disconnect = False
 
-        def online_hook():
-            self._set_online()
-            backoff = 0
-
-        def disconnect_hook():
-            self._set_offline()
-            self._stop_proxy()
-            forced_disconnect = True
-
         while True:
             self.report_status("connecting...")
             self._start_proxy()
 
-            for fp, line in nonblocking_readlines(self._proc.stdout,
-                                                  self._proc.stderr):
-                if fp is None:
-                    self._mon.idle(1, disconnect_hook)
+            stdout_closed = False
+            stderr_closed = False
+            for fp, line in multiplex_readlines(self._proc.stdout,
+                                                self._proc.stderr,
+                                                self._mpipe):
+                if fp is self._mpipe:
+                    assert line == "INT"
+                    forced_disconnect = True
+                    self._set_offline()
+                    self._stop_proxy()
+                    self._mon.maybe_pause_or_stop()
+
                 else:
-                    self._handle_proxy_status(line,
-                                              fp is self._proc.stderr,
-                                              online_hook)
-                    self._mon.maybe_pause_or_stop(disconnect_hook)
+                    is_stderr = fp is self._proc.stderr
+                    if line is None:
+                        if is_stderr: stderr_closed = True
+                        else:         stdout_closed = True
+
+                    self._log_proxy_status(line, is_stderr)
+                    if self._handle_proxy_status(line, is_stderr):
+                        self._set_online()
+                        backoff = 0
+
+                    if stderr_closed and stdout_closed:
+                        break
 
             # EOF on both pipes indicates the proxy has exited.
             rc = self._proc.wait()
             self._proc = None
-            self._online = False
+            if self._online:
+                self._set_offline()
 
             # If self._done is true at this point we should just exit as
             # quickly as possible.
@@ -389,7 +460,7 @@ class OpenVPNProxy(Proxy):
             self._proc.stdin.close()
             self._tried_gentle_stop = True
 
-    def _handle_proxy_status(self, line, is_stderr, online_cb):
+    def _handle_proxy_status(self, line, is_stderr):
         if is_stderr:
             if line is not None:
                 self.report_status(line)
@@ -398,6 +469,162 @@ class OpenVPNProxy(Proxy):
                 self._state += 1
             elif line is None and self._state == 1:
                 self._state += 1
-                online_cb()
+                return True
             elif line is not None:
                 self.report_status("[stdout] " + repr(line))
+        return False
+
+class ProxyConfig:
+    """Configuration information for one proxy which may or may not
+       be active right now."""
+    def __init__(self, loc, method, args):
+        self.loc    = loc
+        self.method = method
+        self.args   = args
+        self.proxy  = None
+        self.done   = False
+
+    def start_proxy(self, disp):
+        assert self.proxy is None
+        self.proxy = self.method(disp, self.loc, *self.args)
+        return self.proxy
+
+    def stop_proxy(self, disp):
+        assert self.proxy is not None
+        self.proxy.stop()
+        self.done = self.proxy.done
+        self.proxy = None
+
+    def finish_proxy(self, disp):
+        assert self.proxy is not None
+        self.proxy.finished()
+        self.done = self.proxy.done
+        self.proxy = None
+
+class ProxySet:
+    """Logic for starting proxies and tracking active proxies.  This is
+    not itself the dispatcher object that proxies communicate with,
+    but it helps to implement one.
+
+    The 'args' object passed to the constructor must have these
+    properties:
+
+     - proxy_config: pathname of a proxy configuration file;
+     - max_simultaneous_proxies: maximum number of proxies to allow to
+       run simultaneously.
+
+    Proxy configuration files are line-oriented, one proxy per line,
+    in the format
+
+        loc  method  args...
+
+    'loc' is an arbitrary label, at least two characters,
+    restricted to ASCII letters, digits, and underscores.
+    It must be unique in the file.
+
+    'method' should be one of the concrete proxy subclasses' TYPEs
+    (currently either 'direct' or 'ovpn').
+
+    'args' is split on whitespace and given to the proxy class's
+    constructor as additional arguments.
+
+    Entire lines may be commented out with a leading '#', but '#'
+    elsewhere in a line is not special.
+
+    """
+
+    _VALID_LOC_RE  = re.compile("^[a-z0-9_]+$")
+    _PROXY_METHODS = {
+        cls.TYPE : cls
+        for cls in globals().values()
+        if (isinstance(cls, type)
+            and cls is not Proxy
+            and issubclass(cls, Proxy))
+    }
+
+    def __init__(self, args, proxy_sort_key=None):
+        """Constructor.  ARGS is as described above.  PROXY_SORT_KEY takes two
+           arguments, the 'loc' and 'method' fields of the proxy
+           config file in that order, and controls the order in which
+           proxies should be started; they are put in a sorted list
+           using this as the sort key, and started low to high.  The
+           default is to sort all 'direct' proxies first, and then
+           alphabetically by 'loc'."""
+        if proxy_sort_key is None:
+            proxy_sort_key = lambda l, m: (m != 'direct', l)
+
+        self.proxy_sort_key  = proxy_sort_kley
+        self.args            = args
+        self.proxy_configs   = {}
+        self.active_proxies  = []
+        self.active_configs  = []
+        self.unused_configs  = []
+        self.crashed_configs = []
+
+        with open(self.args.locations) as f:
+            for w in f:
+                w = w.strip()
+                if not w: continue
+                if w[0] == '#': continue
+
+                w = w.split()
+                if len(w) < 2 or not self._VALID_LOC_RE.match(w[0]):
+                    raise RuntimeError("invalid location: " + " ".join(w))
+
+                loc = w[0]
+                if loc in self.proxy_configs:
+                    raise RuntimeError("duplicate location: " + " ".join(w))
+
+                method = w[1]
+                if method not in self._PROXY_METHODS:
+                    raise RuntimeError("unrecognized method: " + " ".join(w))
+                method = self._PROXY_METHODS[method]
+
+                args = w[2:]
+                self.proxy_configs[loc] = ProxyConfig(loc, method, args)
+
+        self._load_unused_configs(self.proxy_configs.values())
+
+    def _load_unused_configs(self, configs):
+        """Internal: refill and sort the set of proxies that we could
+           start up."""
+        self.unused_configs.extend(configs)
+        self.unused_configs.sort(
+            key = lambda v: self.proxy_sort_key(v.loc, v.method.TYPE))
+        self.unused_configs.reverse()
+
+    def start_a_proxy(self, disp):
+        """Pick a proxy and start it.  Returns the proxy object, or None if
+           there are no more proxies that can be started now."""
+
+        if len(self.active_proxies) >= self.args.max_simultaneous_proxies:
+            return None
+
+        if not self.unused_configs:
+            if not self.crashed_configs:
+                return None
+
+            self._load_unused_configs(self.crashed_configs)
+            self.crashed_configs.clear()
+
+        cfg = self.unused_configs.pop()
+        self.active_configs.append(cfg)
+
+        proxy = cfg.start_proxy(disp)
+        self.active_proxies.append(proxy)
+        return proxy
+
+    def drop_proxy(proxy):
+        """Record that PROXY has gone or should go offline.  If it is not
+           "done", its configuration is put in a "crashed" list; it
+           will be retried by start_a_proxy only after we work through
+           the full list of not-yet-used proxies.
+        """
+        self.active_proxies.remove(proxy)
+        for i, cfg in enumerate(self.active_configs):
+            if cfg.proxy is proxy:
+                del self.active_configs[i]
+                cfg.stop_proxy()
+                if not cfg.done:
+                    self.crashed_configs.append(cfg)
+                break

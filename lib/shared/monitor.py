@@ -151,7 +151,16 @@ class Monitor:
            the message can be made to conform to whatever scheme is in
            use for other messages.
         """
-        self._worker_event_queues.append( (queue, desired_stop_message) )
+        self._worker_event_queues[threading.get_ident()] = \
+            ('q', queue, desired_stop_message)
+
+    def register_event_pipe(self, pipe, desired_stop_message):
+        """Same as register_event_queue, but the thread takes work from
+           one or more OS-level pipes.  PIPE is the write fd of one of
+           these pipes, and the stop message must be acceptable to os.write.
+        """
+        self._worker_event_queues[threading.get_ident()] = \
+            ('p', pipe, desired_stop_message)
 
     def __init__(self, main, *args, banner="", error_log="error-log",
                  **kwargs):
@@ -192,7 +201,7 @@ class Monitor:
             self._counters_lock = threading.Lock()
             self._n_work_threads = 0
             self._active_work_threads = 0
-            self._worker_event_queues = []
+            self._worker_event_queues = {}
             self._worker_exceptions = {}
 
             # Terminal-related state.
@@ -361,6 +370,8 @@ class Monitor:
             self._tasks.put((self._EXIT, 0))
 
         finally:
+            if thread.ident in self._worker_event_queues:
+                del self._worker_event_queues[thread.ident]
             with self._counters_lock:
                 self._n_work_threads -= 1
                 self._active_work_threads -= 1
@@ -535,8 +546,12 @@ class Monitor:
         os.kill(self._pid, signo)
 
     def _broadcast_stop(self):
-        for q, m in self._worker_event_queues:
-            q.put(m)
+        for t, q, m in self._worker_event_queues.values():
+            if t == 'q':
+                q.put(m)
+            else:
+                assert t == 'p'
+                os.write(fd, m)
         self._stop_event.set()
 
     def _output_thread_fn(self):
@@ -604,33 +619,48 @@ class Monitor:
 
 class Worker:
     """Skeleton for a work thread that takes messages from a dispatcher.
-       Subclasses should implement the process_batch method and
-       override the _prefix property (used for mon.set_status_prefix).
-
-       The _mon property is guaranteed to be a Monitor object.
-       process_batch may (indeed, should) make use of
-       self._mon.report_status and self._mon.set_status_prefix as it
-       sees fit.  All other properties defined in this base class
-       should be considered private.
-
-       If a batch might take a very long time to process, the
-       process_batch method should call self.is_interrupted() at
-       appropriate intervals, and return as soon as possible if it
-       returns True.  Whatever process_batch returns will be passed
-       back to the dispatcher.  If process_batch throws an exception,
-       that will also be reported to the dispatcher.
+       Subclasses must implement the process_batch method.  Whatever
+       process_batch returns will be passed back to the dispatcher.
+       (If appropriate, process_batch may choose to call
+       self._disp.complete_batch itself; in that case it should return
+       None.) If process_batch throws an exception, that will also be
+       reported to the dispatcher.
 
        The dispatcher, which must be the 'disp' object passed to
        __init__, can queue work on a Worker by calling its queue_batch
        method.  It can direct a Worker to terminate (after completing
        any previously queued work) by calling its 'finished' method.
-       'disp' must itself implement three methods:
+
+       The dispatcher must itself implement three methods:
        complete_batch(worker, results), fail_batch(worker, exc_info),
        and drop_worker(worker), where 'worker' is the Worker object,
        'results' is whatever process_batch returned, and 'exc_info' is
        sys.exc_info() for the exception that process_batch threw.  The
        dispatcher is responsible for keeping track of the correlation
        among workers, batches, and results or failures.
+
+       If a batch might take a very long time to process,
+       process_batch should call self.is_interrupted() at appropriate
+       intervals, and return as soon as possible if it returns True.
+
+       The idle property is True if this worker currently has nothing to
+       do, and False if it is currently processing a batch.
+
+       The _disp property holds the dispatcher object passed to the
+       constructor.
+
+       The _mon property is guaranteed to be a Monitor object.
+       process_batch may (indeed, should) make use of
+       self._mon.report_status and self._mon.set_status_prefix as it
+       sees fit.
+
+       The _idle_prefix property, which should be initialized in a
+       subclass's __init__ method, will be passed to
+       self._mon.set_status_prefix whenever the worker goes idle.
+       (It does not need to contain the string "idle".)
+
+       All other properties defined in this base class should be
+       considered private.
 
     """
 
@@ -639,7 +669,8 @@ class Worker:
         self._mon = None
         self._batch_queue = queue.PriorityQueue()
         self._serializer = 0
-        self._prefix = ""
+        self._idle_prefix = ""
+        self.idle = True
 
     # batch queue message types/priorities
     _INTERRUPT = 1
@@ -679,12 +710,13 @@ class Worker:
     def __call__(self, mon, thr):
         self._mon = mon
         self._mon.register_event_queue(self._batch_queue, (self._INTERRUPT,))
-        self._mon.set_status_prefix(self._prefix)
 
         try:
             while True:
                 try:
+                    self._mon.set_status_prefix(self._prefix)
                     self.mon.report_status("idle")
+                    self.idle = True
                     msg = self.batch_queue.get()
 
                     if msg[0] == self._MON_INTERRUPT:
@@ -697,6 +729,7 @@ class Worker:
                     elif msg[0] == self._BATCH:
                         _, _, args, kwargs = msg
                         try:
+                            self.idle = False
                             result = self.process_batch(*args, **kwargs)
                             self._disp.complete_batch(self, result)
                         except Exception:

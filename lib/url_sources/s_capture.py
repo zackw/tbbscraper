@@ -84,8 +84,8 @@ import zlib
 
 from psycopg2 import IntegrityError
 from shared import url_database
-from shared.monitor import Monitor
-from shared.proxies import DirectProxy, OpenVPNProxy
+from shared.monitor import Monitor, Worker
+from shared.proxies import ???
 from shared.strsignal import strsignal
 
 pj_trace_redir = os.path.realpath(os.path.join(
@@ -364,71 +364,10 @@ def is_failure(report):
     return not (report.get('content') and
                 report['status'] != 'crawler failure')
 
-class CaptureWorker:
+class CaptureWorker(Worker):
     def __init__(self, disp):
-        self.disp = disp
-        self.batch_queue = queue.PriorityQueue()
-        self.batch_queue_serializer = 0
-
-    # batch queue message types/priorities
-    _MON_SAYS_STOP  = 1
-    _CAPTURE_BATCH  = 2
-    _FINISHED       = 3
-
-    # dispatcher-to-worker API
-    def queue_batch(self, proxy, batch):
-        # Entries in a PriorityQueue must be totally ordered.
-        # We don't care about the relative ordering of capture batches,
-        # and we don't want Python to waste time sorting them
-        # (moreover, Proxy instances are not ordered), so we give
-        # those messages a serial number.
-        self.batch_queue_serializer += 1
-        self.batch_queue.put((self._CAPTURE_BATCH,
-                              self.batch_queue_serializer,
-                              batch, proxy))
-
-    def finished(self):
-        self.batch_queue.put((self._FINISHED,))
-
-    def __call__(self, mon, thr):
-        self.mon = mon
-        self.mon.register_event_queue(self.batch_queue, (self._MON_SAYS_STOP,))
-
-        try:
-            self.process_batch_queue()
-        finally:
-            self.disp.drop_worker(self)
-
-    def process_batch_queue(self):
-        while True:
-            try:
-                self.mon.set_status_prefix("w")
-                if self.batch_queue.empty():
-                    self.mon.report_status("waiting for batch...")
-                    self.disp.request_batch(self)
-
-                msg = self.batch_queue.get()
-
-                if msg[0] == self._MON_SAYS_STOP:
-                    self.mon.maybe_pause_or_stop()
-
-                elif msg[0] == self._FINISHED:
-                    # No more work to do.
-                    self.mon.report_status("done")
-                    return
-
-                elif msg[0] == self._CAPTURE_BATCH:
-                    if msg[2] == []:
-
-                    assert msg[2] is not None
-                    assert msg[3] is not None
-                    self.process_batch(msg[3], msg[2])
-
-                else:
-                    self.mon.report_error("invalid batch queue message {!r}"
-                                          .format(msg))
-            except Exception:
-                self.mon.report_exception()
+        Worker.__init__(self, disp)
+        self._idle_prefix = "w"
 
     def process_batch(self, loc, batch):
         batchsize = len(batch)
@@ -437,15 +376,13 @@ class CaptureWorker:
         nfail = 0
         start = time.time()
 
-        self.mon.set_status_prefix("w " + loc.proxy.label())
+        self._mon.set_status_prefix("w " + loc.proxy.label())
         try:
-            # The appearance of any message on the batch queue means we need
-            # to stop, as does the proxy going offline.
-            while batch and self.batch_queue.empty() and loc.proxy.online:
-                self.mon.report_status("processing {}: "
-                                       "{} captured, {} failures"
-                                       .format(loc.proxy.label(),
-                                               batchsize, nsucc, nfail))
+            while loc.proxy.online and not self.is_interrupted():
+                self._mon.report_status("processing {}: "
+                                        "{} captured, {} failures"
+                                        .format(loc.proxy.label(),
+                                                batchsize, nsucc, nfail))
 
                 (url_id, url) = batch.pop()
                 report = CaptureTask(url, loc.proxy).report()
@@ -467,7 +404,7 @@ class CaptureWorker:
                     last_failure = completed.pop()
                     batch.append((last_failure[0], last_failure[1]['ourl']))
 
-            self.disp.complete_batch(loc, completed, batch)
+            self._disp.complete_batch(loc, completed, batch)
 
             if completed:
                 sec_per_url = (stop - start)/len(completed)
@@ -531,28 +468,7 @@ class CaptureDispatcher:
                 self.mon.report_exception()
 
     def read_locations(self):
-        valid_loc_re = re.compile("^[a-z]+$")
-        with open(self.args.locations) as f:
-            for w in f:
-                w = w.strip()
-                if not w: continue
-                if w[0] == '#': continue
-                w = w.split()
-                if len(w) < 2 or not valid_loc_re.match(w[0]):
-                    raise RuntimeError("invalid location: " + " ".join(w))
-                loc = w[0]
-                if loc in self.state:
-                    raise RuntimeError("duplicate location: " + " ".join(w))
-                method = w[1]
-                args = w[2:]
-                if method == 'direct': method = DirectProxy
-                elif method == 'ovpn': method = OpenVPNProxy
-                else:
-                    raise RuntimeError("unrecognized method: " + " ".join(w))
-
-                self.state[loc] = PerLocaleState(loc, method, args)
-
-        self.locales = sorted(self.state.keys())
+        raise NotImplemented#XXXXXX
 
     # Status queue helper constants and methods.
     _COMPLETE      = 0
