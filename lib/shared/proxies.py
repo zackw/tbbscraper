@@ -11,232 +11,447 @@
 import datetime
 import fcntl
 import glob
+import heapq
 import locale
 import os
 import random
 import re
-import select
+import selectors
 import subprocess
 import time
 
+from .strsignal import strsignal
+
 # Utilities
+
+def format_exit_status(status):
+    if status == 0:
+        return "exited normally"
+    elif status > 0:
+        return "exited abnormally (code {})".format(status)
+    else:
+        return "killed by signal: " + strsignal(-status)
 
 # This is a module global because locale.getpreferredencoding(True) is
 # not safe to call off-main-thread.
 DEFAULT_ENCODING = locale.getpreferredencoding(True)
 
-def multiplex_readlines(*files, timeout=None):
-    """Generator which yields lines from one or more file objects, which
-       are used only for their fileno() and as identifying labels,
-       in whatever order data becomes available on each.
+class NonblockingLineBuffer:
+    """Helper class used by LineMultiplexor."""
+
+    def __init__(self, fp, lineno, priority):
+        global DEFAULT_ENCODING
+
+        self.fp = fp
+        self.lineno = lineno
+        self.priority = priority
+
+        if hasattr(fp, 'fileno'):
+            self.fd = fp.fileno()
+            if hasattr(fp, 'encoding'):
+                self.enc = fp.encoding
+            else:
+                self.enc = DEFAULT_ENCODING
+        else:
+            assert isinstance(fp, int)
+            self.fd  = fp
+            self.enc = DEFAULT_ENCODING
+
+        self.buf = bytearray()
+        self.at_eof = False
+        self.carry_cr = False
+
+        fl = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        if not (fl & os.O_NONBLOCK):
+            fcntl.fcntl(self.fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    def close(self):
+        if hasattr(self.fp, 'close'):
+            self.fp.close()
+        else:
+            os.close(self.fd)
+
+    def absorb(self):
+        while True:
+            try:
+                block = os.read(self.fd, 8192)
+            except BlockingIOError:
+                break
+            if not block:
+                self.at_eof = True
+                break
+
+            self.buf.extend(block)
+
+        return bool(buf) or self.at_eof
+
+    def emit(self):
+        buf = self.buf
+
+        if buf:
+            # Deal with '\r\n' having been split between absorb() events.
+            if self.carry_cr and buf[0] == b'\n':
+                del buf[0]
+            self.carry_cr = False
+
+        if buf:
+            lines = buf.splitlines()
+            if self.is_open and buf[-1] not in (b'\r', b'\n'):
+                buf = lines.pop()
+            else:
+                if buf[-1] == b'\r':
+                    self.carry_cr = True
+                del buf[:]
+
+            for line in lines:
+                yield (self.fp, line.decode(self.enc).rstrip())
+
+        if self.at_eof:
+            yield (self.fp, None)
+
+        self.buf = buf
+
+
+class LineMultiplexor:
+    """Priority queue which produces lines from one or more file objects,
+       which are used only for their fileno() and as identifying
+       labels, as data becomes available on each.  If data is
+       available on more than one file at the same time, the user can
+       specify the order in which to return them.
 
        Files open in text mode are decoded according to their own
        stated encoding; files open in binary mode are decoded
-       according to locale.getpreferredencoding().  Newline
-       determination is universal.  For convenience, any Nones in
-       'files' are silently ignored.
+       according to locale.getpreferredencoding().  Newline handling
+       is universal.
 
-       Each yield is (fileobj, string); trailing whitespace is
-       stripped from the string.  EOF on a particular file is
-       indicated as (fileobj, None), which occurs only once; when it
-       occurs, fileobj has already been closed and dropped from the
-       pollset.  The generator will terminate once all files have
-       closed.
+       Files may be added or removed from the pollset with the
+       add_file and drop_file methods (in the latter case, the file
+       will not be closed).  You can pass in bare fds as well as file
+       objects.  Files are automatically removed from the pollset and
+       closed when they reach EOF.
 
-       If timeout is not None, it is the maximum amount of time to
-       block waiting for data, in milliseconds; if the timeout
-       expires, (None, None) will be yielded.
+       Each item produced by .get() or .peek() is (fileobj, string);
+       trailing whitespace is stripped from the string.  EOF on a
+       particular file is indicated as (fileobj, None), which occurs
+       only once; when it occurs, fileobj has already been closed.
+
+       If no data is available (either from .peek(), or after .get
+       times out) the result is (None, None).
+
+       If used as an iterator, iteration terminates when all files have
+       reached EOF.  Adding more files will reactivate iteration.
     """
 
-    class NonblockingBuffer:
-        def __init__(self, fp):
-            self.fp  = fp
-            self.fd  = fp.fileno()
-            self.buf = bytearray()
-            self.is_open = True
-            self.yielded_this_cycle = False
-            try:
-                self.enc = fp.encoding
-            except AttributeError:
-                global DEFAULT_ENCODING
-                self.enc = DEFAULT_ENCODING
+    def __init__(self, default_timeout=None):
+        self.poller          = selectors.PollSelector()
+        self.output_q        = []
+        self.default_timeout = default_timeout
+        self.seq             = 0
 
-            fl = fcntl.fcntl(self.fd, fcntl.F_GETFL)
-            fcntl.fcntl(self.fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+    def add_file(self, fp, priority=0):
+        """Add FP to the poll set with priority PRIORITY (default 0).
+           Larger priority numbers are _lower_ priorities.
+        """
+        buf = NonblockingLineBuffer(fp, lineno = 0, priority = priority)
+        self.poller.register(fp, selectors.EVENT_READ, buf)
 
-        def absorb(self):
-            while self.is_open:
-                try:
-                    block = os.read(fd, 8192)
-                except BlockingIOError:
+    def drop_file(self, fp):
+        """Remove FP from the poll set.  Does not close the file."""
+        self.poller.unregister(fp)
+
+    def peek(self):
+        """Returns the first item in the output queue, if any, without
+           blocking and without removing it from the queue.
+        """
+        if not self.output_q:
+            self._poll(0)
+        return self._extract(False)
+
+    def get(self, timeout=None):
+        """Retrieve the first item from the output queue.  If there
+           are none, blocks until data arrives or TIMEOUT expires."""
+        self._poll(timeout)
+        return self._extract(True)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        """Iteration calls .get until all files are exhausted."""
+        if not self.output_q and not self.poller.get_map():
+            raise StopIteration
+        return self.get()
+
+    # Internal: queue management.
+    def _insert(self, priority, lineno, line, fp):
+        # self.seq ensures that everything in the queue is strictly
+        # ordered before we get to 'fp', which prevents heapq from
+        # trying to sort file objects.
+        heapq.heappush(self.output_q, (priority, lineno, line, self.seq, fp))
+        self.seq += 1
+
+    def _extract(self, pop):
+        if not self.output_q:
+            return (None, None)
+        if pop:
+            qitem = heapq.heappop(self.output_q)
+        else:
+            qitem = self.output_q[0]
+        return (qitem[4], qitem[2])
+
+    # Internal: the core read loop.
+    def _poll(self, timeout=None):
+        if timeout is None:
+            timeout = self.default_timeout
+
+        while True:
+            if timeout is not None and timeout > 0:
+                entry = time.monotonic()
+
+            events = self.poller.select(timeout)
+            if events:
+                may_emit = []
+                for k, _ in events:
+                    buf = k.data
+                    if buf.absorb():
+                        may_emit.append(buf)
+
+                for buf in may_emit:
+                    lineno = buf.lineno
+                    prio = buf.priority
+                    for line in buf.emit():
+                        self._insert(prio, lineno, line, buf.fp)
+                        lineno += 1
+
+                    buf.lineno = lineno
+                    if buf.at_eof:
+                        self.drop_file(buf.fp)
+                        buf.close()
+
+            if self.output_q or timeout == 0:
+                break
+
+            # If some of the file descriptors are slowly producing very
+            # long lines, we might not actually emit any data for longer
+            # than the timeout, even though the system call never blocks
+            # for too long.  Therefore, we must manually check whether
+            # the timeout has expired, and adjust it downward if it hasn't.
+            if timeout is not None and timeout > 0:
+                now = time.monotonic()
+                timeout -= now - entry
+                if timeout <= 0:
                     break
-
-                if block:
-                    self.buf.extend(block)
-                else:
-                    self.is_open = False
-                    # We don't close the file here because the generator
-                    # needs to remove the fd from the poll set first.
-
-            return len(self.buf) > 0 or not self.is_open
-
-        def emit(self):
-            def emit1(chunk):
-                return (self.fp, chunk.decode(self.enc).rstrip())
-
-            buf = self.buf
-            self.yielded_this_cycle = False
-            while len(buf) > 0:
-                r = buf.find(b'\r')
-                n = buf.find(b'\n')
-                if r == -1 and n == -1:
-                    if not self.is_open:
-                        self.yielded_this_cycle = True
-                        yield emit1(buf)
-                        buf.clear()
-
-                elif r == -1 or r > n:
-                    self.yielded_this_cycle = True
-                    yield emit1(buf[:n])
-                    buf = buf[(n+1):]
-
-                elif n == -1 or n > r:
-                    self.yielded_this_cycle = True
-                    yield emit1(buf[:r])
-                    if n == r+1:
-                        buf = buf[(r+2):]
-                    else:
-                        buf = buf[(r+1):]
-
-            self.buf = buf
-            if not self.is_open:
-                self.yielded_this_cycle = True
-                yield (self.fp, None)
-
-    poller = select.poll()
-    buffers = {}
-    for fp in files:
-        if fp is None: continue
-        fd = fp.fileno()
-        buffers[fd] = NonblockingBuffer(fp)
-        poller.register(fd, select.POLLIN)
-
-    if timeout is not None:
-        last_emit = time.clock_gettime(time.CLOCK_MONOTONIC)
-
-    while buffers:
-        events = poller.poll(timeout)
-        emitted = False
-        if events:
-            may_emit = []
-            for fd, ev in events:
-                buf = buffers[fd]
-                if buf.absorb():
-                    may_emit.append(buf)
-                if not buf.is_open:
-                    del buffers[fd]
-                    poller.unregister(fd)
-                    buf.fp.close()
-
-            for buf in may_emit:
-                yield from buf.emit()
-                emitted |= buf.yielded_this_cycle
-
-        # If some of the file descriptors are slowly producing very
-        # long lines, we might not actually emit any data for longer
-        # than the timeout, even though the system call never blocks
-        # for too long.  Therefore, we must manually check whether
-        # any data has been emitted within the timeout interval.
-        if timeout is not None:
-            now = time.clock_gettime(time.CLOCK_MONOTONIC)
-            if emitted:
-                last_emit = now
-            else:
-                if now - last_emit > timeout:
-                    yield (None, None)
-                    last_emit = now
-
 
 # End of utilities
 
-class Proxy:
-    """Helper thread which runs and supervises a proxy mechanism that
-       tunnels network traffic to another machine.  Also tracks
-       performance statistics for that tunnel."""
+class ProxyMethod:
+    """Abstract base class - configuration and state information for one
+       proxy which may or may not be active right now.  Knows how to bring
+       the proxy up and down and monitor its status.
+    """
+    def __init__(self, disp, loc):
+        self.disp     = disp
+        self.loc      = loc
+        self.online   = False
+        self.starting = False
+        self.stopping = False
+        self.done     = False
+        self.proc     = None
 
-    def __init__(self, disp, locale):
-        self._disp   = disp
-        self._locale = locale
-        self._mon    = None
-        self._proc   = None
-        self._done   = False
-        self._online = False
-        self._detail = "offline"
-        self._thrdid = None
-        self._nsucc  = 0
-        self._nfail  = 0
-        self._pavg   = None
-        self._alpha  = 2/11
-        self._statm  = ""
-        self._log    = self._open_logfile()
-        self._mpipe  = None
-
-    def __call__(self, mon, thr):
-        """Main proxy-supervision loop."""
-
-        self._mon    = mon
-        self._thrdid = thr.ident
-
-        mpipe_r = None
-        mpipe_w = None
-        try:
-            mpipe_r, mpipe_w = os.pipe()
-            self._mon.register_event_pipe(mpipe_w, b"INT\n")
-            self._mpipe = os.fdopen(mpipe_r, "rt", encoding="ascii")
-
-            while True:
-                try:
-                    self._proxy_supervision_loop()
-                    break
-                except Exception:
-                    self._mon.report_exception()
-                    self.stop()
-
-        finally:
-            if mpipe_w is not None:
-                os.close(mpipe_w)
-            if self._mpipe is not None:
-                self._mpipe.close()
-            elif mpipe_r is not None:
-                os.close(mpipe_r)
-
-    # Subclasses should (normally; note DirectProxy) implement these
-    # methods.
-
+    # Subclasses must implement:
     def adjust_command(self, cmd):
         """Adjust the command line vector CMD so that it will make use
            of the proxy.  Must return the modified command; allowed to
            modify it in place."""
         raise NotImplemented
 
-    def _start_proxy(self):
-        """Start the proxy.  Must assign a subprocess.Popen object to
-           self._proc."""
+    def start(self):
+        """Start the proxy; do not wait for it to come up all the way.
+           This method must adjust self.starting/stopping/online
+           appropriately, and normally should also assign a
+           subprocess.Popen object to self.proc.
+        """
         raise NotImplemented
 
-    def _stop_proxy(self):
-        """Stop the proxy.  Does not wait for it to terminate."""
+    def stop(self):
+        """Stop the proxy; do not wait for it to terminate.
+           This method must adjust state.starting/stopping/online
+           appropriately.  If state.stopping is already true, should
+           do something more aggressive than it did the first time.
+        """
         raise NotImplemented
 
-    def _handle_proxy_status(self, line, is_stderr):
+    def handle_proxy_output(self, line, is_stderr):
         """Handle a line of output from the proxy.  LINE is either a string,
            or None; the latter indicates EOF.  is_stderr is a boolean,
            indicating whether output was on stdout or stderr.
-
-           Return True to signal that the proxy is now online and
-           operational, False otherwise.
+           self.starting/stopping/online should be updated as appropriate.
+           Return True if a significant state change has occurred.
         """
         raise NotImplemented
+
+    def handle_proxy_exit(self):
+        """Handle the proxy having exited.  waitpid() has already been called.
+           self.starting/stopping/online should be updated as appropriate.
+           Return True if a significant state change has occurred.
+        """
+        raise NotImplemented
+
+class DirectMethod(ProxyMethod):
+    """Stub 'proxy' that doesn't tunnel traffic, permitting it to emanate
+       _directly_ from the local machine."""
+
+    TYPE = 'direct'
+
+    def adjust_command(self, cmd):
+        return cmd
+
+    def start(self):
+        state.online = True
+
+    def stop(self):
+        state.online = False
+
+    # handle_proxy_output should never be called
+
+class OpenVPNMethod(ProxyMethod):
+    """OpenVPN-based proxy that tunnels traffic to another machine."""
+
+    TYPE = 'ovpn'
+
+    def __init__(self, disp, loc, cfg, *args):
+        ProxyMethod.__init__(self, disp, loc)
+        self._namespace    = "ns_" + loc
+        self._openvpn_args = args
+
+        openvpn_cfg = glob.glob(openvpn_cfg)
+        random.shuffle(openvpn_cfg)
+        self._openvpn_cfgs = collections.deque(openvpn_cfg)
+
+    def adjust_command(self, cmd):
+        assert cmd[0] == "isolate"
+        cmd.insert(1, "ISOL_NETNS="+self._namespace)
+        return cmd
+
+    def start(self):
+        if self.online or self.starting or self.stopping or self.done:
+            return
+        assert self.proc is None
+
+        cfg = self._openvpn_cfgs[0]
+        self._openvpn_cfgs.rotate(-1)
+
+        openvpn_cmd = [ "openvpn-netns", self._namespace, cfg ]
+        openvpn_cmd.extend(self._openvpn_args)
+
+        self.starting = True
+        self.proc = subprocess.Popen(openvpn_cmd,
+                                     stdin  = subprocess.PIPE,
+                                     stdout = subprocess.PIPE,
+                                     stderr = subprocess.PIPE)
+
+    def stop(self):
+        if self.done or not self.online:
+            return
+        assert self.proc is not None
+
+        self.starting = False
+        if not self.stopping:
+            self.proc.stdin.close() # this should trigger a clean shutdown
+            self.stopping = True
+
+        else:
+            # we already tried a clean shutdown and it didn't work
+            self.proc.terminate()
+
+    def handle_proxy_output(self, line, is_stderr):
+        assert self.proc is not None
+        if line is None:
+            if self.proc.stdout.closed and self.proc.stderr.closed:
+                # This should only happen if the process is about to exit.
+                if not self.stopping:
+                    self.proc.stdin.close()
+                    self.stopping = True
+
+                if self.proc.returncode is not None:
+                    self.stopping = False
+                    self.online = False
+                    self.proc = None
+
+                return True
+
+        elif line == "READY" and self.starting and not is_stderr:
+            self.starting = False
+            self.online = True
+            return True
+
+        return False
+
+    def handle_proxy_exit(self):
+        assert self.proc is not None
+        if not self.stopping:
+            self.proc.stdin.close()
+            self.stopping = True
+
+        if self.proc.stdout.closed and self.proc.stderr.closed:
+            self.stopping = False
+            self.online = False
+            self.proc = None
+
+        return True
+
+
+class ProxyRunner:
+    """Helper thread which runs and supervises a proxy mechanism that
+       tunnels network traffic to another machine.  Also tracks
+       performance statistics for that tunnel."""
+
+    # Control pipe messages.  All three of _BRING_DOWN, _FINISHED, and
+    # _INTERRUPT cause the proxy to be brought down; _INTERRUPT and
+    # _FINISHED also have other effects.  Note that it is necessary to
+    # tack on a newline whenever you write one of these to the control
+    # pipe, because of the way LineMultiplexor works.
+    _BRING_DOWN = b"d"
+    _FINISHED   = b"f"
+    _INTERRUPT  = b"i"
+    _BRING_UP   = b"u"
+
+    # Initialization and finalization.
+
+    def __init__(self, disp, locale):
+        self._disp    = disp
+        self._locale  = locale
+        self._mon     = None
+        self._proc    = None
+        self._done    = False
+        self._online  = False
+        self._detail  = "offline"
+        self._thrdid  = None
+        self._nsucc   = 0
+        self._nfail   = 0
+        self._pavg    = None
+        self._poller  = None
+        self._alpha   = 2/11
+        self._statm   = ""
+        self._log     = self._open_logfile()
+        self._cpipe_r, self._cpipe_w = os.pipe2(os.O_NONBLOCK|os.O_CLOEXEC)
+
+    def __del__(self):
+        os.close(self._cpipe_r)
+        os.close(self._cpipe_w)
+
+    # Subclasses should (normally; note DirectProxy) implement these
+    # methods.
+
+    def adjust_command(self, cmd):
+        raise NotImplemented
+
+    def _start_proxy(self):
+        raise NotImplemented
+
+    def _stop_proxy(self):
+        raise NotImplemented
+
 
     # External API
     @property
@@ -276,37 +491,95 @@ class Proxy:
                                3600/self._pavg))
         self._update_prefix()
 
+    def start(self):
+        self._cpipe_w.write(self._BRING_UP + b'\n')
+
     def stop(self):
-        if self._online:
-            self._set_offline()
-        if self._proc:
-            self._stop_proxy()
-            self._proc.wait()
-            self._proc = None
+        self._cpipe_w.write(self._BRING_DOWN + b'\n')
 
     def finished(self):
-        if not self._done:
-            self._done = True
-        self.stop()
+        self._cpipe_w.write(self._FINISHED + b'\n')
 
     # Internal.
+    def _state_tag(self):
+        if self._online:
+            return "up"
+        elif self._done:
+            return "closed"
+        elif self._proc is not None:
+            return "starting"
+        else:
+            return "down"
+
     def _update_prefix(self):
         self._mon.set_status_prefix("p {} {} | {} | "
                                     .format(self.label(),
-                                            "up  " if self._online else "down",
+                                            self._state_tag(),
                                             self._statm))
 
     def _open_logfile(self):
-        fp = open("proxy_" + self.label().replace(":","_") + ".log", "at")
+        fp = open("proxy_" + self.label().replace(":","_") + ".log",
+                  mode="at",
+                  buffering=1, # line-buffered
+                  encoding="utf-8",
+                  errors="backslashreplace") # in case of miscoded proxy chatter
         fp.write("\n")
         return fp
 
     def _log_proxy_status(self, line, is_stderr):
+        if line is None: line = "<<EOF>>"
         self._log.write("{} [{}]: {}: {}\n".format(
             datetime.datetime.utcnow().isoformat(' '),
-            "up" if self._online else "down",
+            self._state_tag(),
             "err" if is_stderr else "out",
             line.strip()))
+
+    def _log_proxy_exit(self, status):
+        self._log.write("{} [{}]: proxy {}\n".format(
+            datetime.datetime.utcnow().isoformat(' '),
+            self._state_tag(),
+            format_exit_status(status)))
+
+    def _do_start(self):
+        ...
+
+    def _do_stop(self):
+        ...
+
+    def _drain(self):
+        # This is a secondary event loop which runs when we are trying
+        # to bring the proxy down.  Requests to bring it back up are
+        # discarded, but requests to interrupt or finish will be
+        # reported to caller, which must honor them.  Output from the
+        # proxy is logged but not passed to _handle_proxy_status.
+
+        have_proxy = self._proc is not None
+        pending_interrupt = False
+        pending_finish = False
+
+        while True:
+            fp, data = self._poller.get(None if have_proxy else 0)
+            if fp is None:
+                if not have_proxy: break
+
+            if fp is self._cpipe_r:
+                if   data == _FINISHED:  pending_finish    = True
+                elif data == _INTERRUPT: pending_interrupt = True
+            else:
+                is_stderr = fp is self._proc.stderr
+                self._log_proxy_status(data, is_stderr)
+                if data is None:
+                    # We assume that the proxy will only close
+                    # both its stdout and stderr if it's about
+                    # to exit.
+                    if (self._proc.stdout.closed and
+                        self._proc.stderr.closed):
+                        self._set_offline()
+                        self._log_proxy_exit(self._proc.wait())
+                        self._proc = None
+                        have_proxy = False
+
+        return pending_finish, pending_interrupt
 
     def _set_online(self):
         self._online = True
@@ -318,91 +591,89 @@ class Proxy:
         self._update_prefix()
         self._disp.proxy_offline(self)
 
-    def _proxy_supervision_loop(self):
-        backoff = 0
-        forced_disconnect = False
+    # Main loop.
+    def __call__(self, mon, thr):
+        self._mon    = mon
+        self._thrdid = thr.ident
+        self._mon.register_event_pipe(self._cpipe_w, self._INTERRUPT+b'\n')
+        self._poller = LineMultiplexor()
+        # The control pipe is given _lower_ priority than the output
+        # from the proxy client.
+        self._poller.add_file(self._cpipe_r, priority=1)
+        self._update_prefix()
+
+        stdout_closed = True
+        stderr_closed = True
 
         while True:
-            self.report_status("connecting...")
-            self._start_proxy()
+            try:
+                # There is no deduplication of messages on the control
+                # pipe, so we need to drain it, recording all of the
+                # messages received, and only then process them.  This
+                # loop handles status messages from the proxy as a
+                # side effect.
+                pending_start     = False
+                pending_stop      = False
+                pending_interrupt = False
+                pending_finish    = False
+                fp, data = self._poller.get()
+                while fp is not None:
+                    if fp is self._cpipe_r:
+                        if   data == _BRING_DOWN: pending_stop      = True
+                        elif data == _FINISHED:   pending_finish    = True
+                        elif data == _INTERRUPT:  pending_interrupt = True
+                        elif data == _BRING_UP:   pending_start     = True
+                    else:
+                        is_stderr = fp is self._proc.stderr
+                        self._log_proxy_status(data, is_stderr)
+                        if self._handle_proxy_status(data, is_stderr):
+                            self._set_online()
 
-            stdout_closed = False
-            stderr_closed = False
-            for fp, line in multiplex_readlines(self._proc.stdout,
-                                                self._proc.stderr,
-                                                self._mpipe):
-                if fp is self._mpipe:
-                    assert line == "INT"
-                    forced_disconnect = True
-                    self._set_offline()
-                    self._stop_proxy()
+                        if data is None:
+                            # We assume that the proxy will only close
+                            # both its stdout and stderr if it's about
+                            # to exit.
+                            if (self._proc.stdout.closed and
+                                self._proc.stderr.closed):
+                                self._set_offline()
+                                self._log_proxy_exit(self._proc.wait())
+                                self._proc = None
+
+                    fp, data = self._poller.get(0)
+
+                # Now we know everything we're supposed to do, do it, in the
+                # appropriate order.
+                if ((pending_stop or pending_interrupt or pending_finish)
+                    and self._proc):
+                    self._do_stop()
+                    pf, pi = self._drain()
+                    pending_finish |= pf
+                    pending_interrupt |= pi
+
+                if pending_finish:
+                    self._done = True
+                    self._update_prefix()
+                    return
+
+                if pending_interrupt:
                     self._mon.maybe_pause_or_stop()
 
-                else:
-                    is_stderr = fp is self._proc.stderr
-                    if line is None:
-                        if is_stderr: stderr_closed = True
-                        else:         stdout_closed = True
+                if pending_start:
+                    self._do_start()
 
-                    self._log_proxy_status(line, is_stderr)
-                    if self._handle_proxy_status(line, is_stderr):
-                        self._set_online()
-                        backoff = 0
-
-                    if stderr_closed and stdout_closed:
-                        break
-
-            # EOF on both pipes indicates the proxy has exited.
-            rc = self._proc.wait()
-            self._proc = None
-            if self._online:
-                self._set_offline()
-
-            # If self._done is true at this point we should just exit as
-            # quickly as possible.
-            if self._done:
-                self.report_status("shut down.")
-                break
-
-            # If forced_disconnect is true, we killed the proxy
-            # because the monitor told us to suspend, and the
-            # suspension is now over.  So we should restart the
-            # proxy immediately.
-            if forced_disconnect:
-                forced_disconnect = False
-                continue
-
-            last_detail = self._detail
-            if last_detail == "online.":
-                last_detail = "disconnected."
-            if rc < 0:
-                last_detail += " ({})".format(strsignal(-rc))
-            elif rc > 0:
-                last_detail += " (exit {})".format(rc)
-
-            # exponential backoff, starting at 15 minutes and going up to
-            # eight hours
-            idletime = 2**backoff * 15 * 60
-            if idletime < 3600:
-                human_idletime = str(idletime / 60) + " minutes"
-            elif idletime == 3600:
-                human_idletime = "1 hour"
-            else:
-                human_idletime = "{:.2g} hours".format(idletime/3600.).strip()
-
-            self.report_status("{} (retry in {})"
-                               .format(last_detail, human_idletime))
-            if backoff < 6:
-                backoff += 1
-
-            self._mon.idle(idletime)
-            if self._done:
-                self.report_status("shut down.")
-                break
+            except Exception:
+                self._mon.report_exception()
+                self._do_stop()
+                self._drain()
+                pf, pi = self._drain()
+                if pf:
+                    self._done = True
+                    self._update_prefix()
+                    return
+                if pi:
+                    self._mon.maybe_pause_or_stop()
 
 class DirectProxy(Proxy):
-    """Stub 'proxy' that doesn't tunnel traffic, permitting it to emanate
-       _directly_ from the local machine."""
 
     TYPE = 'direct'
 
@@ -473,33 +744,6 @@ class OpenVPNProxy(Proxy):
             elif line is not None:
                 self.report_status("[stdout] " + repr(line))
         return False
-
-class ProxyConfig:
-    """Configuration information for one proxy which may or may not
-       be active right now."""
-    def __init__(self, loc, method, args):
-        self.loc    = loc
-        self.method = method
-        self.args   = args
-        self.proxy  = None
-        self.done   = False
-
-    def start_proxy(self, disp):
-        assert self.proxy is None
-        self.proxy = self.method(disp, self.loc, *self.args)
-        return self.proxy
-
-    def stop_proxy(self, disp):
-        assert self.proxy is not None
-        self.proxy.stop()
-        self.done = self.proxy.done
-        self.proxy = None
-
-    def finish_proxy(self, disp):
-        assert self.proxy is not None
-        self.proxy.finished()
-        self.done = self.proxy.done
-        self.proxy = None
 
 class ProxySet:
     """Logic for starting proxies and tracking active proxies.  This is
