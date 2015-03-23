@@ -731,7 +731,8 @@ class Worker:
                         try:
                             self.idle = False
                             result = self.process_batch(*args, **kwargs)
-                            self._disp.complete_batch(self, result)
+                            if result is not None:
+                                self._disp.complete_batch(self, result)
                         except Exception:
                             self._disp.fail_batch(self, sys.exc_info())
                             raise

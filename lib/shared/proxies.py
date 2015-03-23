@@ -8,6 +8,7 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 # There is NO WARRANTY.
 
+import collections
 import datetime
 import fcntl
 import glob
@@ -249,14 +250,24 @@ class ProxyMethod:
        proxy which may or may not be active right now.  Knows how to bring
        the proxy up and down and monitor its status.
     """
-    def __init__(self, disp, loc):
-        self.disp     = disp
+    def __init__(self, loc):
         self.loc      = loc
         self.online   = False
         self.starting = False
         self.stopping = False
         self.done     = False
         self.proc     = None
+
+    @property
+    def fully_offline(self):
+        return not (self.online or self.starting or self.stopping)
+
+    def state_tag(self):
+        if   self.starting: return "starting"
+        elif self.stopping: return "stopping"
+        elif self.online:   return "up"
+        elif self.done:     return "closed"
+        else:               return "down"
 
     # Subclasses must implement:
     def adjust_command(self, cmd):
@@ -313,14 +324,15 @@ class DirectMethod(ProxyMethod):
         state.online = False
 
     # handle_proxy_output should never be called
+    # handle_proxy_exit should never be called
 
 class OpenVPNMethod(ProxyMethod):
     """OpenVPN-based proxy that tunnels traffic to another machine."""
 
     TYPE = 'ovpn'
 
-    def __init__(self, disp, loc, cfg, *args):
-        ProxyMethod.__init__(self, disp, loc)
+    def __init__(self, loc, cfg, *args):
+        ProxyMethod.__init__(self, loc)
         self._namespace    = "ns_" + loc
         self._openvpn_args = args
 
@@ -400,11 +412,10 @@ class OpenVPNMethod(ProxyMethod):
 
         return True
 
-
 class ProxyRunner:
-    """Helper thread which runs and supervises a proxy mechanism that
-       tunnels network traffic to another machine.  Also tracks
-       performance statistics for that tunnel."""
+    """Helper thread which runs and supervises a proxy, and tracks
+       performance statistics.
+    """
 
     # Control pipe messages.  All three of _BRING_DOWN, _FINISHED, and
     # _INTERRUPT cause the proxy to be brought down; _INTERRUPT and
@@ -416,108 +427,109 @@ class ProxyRunner:
     _INTERRUPT  = b"i"
     _BRING_UP   = b"u"
 
-    # Initialization and finalization.
+    def __init__(self, disp, loc, method, *, alpha=2/11):
+        self.disp    = disp
+        self.loc     = loc
+        self.method  = method
 
-    def __init__(self, disp, locale):
-        self._disp    = disp
-        self._locale  = locale
-        self._mon     = None
-        self._proc    = None
-        self._done    = False
-        self._online  = False
-        self._detail  = "offline"
-        self._thrdid  = None
-        self._nsucc   = 0
-        self._nfail   = 0
-        self._pavg    = None
-        self._poller  = None
-        self._alpha   = 2/11
-        self._statm   = ""
-        self._log     = self._open_logfile()
-        self._cpipe_r, self._cpipe_w = os.pipe2(os.O_NONBLOCK|os.O_CLOEXEC)
+        self.mon     = None
+        self.poller  = None
+        self.thrdid  = None
+        self.log     = self.open_logfile()
 
-    def __del__(self):
-        os.close(self._cpipe_r)
-        os.close(self._cpipe_w)
+        self.nsucc   = 0
+        self.nfail   = 0
+        self.pavg    = None
+        self.alpha   = alpha
+        self.statm   = ""
+        self.detail  = ""
 
-    # Subclasses should (normally; note DirectProxy) implement these
-    # methods.
+        # These fields are used by ProxySet.
+        self.cycle        = 0
+        self.backoff      = 0
+        self.last_attempt = 0
 
-    def adjust_command(self, cmd):
-        raise NotImplemented
+    def __call__(self, mon, thr):
+        self._mon    = mon
+        self._thrdid = thr.ident
+        try:
+            self.cpipe_r, self.cpipe_w = os.pipe2(os.O_NONBLOCK|os.O_CLOEXEC)
+            self.mon.register_event_pipe(self.cpipe_w, self._INTERRUPT+b'\n')
+            self.poller = LineMultiplexor()
+            # The control pipe is given _lower_ priority than the output
+            # from the proxy client.
+            self.poller.add_file(self.cpipe_r, priority=1)
+            self.update_prefix()
 
-    def _start_proxy(self):
-        raise NotImplemented
+            self.pending_start = False
+            self.pending_stop  = False
+            self.pending_intr  = False
+            self.pending_fini  = False
 
-    def _stop_proxy(self):
-        raise NotImplemented
+            while not self.method.done:
+                try:
+                    self.proxy_supervision_cycle()
+                except Exception:
+                    self.mon.report_exception()
 
+        finally:
+            os.close(self.cpipe_r)
+            os.close(self.cpipe_w)
 
     # External API
     @property
     def online(self):
-        return self._online
-
-    @property
-    def locale(self):
-        return self._locale
+        return self.method.online
 
     @property
     def done(self):
-        return self._done
+        return self.method.done
+
+    def adjust_command(self, command):
+        return self.method.adjust_command(command)
 
     def label(self):
-        return "{}:{}".format(self.locale, self.TYPE)
+        return "{}:{}".format(self.loc, self.method.TYPE)
 
     def report_status(self, msg):
-        self._detail = msg
-        self._mon.report_status(msg, thread=self._thrdid)
+        self.detail = msg
+        self.mon.report_status(msg, thread=self.thrdid)
 
     def update_stats(self, nsucc, nfail, sec_per_job):
-        self._nsucc += nsucc
-        self._nfail += nfail
+        self.nsucc += nsucc
+        self.nfail += nfail
 
-        if self._pavg is None:
-            self._pavg = sec_per_job
+        if self.pavg is None:
+            self.pavg = sec_per_job
         else:
-            self._pavg = self._pavg  * (1-self._alpha) + \
-                         sec_per_job *    self._alpha
+            self.pavg = self.pavg    * (1-self.alpha) + \
+                         sec_per_job *    self.alpha
 
-        self._statm = ("{} complete, {} failures | "
-                       "last {:.2f}, avg {:.2f} jobs/hr/wkr | "
-                       .format(self._nsucc,
-                               self._nfail,
-                               3600/sec_per_job,
-                               3600/self._pavg))
-        self._update_prefix()
+        self.statm = ("{} complete, {} failures | "
+                      "last {:.2f}, avg {:.2f} jobs/hr/wkr | "
+                      .format(self.nsucc,
+                              self.nfail,
+                              3600/sec_per_job,
+                              3600/self.pavg))
+        self.update_prefix()
 
     def start(self):
-        self._cpipe_w.write(self._BRING_UP + b'\n')
+        self.cpipe_w.write(self.BRING_UP + b'\n')
 
     def stop(self):
-        self._cpipe_w.write(self._BRING_DOWN + b'\n')
+        self.cpipe_w.write(self.BRING_DOWN + b'\n')
 
     def finished(self):
-        self._cpipe_w.write(self._FINISHED + b'\n')
+        self.cpipe_w.write(self.FINISHED + b'\n')
 
     # Internal.
-    def _state_tag(self):
-        if self._online:
-            return "up"
-        elif self._done:
-            return "closed"
-        elif self._proc is not None:
-            return "starting"
-        else:
-            return "down"
+    def update_prefix(self):
+        self.mon.set_status_prefix("p {} {} | {} | "
+                                   .format(self.label(),
+                                           self.method.state_tag(),
+                                           self.statm))
 
-    def _update_prefix(self):
-        self._mon.set_status_prefix("p {} {} | {} | "
-                                    .format(self.label(),
-                                            self._state_tag(),
-                                            self._statm))
-
-    def _open_logfile(self):
+    def open_logfile(self):
         fp = open("proxy_" + self.label().replace(":","_") + ".log",
                   mode="at",
                   buffering=1, # line-buffered
@@ -526,224 +538,109 @@ class ProxyRunner:
         fp.write("\n")
         return fp
 
-    def _log_proxy_status(self, line, is_stderr):
+    def log_proxy_status(self, line, is_stderr):
         if line is None: line = "<<EOF>>"
-        self._log.write("{} [{}]: {}: {}\n".format(
+        self.log.write("{} [{}]: {}: {}\n".format(
             datetime.datetime.utcnow().isoformat(' '),
-            self._state_tag(),
+            self.method.state_tag(),
             "err" if is_stderr else "out",
             line.strip()))
 
-    def _log_proxy_exit(self, status):
-        self._log.write("{} [{}]: proxy {}\n".format(
+    def log_proxy_exit(self, status):
+        self.log.write("{} [{}]: proxy {}\n".format(
             datetime.datetime.utcnow().isoformat(' '),
-            self._state_tag(),
+            self.method.state_tag(),
             format_exit_status(status)))
 
-    def _do_start(self):
-        ...
+    def do_start(self):
+        if (not self.method.fully_offline) or self.method.done:
+            return
 
-    def _do_stop(self):
-        ...
+        self.method.start()
+        self.update_prefix()
+        self.pending_start = False
 
-    def _drain(self):
-        # This is a secondary event loop which runs when we are trying
-        # to bring the proxy down.  Requests to bring it back up are
-        # discarded, but requests to interrupt or finish will be
-        # reported to caller, which must honor them.  Output from the
-        # proxy is logged but not passed to _handle_proxy_status.
+        if self.method.proc is not None:
+            self.poller.add_file(self.method.proc.stdout, priority=0)
+            self.poller.add_file(self.method.proc.stderr, priority=0)
 
-        have_proxy = self._proc is not None
-        pending_interrupt = False
-        pending_finish = False
+        if (self.method.online and not self.method.stopping):
+            self.disp.proxy_online(self)
 
-        while True:
-            fp, data = self._poller.get(None if have_proxy else 0)
-            if fp is None:
-                if not have_proxy: break
+    def do_stop(self):
+        if self.method.done:
+            return
 
-            if fp is self._cpipe_r:
-                if   data == _FINISHED:  pending_finish    = True
-                elif data == _INTERRUPT: pending_interrupt = True
-            else:
-                is_stderr = fp is self._proc.stderr
-                self._log_proxy_status(data, is_stderr)
-                if data is None:
-                    # We assume that the proxy will only close
-                    # both its stdout and stderr if it's about
-                    # to exit.
-                    if (self._proc.stdout.closed and
-                        self._proc.stderr.closed):
-                        self._set_offline()
-                        self._log_proxy_exit(self._proc.wait())
-                        self._proc = None
-                        have_proxy = False
+        self.method.stop()
+        self.update_prefix()
+        self.pending_stop = False
 
-        return pending_finish, pending_interrupt
+        if self.method.fully_offline:
+            if self.pending_finish:
+                self.method.done = True
+                self.pending_finish = False
+            self.disp.proxy_offline(self)
 
-    def _set_online(self):
-        self._online = True
-        self._update_prefix()
-        self._disp.proxy_online(self)
+    def process_proxy_message(fp, data):
+        is_stderr = fp is self.method.proc.stderr
+        self.log_proxy_status(data, is_stderr)
+        if self.method.handle_proxy_status(data, is_stderr):
+            self.update_prefix()
+            if (self.method.online and not self.method.stopping):
+                self.disp.proxy_online(self)
 
-    def _set_offline(self):
-        self._online = False
-        self._update_prefix()
-        self._disp.proxy_offline(self)
+            if data is None:
+                # We assume that the proxy will only close
+                # both its stdout and stderr if it's about
+                # to exit.
+                if (self.method.proc.stdout.closed and
+                    self.method.proc.stderr.closed):
+
+                    status = self.method.proc.wait()
+                    self.log_proxy_exit(status)
+                    self.method.handle_proxy_exit()
+
+                    assert self.method.fully_offline
+                    if self.pending_finish:
+                        self.method.done = True
+                        self.pending_finish = False
+                    self.disp.proxy_offline(self)
 
     # Main loop.
-    def __call__(self, mon, thr):
-        self._mon    = mon
-        self._thrdid = thr.ident
-        self._mon.register_event_pipe(self._cpipe_w, self._INTERRUPT+b'\n')
-        self._poller = LineMultiplexor()
-        # The control pipe is given _lower_ priority than the output
-        # from the proxy client.
-        self._poller.add_file(self._cpipe_r, priority=1)
-        self._update_prefix()
+    def proxy_supervision_cycle(self):
+        # Process actions from the previous cycle.
+        if self.pending_stop or self.pending_intr or self.pending_fini:
+            self.do_stop()
 
-        stdout_closed = True
-        stderr_closed = True
+        if self.method.done:
+            return
 
-        while True:
-            try:
-                # There is no deduplication of messages on the control
-                # pipe, so we need to drain it, recording all of the
-                # messages received, and only then process them.  This
-                # loop handles status messages from the proxy as a
-                # side effect.
-                pending_start     = False
-                pending_stop      = False
-                pending_interrupt = False
-                pending_finish    = False
-                fp, data = self._poller.get()
-                while fp is not None:
-                    if fp is self._cpipe_r:
-                        if   data == _BRING_DOWN: pending_stop      = True
-                        elif data == _FINISHED:   pending_finish    = True
-                        elif data == _INTERRUPT:  pending_interrupt = True
-                        elif data == _BRING_UP:   pending_start     = True
-                    else:
-                        is_stderr = fp is self._proc.stderr
-                        self._log_proxy_status(data, is_stderr)
-                        if self._handle_proxy_status(data, is_stderr):
-                            self._set_online()
+        # Delay start and interrupt actions until the proxy is
+        # fully offline.
+        if self.method.fully_offline:
+            if self.pending_intr:
+                self.pending_intr = False
+                self.mon.maybe_pause_or_stop()
 
-                        if data is None:
-                            # We assume that the proxy will only close
-                            # both its stdout and stderr if it's about
-                            # to exit.
-                            if (self._proc.stdout.closed and
-                                self._proc.stderr.closed):
-                                self._set_offline()
-                                self._log_proxy_exit(self._proc.wait())
-                                self._proc = None
+            if self.pending_start:
+                do_start()
 
-                    fp, data = self._poller.get(0)
+        # There is no deduplication of messages on the control
+        # pipe, so we need to drain it, recording all of the
+        # messages received, and only then process them.
+        # This loop handles status messages from the proxy
+        # as a side effect.
+        fp, data = self.poller.get()
+        while fp is not None:
+            if fp is self.cpipe_r:
+                if   data == _BRING_DOWN: self.pending_stop  = True
+                elif data == _FINISHED:   self.pending_fini  = True
+                elif data == _INTERRUPT:  self.pending_intr  = True
+                elif data == _BRING_UP:   self.pending_start = True
+            else:
+                self.process_proxy_message(fp, data)
+            fp, data = self.poller.get(0)
 
-                # Now we know everything we're supposed to do, do it, in the
-                # appropriate order.
-                if ((pending_stop or pending_interrupt or pending_finish)
-                    and self._proc):
-                    self._do_stop()
-                    pf, pi = self._drain()
-                    pending_finish |= pf
-                    pending_interrupt |= pi
-
-                if pending_finish:
-                    self._done = True
-                    self._update_prefix()
-                    return
-
-                if pending_interrupt:
-                    self._mon.maybe_pause_or_stop()
-
-                if pending_start:
-                    self._do_start()
-
-            except Exception:
-                self._mon.report_exception()
-                self._do_stop()
-                self._drain()
-                pf, pi = self._drain()
-                if pf:
-                    self._done = True
-                    self._update_prefix()
-                    return
-                if pi:
-                    self._mon.maybe_pause_or_stop()
-
-class DirectProxy(Proxy):
-
-    TYPE = 'direct'
-
-    def adjust_command(self, cmd):
-        return cmd
-
-    def __call__(self, mon, thr):
-        self._mon = mon
-        self._thrdid = thr.ident
-        self._online = True
-        self.report_status("online.")
-
-        while self._online:
-            mon.idle(1)
-
-class OpenVPNProxy(Proxy):
-    """Helper thread which runs and supervises an OpenVPN-based
-       netns proxy that tunnels traffic to another machine."""
-
-    TYPE = 'ovpn'
-
-    def __init__(self, disp, locale, openvpn_cfg, *openvpn_args):
-        Proxy.__init__(self, disp, locale)
-        self._tried_gentle_stop = False
-        self._namespace = "ns_" + locale
-        self._state = 0
-        openvpn_cfg = glob.glob(openvpn_cfg)
-        random.shuffle(openvpn_cfg)
-        self._openvpn_cfgs = collections.deque(openvpn_cfg)
-        self._openvpn_args = openvpn_args
-
-    def adjust_command(self, cmd):
-        assert cmd[0] == "isolate"
-        cmd.insert(1, "ISOL_NETNS="+self._namespace)
-        return cmd
-
-    def _start_proxy(self):
-
-        cfg = self._openvpn_cfgs[0]
-        self._openvpn_cfgs.rotate(-1)
-
-        openvpn_cmd = [ "openvpn-netns", self._namespace, cfg ]
-        openvpn_cmd.extend(self._openvpn_args)
-
-        self._proc = subprocess.Popen(openvpn_cmd,
-                                      stdin  = subprocess.PIPE,
-                                      stdout = subprocess.PIPE,
-                                      stderr = subprocess.PIPE)
-        self._tried_gentle_stop = False
-
-    def _stop_proxy(self):
-        if self._tried_gentle_stop:
-            self._proc.terminate()
-        else:
-            self._proc.stdin.close()
-            self._tried_gentle_stop = True
-
-    def _handle_proxy_status(self, line, is_stderr):
-        if is_stderr:
-            if line is not None:
-                self.report_status(line)
-        else:
-            if line == "READY" and self._state == 0:
-                self._state += 1
-            elif line is None and self._state == 1:
-                self._state += 1
-                return True
-            elif line is not None:
-                self.report_status("[stdout] " + repr(line))
-        return False
 
 class ProxySet:
     """Logic for starting proxies and tracking active proxies.  This is
@@ -762,9 +659,10 @@ class ProxySet:
 
         loc  method  args...
 
-    'loc' is an arbitrary label, at least two characters,
-    restricted to ASCII letters, digits, and underscores.
-    It must be unique in the file.
+    'loc' is an arbitrary label, which must begin with two or three
+    lowercase ASCII letters (an ISO country code) and then optionally
+    an underscore followed by any sequence of lowercase ASCII letters,
+    digits, and underscores.  It must be unique in the file.
 
     'method' should be one of the concrete proxy subclasses' TYPEs
     (currently either 'direct' or 'ovpn').
@@ -777,16 +675,16 @@ class ProxySet:
 
     """
 
-    _VALID_LOC_RE  = re.compile("^[a-z0-9_]+$")
+    _VALID_LOC_RE  = re.compile("^[a-z]{2,3}(?:_[a-z0-9_]+)?$")
     _PROXY_METHODS = {
         cls.TYPE : cls
         for cls in globals().values()
         if (isinstance(cls, type)
-            and cls is not Proxy
-            and issubclass(cls, Proxy))
+            and issubclass(cls, ProxyMethod)
+            and hasattr(cls, 'TYPE'))
     }
 
-    def __init__(self, args, proxy_sort_key=None):
+    def __init__(self, disp, mon, args, proxy_sort_key=None):
         """Constructor.  ARGS is as described above.  PROXY_SORT_KEY takes two
            arguments, the 'loc' and 'method' fields of the proxy
            config file in that order, and controls the order in which
@@ -799,13 +697,13 @@ class ProxySet:
 
         self.proxy_sort_key  = proxy_sort_kley
         self.args            = args
-        self.proxy_configs   = {}
-        self.active_proxies  = []
-        self.active_configs  = []
-        self.unused_configs  = []
-        self.crashed_configs = []
+        self.locations       = {}
+        self.active_proxies  = set()
+        self.waiting_proxies = collections.deque()
+        self.crashed_proxies = set()
 
         with open(self.args.locations) as f:
+            proxies = []
             for w in f:
                 w = w.strip()
                 if not w: continue
@@ -816,7 +714,7 @@ class ProxySet:
                     raise RuntimeError("invalid location: " + " ".join(w))
 
                 loc = w[0]
-                if loc in self.proxy_configs:
+                if loc in self.locations:
                     raise RuntimeError("duplicate location: " + " ".join(w))
 
                 method = w[1]
@@ -825,50 +723,87 @@ class ProxySet:
                 method = self._PROXY_METHODS[method]
 
                 args = w[2:]
-                self.proxy_configs[loc] = ProxyConfig(loc, method, args)
+                method = method(loc, *args)
+                runner = ProxyRunner(disp, loc, method)
+                mon.add_work_thread(runner)
+                self.locations[loc] = runner
+                proxies.append(runner)
 
-        self._load_unused_configs(self.proxy_configs.values())
+        self._refill_waiting_proxies(proxies)
 
-    def _load_unused_configs(self, configs):
-        """Internal: refill and sort the set of proxies that we could
-           start up."""
-        self.unused_configs.extend(configs)
-        self.unused_configs.sort(
-            key = lambda v: self.proxy_sort_key(v.loc, v.method.TYPE))
-        self.unused_configs.reverse()
+    def _refill_waiting_proxies(self, new_proxies=None):
+        """Internal: refill and sort the set of proxies that we could start."""
 
-    def start_a_proxy(self, disp):
-        """Pick a proxy and start it.  Returns the proxy object, or None if
-           there are no more proxies that can be started now."""
+        def full_proxy_sort_key(proxy):
+            disp_key = self.proxy_sort_key(proxy.loc, proxy.method.TYPE)
+            return (proxy.cycle, proxy.backoff, disp_key)
+
+        if new_proxies is None: new_proxies = []
+        for proxy in self.crashed_proxies:
+            proxy.cycle += 1
+            # Exponential backoff, starting at 15 seconds and going up to
+            # one hour.
+            if proxy.backoff = 0:
+                proxy.backoff = 15
+            elif proxy.backoff < 3600:
+                proxy.backoff *= 2
+            new_proxies.append(proxy)
+
+        self.crashed_proxies.clear()
+
+        new_proxies.sort(key=full_proxy_sort_key)
+        self.waiting_proxies.extend(new_proxies)
+
+    def start_a_proxy(self):
+        """Pick a proxy and start it.  Returns a 3-tuple: the first
+           entry is the proxy object, or None if there are no more
+           proxies that can be started now; the second entry is how
+           long to wait before calling this method again, or None if
+           caller should wait until at least one proxy has exited;
+           the third entry is how many proxies are still not 'done'.
+        """
 
         if len(self.active_proxies) >= self.args.max_simultaneous_proxies:
-            return None
+            return (None, None, len(self.locations))
 
-        if not self.unused_configs:
-            if not self.crashed_configs:
-                return None
+        if not self.waiting_proxies:
+            if not self.crashed_proxies:
+                return (None, None, len(self.locations))
+            self._refill_waiting_proxies()
 
-            self._load_unused_configs(self.crashed_configs)
-            self.crashed_configs.clear()
+        now = time.monotonic()
+        proxy = None
+        min_backoff = 3600
+        for i, cand in enumerate(self.waiting_proxies):
+            remaining = now - (cand.last_attempt + cand.backoff)
+            if remaining <= 0:
+                proxy = cand
+                del self.waiting_proxies[i]
+                break
+            else:
+                min_backoff = min(min_backoff, remaining)
 
-        cfg = self.unused_configs.pop()
-        self.active_configs.append(cfg)
+        if proxy is None:
+            return (None, max(min_backoff, 5), len(self.locations))
 
-        proxy = cfg.start_proxy(disp)
-        self.active_proxies.append(proxy)
-        return proxy
+        proxy.last_attempt = now
+        self.active_proxies.add(proxy)
+        proxy.start()
 
-    def drop_proxy(proxy):
-        """Record that PROXY has gone or should go offline.  If it is not
-           "done", its configuration is put in a "crashed" list; it
-           will be retried by start_a_proxy only after we work through
-           the full list of not-yet-used proxies.
+        return (proxy, 5, len(self.locations))
+
+    def note_proxy_online(self, proxy):
+        assert proxy in self.active_proxies
+        proxy.backoff = 0
+
+    def note_proxy_offline(self, proxy):
+        """Record that PROXY has gone offline.  If it is not "done", its
+           configuration is put in a "crashed" list; it will be
+           retried by start_a_proxy only after we work through the
+           full list of not-yet-used proxies.
         """
         self.active_proxies.remove(proxy)
-        for i, cfg in enumerate(self.active_configs):
-            if cfg.proxy is proxy:
-                del self.active_configs[i]
-                cfg.stop_proxy()
-                if not cfg.done:
-                    self.crashed_configs.append(cfg)
-                break
+        if proxy.done:
+            del self.locations[proxy.loc]
+        else:
+            self.crashed_proxies.add(proxy)

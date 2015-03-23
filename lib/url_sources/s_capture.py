@@ -85,7 +85,7 @@ import zlib
 from psycopg2 import IntegrityError
 from shared import url_database
 from shared.monitor import Monitor, Worker
-from shared.proxies import ???
+from shared.proxies import ProxySet
 from shared.strsignal import strsignal
 
 pj_trace_redir = os.path.realpath(os.path.join(
@@ -204,13 +204,9 @@ class CaptureTask:
         self.result_fd = tempfile.TemporaryFile("w+t", encoding="utf-8")
         self.errors_fd = tempfile.TemporaryFile("w+t", encoding="utf-8")
 
-        # PhantomJS seems to need 3GB of address space in order not to crash,
-        # even on relatively simple pages.
-        # 3 * 1024 * 1024 * 1024 = 3221225472
         self.proc = subprocess.Popen(
             proxy.adjust_command([
                 "isolate",
-                #"ISOL_RL_MEM=3221225472",
                 "ISOL_RL_MEM=unlimited",
                 "ISOL_RL_STACK=8388608",
                 "PHANTOMJS_DISABLE_CRASH_DUMPS=1",
@@ -414,193 +410,110 @@ class CaptureWorker(Worker):
 
 
 class PerLocaleState:
-    def __init__(self, locale, method, args):
+    def __init__(self, locale, proxy):
         self.locale       = locale
-        self.proxy_method = method
-        self.proxy_args   = args
-        self.proxy        = None
+        self.proxy        = proxy
         self.in_progress  = set()
         self.n_workers    = 0
         self.todo         = 0
 
-    def start_proxy(self, disp):
-        self.proxy = self.proxy_method(disp, self.locale, *self.proxy_args)
-        return self.proxy
-
 class CaptureDispatcher:
     def __init__(self, args):
-        self.args      = args
-        self.state     = {}
-        self.locales   = []
-        self.workers   = []
-
         # complete initialization deferred till we're on the right thread
-        self.mon = None
-        self.db  = None
-        self.status_queue = None
+        self.args                    = args
+        self.idle_workers            = set()
+        self.active_workers          = set()
+        self.locations               = {}
+        self.overall_jobsize         = 0
+        self.proxies                 = None
+        self.mon                     = None
+        self.db                      = None
+        self.status_queue            = None
         self.status_queue_serializer = 0
-        self.overall_jobsize = 0
 
     def __call__(self, mon, thr):
         self.mon = mon
         self.db = url_database.ensure_database(self.args)
-        self.read_locations()
+        self.proxies = ProxySet(self, self.mon, self.args,
+                                self.proxy_sort_key)
         self.prepare_database()
 
         self.status_queue = queue.PriorityQueue()
         self.mon.register_event_queue(self.status_queue,
                                       (self._MON_SAYS_STOP, -1))
 
-        for loc in self.locales:
-            proxy = self.state[loc].start_proxy(self)
-            self.mon.add_work_thread(proxy)
-
         for _ in range(self.args.total_workers):
             wt = CaptureWorker(self)
             self.mon.add_work_thread(wt)
-            self.workers.append(wt)
+            self.idle_workers.add(wt)
 
-        while True:
-            try:
-                self.dispatcher_loop()
-                break
-            except Exception:
-                self.mon.report_exception()
-
-    def read_locations(self):
-        raise NotImplemented#XXXXXX
+        self.dispatcher_loop()
 
     # Status queue helper constants and methods.
-    _COMPLETE      = 0
-    _MON_SAYS_STOP = 1 # Stop after handling all incoming work,
-                       # but before pushing new work.
-    _REQUEST       = 2
+    _BATCH_COMPLETE = 0
+    _PROXY_OFFLINE  = 1
+    _PROXY_ONLINE   = 2
+    _MON_SAYS_STOP  = 3 # Stop after handling all incoming work
 
     # Entries in a PriorityQueue must be totally ordered.  We just
-    # want to service all COMPLETE messages ahead of all STOP and
-    # REQUEST messages, so give them all a serial number which goes
-    # in the tuple right after the command code, before the data.
-    # This also means we don't have to worry about unsortable data.
+    # want to service all COMPLETE messages ahead of all others, and
+    # STOP messages after all others, so we give them all a serial
+    # number which goes in the tuple right after the command code,
+    # before the data.  This also means we don't have to worry about
+    # unsortable data.
     def oq(self):
         self.status_queue_serializer += 1
         return self.status_queue_serializer
 
     # worker-to-dispatcher API
-    def request_batch(self, worker):
-        self.status_queue.put((self._REQUEST, self.oq(), worker))
-
     def complete_batch(self, loc, success, failure):
-        self.status_queue.put((self._COMPLETE, self.oq(), loc,
+        self.status_queue.put((self._BATCH_COMPLETE, self.oq(), loc,
                                success, failure))
-
-    def drop_worker(self, worker):
-        raise NotImplemented#XXXXXXX
 
     # proxy-to-dispatcher API
     def proxy_online(self, proxy):
-        raise NotImplemented#XXXXXXX
+        self.status_queue.put((self._PROXY_ONLINE, self.oq(), proxy))
 
     def proxy_offline(self, proxy):
-        raise NotImplemented#XXXXXXX
+        self.status_queue.put((self._PROXY_OFFLINE, self.oq(), proxy))
+
+    def _invalid_message(self, *args):
+        self.mon.report_error("invalid status queue message {!r}"
+                              .format(args))
 
     def dispatcher_loop(self):
 
         handlers = {
-            self._REQUEST      : self.handle_request_batch,
-            self._COMPLETE     : self.handle_complete_batch,
-            self._MON_SAYS_STOP: self.handle_stop,
+            self._BATCH_COMPLETE : self.handle_batch_complete,
+            self._PROXY_OFFLINE  : self.handle_proxy_offline,
+            self._PROXY_ONLINE   : self.handle_proxy_online,
+            self._MON_SAYS_STOP  : self.handle_stop
         }
-        def no_handler(*cmd):
-            raise RuntimeError("invalid status queue message {!r}".format(cmd))
 
-        while not self.mon.caller_is_only_active_thread():
-            self.update_progress_statistics()
-            for cmd in queue_iter(self.status_queue):
-                handlers.get(cmd[0], no_handler)(*cmd)
+        while self.overall_jobsize > 0:
+            try:
+                self.update_progress_statistics()
+                for cmd in queue_iter(self.status_queue):
+                    handlers.get(cmd[0], self._invalid_message)(*cmd)
+
+                self.maybe_start_more_proxies()
+                self.maybe_assign_more_work()
+
+            except Exception:
+                self.mon.report_exception()
 
     def handle_stop(self, *unused):
         self.mon.maybe_pause_or_stop()
 
-    def handle_request_batch(self, cmd, serial, worker):
+    def handle_proxy_offline(self, cmd, serial, proxy):
+        self.proxies.note_proxy_offline(proxy)
+        if proxy.done:
+            assert self.locations[proxy.loc].todo == 0
 
-        # A locale is "chooseable" if it has some work to do, its
-        # proxy is online, and it hasn't already been assigned the
-        # maximum number of worker threads.  This loop is also a
-        # convenient place to shut down proxies we are done using, and
-        # to notice when we are _completely_ done.  Note that we are
-        # not completely done until all locales reach todo 0, even if
-        # we can't assign any more work right now (because all locales
-        # with online proxies are full).
-        chooseable_locales = []
-        nothing_todo = True
-        for loc in self.state.values():
-            if loc.todo == 0:
-                loc.proxy.finished()
-            else:
-                nothing_todo = False
-                if (loc.proxy.online and
-                    loc.n_workers < self.args.workers_per_loc):
-                    chooseable_locales.append(loc)
+    def handle_proxy_online(self, cmd, serial, proxy):
+        self.proxies.note_proxy_online(self, proxy)
 
-        if nothing_todo:
-            # We are completely done.
-            worker.finished()
-            return
-
-        if not chooseable_locales:
-            # All locales with work to do and online proxies already have
-            # enough workers.  This message means "ask again in a while".
-            callback(None, [None])
-
-        # Sort key for locales to which work can be assigned.
-        # Consider locales that currently have no workers at all first.
-        # Consider locales with more work to do first.
-        # Consider locales whose proxy is 'direct' first.
-        # Consider locales named 'us' first.
-        # As a final tie breaker use alphabetical order of locale name.
-        def locale_order(l):
-            return (l.n_workers != 0,
-                    -l.todo,
-                    l.proxy_method is not DirectProxy,
-                    l.locale != 'us',
-                    l.locale)
-
-        chooseable_locales.sort(key=locale_order)
-
-        # Try to pick a batch for each chooseable locale in turn.
-        # We may discover that all available work for that locale has
-        # already been assigned to other threads.
-        with self.db, self.db.cursor() as cr:
-            for loc in chooseable_locales:
-
-                query = ('SELECT c.url as uid, s.url as url'
-                         '  FROM capture_progress c, url_strings s'
-                         ' WHERE c.url = s.id')
-
-                query += ' AND NOT c."l_{0}"'.format(loc.locale)
-
-                if loc.in_progress:
-                    query += ' AND c.url NOT IN ('
-                    query += ','.join(str(u) for u in loc.in_progress)
-                    query += ')'
-
-                query += ' LIMIT {0}'.format(self.args.batch_size)
-                cr.execute(query)
-                batch = cr.fetchall()
-
-                if batch:
-                    loc.n_workers += 1
-                    loc.in_progress.update(row[0] for row in batch)
-                    callback(loc, batch)
-                    return
-
-        # All locales with work to do and online proxies already have
-        # all their work assigned to other workers.  As above: this
-        # message means "ask again in a while".
-        callback(None, [None])
-
-
-    def handle_complete_batch(self, cmd, serial, loc, successes, failures):
+    def handle_batch_complete(self, cmd, serial, loc, successes, failures):
         locale = loc.locale
         loc.n_workers -= 1
         for r in failures:
@@ -677,7 +590,7 @@ class CaptureDispatcher:
     def update_progress_statistics(self):
         jobsize = 0
         plreport = []
-        for plstate in self.state.values():
+        for plstate in self.locations.values():
             jobsize = max(jobsize, plstate.todo)
             plreport.append((-plstate.todo, plstate.locale))
 
@@ -689,6 +602,8 @@ class CaptureDispatcher:
                                        plreport))
 
     def prepare_database(self):
+        self.locations = { loc: PerLocaleState(loc, proxy)
+                           for loc, proxy in self.proxies.locations }
         with self.db, self.db.cursor() as cr:
             # Cache the status table in memory; it's reasonably small.
             self.mon.report_status("Preparing database... (capture detail)")
@@ -704,7 +619,7 @@ class CaptureDispatcher:
 
             l_columns = ",\n  ".join(
                 "\"l_{0}\" BOOLEAN NOT NULL DEFAULT FALSE"
-                .format(loc) for loc in self.locales)
+                .format(loc) for loc in self.locations.keys())
 
             cr.execute("CREATE TEMPORARY TABLE capture_progress ("
                        "  url INTEGER PRIMARY KEY,"
@@ -750,7 +665,7 @@ class CaptureDispatcher:
             self.mon.report_status("Preparing database... (analyzing)")
             cr.execute("ANALYZE captured_pages")
 
-            for loc in self.locales:
+            for loc in self.locations.keys():
                 self.mon.maybe_pause_or_stop()
                 self.mon.report_status("Preparing database... "
                                        "(capture progress values: {})"
@@ -776,7 +691,7 @@ class CaptureDispatcher:
             self.mon.report_status("Preparing database... (statistics)")
 
             query = "SELECT COUNT(*)"
-            for loc in self.locales:
+            for loc in self.locations.keys():
                 query += ', SUM("l_{0}"::INTEGER) AS "l_{0}"'.format(loc)
             query += " FROM capture_progress"
             cr.execute(query)
@@ -787,18 +702,13 @@ class CaptureDispatcher:
 
             counts = cr.fetchone()
             self.overall_jobsize = counts[0]
-            nlocales = []
-
-            for loc, done in zip(self.locales, counts[1:]):
+            for loc, done in zip(self.locations.keys(), counts[1:]):
                 todo = self.overall_jobsize - done
                 assert todo >= 0
                 if todo:
-                    self.state[loc].todo = todo
-                    nlocales.append(loc)
+                    self.locations[loc].todo = todo
                 else:
-                    del self.state[loc]
-
-            self.locales = nlocales
+                    self.locations[loc].proxy.finished()
 
             self.mon.maybe_pause_or_stop()
             self.mon.report_status("Database prepared.")
