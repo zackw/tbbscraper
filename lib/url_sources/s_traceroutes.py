@@ -5,25 +5,28 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 # There is NO WARRANTY.
 
-"""Perform a traceroute (using 'paris-traceroute', which must be in
-the PATH and must be invokeable by an unprivileged user) to a
-specified set of destinations, through a specified set of proxies.
-There are three mandatory arguments: a "location specifications"
-config file, a "traceroute destinations" config file, and an output
-directory (which will be created if it doesn't exist), in that order.
-The location specifications file has the same format that `capture`
-uses.  The traceroute destinations config file is simply a list of
-hostnames, one per line, possibly followed by an IPv4 address in
-parentheses (which overrides any attempt to look up that host's DNS
-name); # anywhere introduces a comment; non-ASCII domain names may
-either be written human-readably in UTF-8, or IDNA-coded.  Only one
-traceroute runs at a time for each proxy.  In addition to the
+"""Perform a traceroute (using 'scamper', which must be in the PATH
+and must be invokeable by an unprivileged user) to a specified set of
+destinations, through a specified set of proxies.  There are three
+mandatory arguments: a "location specifications" config file, a
+"traceroute destinations" config file, and an output directory (which
+will be created if it doesn't exist), in that order.  The location
+specifications file has the same format that `capture` uses.  The
+traceroute destinations config file is simply a list of hostnames, one
+per line, possibly followed by an IPv4 address in parentheses (which
+overrides any attempt to look up that host's DNS name); # anywhere
+introduces a comment; non-ASCII domain names may either be written
+human-readably in UTF-8, or IDNA-coded.  In addition to the
 destinations listed in the file, this program will also carry out
-traceroutes via each proxy to each DNS server configured for that proxy.
+traceroutes via each proxy to each DNS server configured for that
+proxy.
 
-Output is to individual files named output_dir/YYYY-MM-DD.N/LOCATION/DNS.NAME
-(regardless of input syntax, SITENAME will be human-readable).  YYY-MM-DD.N
-is unique for each run of this program."""
+Output is to scamper 'warts' files named output_dir/YYYY-MM-DD.N/LOCATION.warts
+aggregating all of the scans performed via proxy LOCATION.  YYY-MM-DD.N
+is unique for each run of this program.  .../LOCATION.dns will contain the
+result of all DNS lookups (which are not done by scamper).
+
+"""
 
 def setup_argp(ap):
     ap.add_argument("locations", action="store",
