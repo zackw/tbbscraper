@@ -10,6 +10,7 @@
 
 import curses
 import datetime
+import errno
 import fcntl
 import locale
 import os
@@ -546,12 +547,19 @@ class Monitor:
         os.kill(self._pid, signo)
 
     def _broadcast_stop(self):
-        for t, q, m in self._worker_event_queues.values():
+        for t, q, m in list(self._worker_event_queues.values()):
             if t == 'q':
                 q.put(m)
             else:
                 assert t == 'p'
-                os.write(fd, m)
+                try:
+                    os.write(q, m)
+                except OSError as e:
+                    # We might get here because 'q' has already been closed,
+                    # in which case, oh well.
+                    if e.errno != errno.EBADF:
+                        raise
+
         self._stop_event.set()
 
     def _output_thread_fn(self):
@@ -565,7 +573,7 @@ class Monitor:
             try:
                 task = self._tasks.get()
                 if task[0] == self._STATUS:
-                    self._do_status(task[1], task[2])
+                    self._do_status(task[1])
 
                 elif task[0] == self._REDRAW:
                     self._do_redraw()
@@ -582,6 +590,10 @@ class Monitor:
                     self._flag_all_lines()
 
                 elif task[0] == self._EXIT:
+                    # don't wait any longer if we're already waiting
+                    if exit_signal:
+                        return
+
                     exit_signal = task[1]
                     self._broadcast_stop()
                     # a _DONE message will be posted to the queue as soon
@@ -650,9 +662,8 @@ class Worker:
        constructor.
 
        The _mon property is guaranteed to be a Monitor object.
-       process_batch may (indeed, should) make use of
-       self._mon.report_status and self._mon.set_status_prefix as it
-       sees fit.
+       process_batch should, however, use the wrapper methods defined in
+       this class whenever possible.
 
        The _idle_prefix property, which should be initialized in a
        subclass's __init__ method, will be passed to
@@ -706,24 +717,63 @@ class Worker:
         except queue.Empty:
             return False
 
+    def _wlog(self, tag, line=None):
+        if not line:
+            self._log.write("{}: {}\n".format(
+                datetime.datetime.utcnow().isoformat(' '),
+                tag))
+        else:
+            self._log.write("{}: {}: {}\n".format(
+                datetime.datetime.utcnow().isoformat(' '),
+                tag, line))
+
+    def set_status_prefix(self, prefix):
+        self._wlog("prefix", prefix)
+        self._mon.set_status_prefix(prefix)
+
+    def report_status(self, status):
+        self._wlog("status", status)
+        self._mon.report_status(status)
+
+    def report_error(self, error):
+        self._wlog("error", error)
+        self._mon.report_error(error)
+
+    def report_exception(self, einfo=None):
+        if einfo is None:
+            einfo = sys.exc_info()
+        self._wlog("exception")
+        for chunk in traceback.format_exception(*einfo):
+            for line in chunk.splitlines():
+                self._log.write("| " + line + "\n")
+        self._mon.report_exception(einfo)
+
+    def maybe_pause_or_stop(self):
+        self._wlog("interrupted")
+        self._mon.maybe_pause_or_stop()
+
     # main loop
     def __call__(self, mon, thr):
         self._mon = mon
         self._mon.register_event_queue(self._batch_queue, (self._INTERRUPT,))
+        self._log = open("worker-{}.log".format(thr.ident),
+                         mode="at", buffering=1, encoding="utf-8",
+                         errors="backslashreplace")
+        self._log.write("\n")
 
         try:
             while True:
                 try:
-                    self._mon.set_status_prefix(self._prefix)
-                    self.mon.report_status("idle")
+                    self.set_status_prefix(self._idle_prefix)
+                    self.report_status("idle")
                     self.idle = True
-                    msg = self.batch_queue.get()
+                    msg = self._batch_queue.get()
 
-                    if msg[0] == self._MON_INTERRUPT:
-                        self.mon.maybe_pause_or_stop()
+                    if msg[0] == self._INTERRUPT:
+                        self.maybe_pause_or_stop()
 
                     elif msg[0] == self._DONE:
-                        self.mon.report_status("done")
+                        self.report_status("done")
                         return
 
                     elif msg[0] == self._BATCH:
@@ -738,11 +788,11 @@ class Worker:
                             raise
 
                     else:
-                        self.mon.report_error("invalid batch queue message {!r}"
-                                              .format(msg))
+                        self.report_error("invalid batch queue message {!r}"
+                                          .format(msg))
 
                 except Exception:
-                    self.mon.report_exception()
+                    self.report_exception()
 
         finally:
-            self.disp.drop_worker(self)
+            self._disp.drop_worker(self)

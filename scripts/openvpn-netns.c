@@ -727,9 +727,10 @@ do_down_script(int argc, char **argv, char **envp)
     pidvec_kill(&to_kill, SIGKILL);
   }
 
-  ipcmd[2] = "delete"; /* now { "ip", "netns", "delete", namespace } */
-  runv(ipcmd);
+  run("ip", "netns", "exec", namespace,
+      "ip", "link", "set", "dev", "lo", "down");
 
+  run("ip", "netns", "delete", namespace);
   run("rm", "-rf", nsdir);
 }
 
@@ -1098,6 +1099,11 @@ do_controller(int argc, char **argv, char **envp)
   pid_t ovpn_pid = launch_ovpn(namespace, cfgfile, argv + 3);
   cl_ovpn_pid = ovpn_pid;
 
+  /* parent also cleans up the namespace and /etc/netns directory in case
+     the down-script doesn't run for some reason */
+  cl_namespace = namespace;
+  cl_nsdir = xasprintf("/etc/netns/%s", namespace);
+
   controller_idle_loop(sigfd, ovpn_pid);
 }
 
@@ -1112,15 +1118,15 @@ usage(void)
 static NORETURN
 cleanup_and_exit(int status)
 {
-  if (up_script_cleanups) {
+  if (controller_cleanups) {
+    if (cl_ovpn_pid)
+      kill(cl_ovpn_pid, SIGTERM);
+  }
+  if (up_script_cleanups || controller_cleanups) {
     if (cl_namespace)
       run_ignore_failure("ip", "netns", "del", cl_namespace);
     if (cl_nsdir)
       run_ignore_failure("rm", "-rf", cl_nsdir);
-  }
-  if (controller_cleanups) {
-    if (cl_ovpn_pid)
-      kill(cl_ovpn_pid, SIGTERM);
   }
   exit(status);
 }

@@ -48,6 +48,7 @@ def lookup(loop, name, addr):
        with IPv4 only."""
     if addr is None:
         try:
+            sys.stderr.write(name + "\n")
             addrs = yield from loop.getaddrinfo(name, 443,
                                                 family=socket.AF_INET,
                                                 proto=socket.IPPROTO_TCP)

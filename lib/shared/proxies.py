@@ -37,6 +37,14 @@ def format_exit_status(status):
 # not safe to call off-main-thread.
 DEFAULT_ENCODING = locale.getpreferredencoding(True)
 
+import threading
+PROXY_SET_LOG = open("proxy-set-operations.log",
+                     mode="at", buffering=1, encoding="utf-8",
+                     errors="backslashreplace")
+
+def PSL(s):
+    PROXY_SET_LOG.write("{:x}: {}\n".format(threading.get_ident(), s))
+
 class NonblockingLineBuffer:
     """Helper class used by LineMultiplexor."""
 
@@ -84,10 +92,12 @@ class NonblockingLineBuffer:
 
             self.buf.extend(block)
 
-        return bool(buf) or self.at_eof
+        return bool(self.buf) or self.at_eof
 
     def emit(self):
         buf = self.buf
+        NL = ord(b'\n')
+        CR = ord(b'\r')
 
         if buf:
             # Deal with '\r\n' having been split between absorb() events.
@@ -97,18 +107,26 @@ class NonblockingLineBuffer:
 
         if buf:
             lines = buf.splitlines()
-            if self.is_open and buf[-1] not in (b'\r', b'\n'):
-                buf = lines.pop()
+            if buf[-1] != NL and buf[-1] != CR and not self.at_eof:
+                iline = lines.pop()
+                if len(buf) >= 2 and buf[-2] == CR and buf[-2] == NL:
+                    iline.append(CR)
+                    iline.append(NL)
+                else:
+                    iline.append(buf[-1])
+                buf = iline
+
             else:
                 if buf[-1] == b'\r':
                     self.carry_cr = True
                 del buf[:]
 
             for line in lines:
-                yield (self.fp, line.decode(self.enc).rstrip())
+                s = line.decode(self.enc).rstrip()
+                yield s
 
         if self.at_eof:
-            yield (self.fp, None)
+            yield None
 
         self.buf = buf
 
@@ -292,10 +310,10 @@ class ProxyMethod:
         """
         raise NotImplemented
 
-    def handle_proxy_output(self, line, is_stderr):
+    def handle_proxy_output(self, line, fp):
         """Handle a line of output from the proxy.  LINE is either a string,
-           or None; the latter indicates EOF.  is_stderr is a boolean,
-           indicating whether output was on stdout or stderr.
+           or None; the latter indicates EOF.  FP is the file object that
+           produced LINE.
            self.starting/stopping/online should be updated as appropriate.
            Return True if a significant state change has occurred.
         """
@@ -318,10 +336,10 @@ class DirectMethod(ProxyMethod):
         return cmd
 
     def start(self):
-        state.online = True
+        self.online = True
 
     def stop(self):
-        state.online = False
+        self.online = False
 
     # handle_proxy_output should never be called
     # handle_proxy_exit should never be called
@@ -336,7 +354,7 @@ class OpenVPNMethod(ProxyMethod):
         self._namespace    = "ns_" + loc
         self._openvpn_args = args
 
-        openvpn_cfg = glob.glob(openvpn_cfg)
+        openvpn_cfg = glob.glob(cfg)
         random.shuffle(openvpn_cfg)
         self._openvpn_cfgs = collections.deque(openvpn_cfg)
 
@@ -376,8 +394,9 @@ class OpenVPNMethod(ProxyMethod):
             # we already tried a clean shutdown and it didn't work
             self.proc.terminate()
 
-    def handle_proxy_output(self, line, is_stderr):
-        assert self.proc is not None
+    def handle_proxy_output(self, line, fp):
+        if self.proc is None: return True
+
         if line is None:
             if self.proc.stdout.closed and self.proc.stderr.closed:
                 # This should only happen if the process is about to exit.
@@ -392,7 +411,7 @@ class OpenVPNMethod(ProxyMethod):
 
                 return True
 
-        elif line == "READY" and self.starting and not is_stderr:
+        elif line == "READY" and self.starting and fp is self.proc.stdout:
             self.starting = False
             self.online = True
             return True
@@ -400,7 +419,8 @@ class OpenVPNMethod(ProxyMethod):
         return False
 
     def handle_proxy_exit(self):
-        assert self.proc is not None
+        if self.proc is None: return True
+
         if not self.stopping:
             self.proc.stdin.close()
             self.stopping = True
@@ -422,10 +442,18 @@ class ProxyRunner:
     # _FINISHED also have other effects.  Note that it is necessary to
     # tack on a newline whenever you write one of these to the control
     # pipe, because of the way LineMultiplexor works.
-    _BRING_DOWN = b"d"
-    _FINISHED   = b"f"
-    _INTERRUPT  = b"i"
-    _BRING_UP   = b"u"
+    _BRING_DOWN   =  "d"
+    _BRING_DOWN_W = b"d\n"
+
+    _FINISHED     =  "f"
+    _FINISHED_W   = b"f\n"
+
+    _INTERRUPT    =  "i"
+    _INTERRUPT_W  = b"i\n"
+
+    _BRING_UP     =  "u"
+    _BRING_UP_W   = b"u\n"
+
 
     def __init__(self, disp, loc, method, *, alpha=2/11):
         self.disp    = disp
@@ -450,11 +478,11 @@ class ProxyRunner:
         self.last_attempt = 0
 
     def __call__(self, mon, thr):
-        self._mon    = mon
-        self._thrdid = thr.ident
+        self.mon    = mon
+        self.thrdid = thr.ident
         try:
             self.cpipe_r, self.cpipe_w = os.pipe2(os.O_NONBLOCK|os.O_CLOEXEC)
-            self.mon.register_event_pipe(self.cpipe_w, self._INTERRUPT+b'\n')
+            self.mon.register_event_pipe(self.cpipe_w, self._INTERRUPT_W)
             self.poller = LineMultiplexor()
             # The control pipe is given _lower_ priority than the output
             # from the proxy client.
@@ -479,7 +507,7 @@ class ProxyRunner:
     # External API
     @property
     def online(self):
-        return self.method.online
+        return self.method.online and not self.method.stopping
 
     @property
     def done(self):
@@ -514,13 +542,13 @@ class ProxyRunner:
         self.update_prefix()
 
     def start(self):
-        self.cpipe_w.write(self.BRING_UP + b'\n')
+        os.write(self.cpipe_w, self._BRING_UP_W)
 
     def stop(self):
-        self.cpipe_w.write(self.BRING_DOWN + b'\n')
+        os.write(self.cpipe_w, self._BRING_DOWN_W)
 
     def finished(self):
-        self.cpipe_w.write(self.FINISHED + b'\n')
+        os.write(self.cpipe_w, self._FINISHED_W)
 
     # Internal.
     def update_prefix(self):
@@ -538,19 +566,22 @@ class ProxyRunner:
         fp.write("\n")
         return fp
 
-    def log_proxy_status(self, line, is_stderr):
-        if line is None: line = "<<EOF>>"
-        self.log.write("{} [{}]: {}: {}\n".format(
+    def log_raw(self, line):
+        self.mon.report_status(line)
+        self.log.write("{} [{}]: {}\n".format(
             datetime.datetime.utcnow().isoformat(' '),
             self.method.state_tag(),
-            "err" if is_stderr else "out",
-            line.strip()))
+            line))
+
+    def log_proxy_status(self, line):
+        if line is None: line = "<<EOF>>"
+        self.log_raw(line)
 
     def log_proxy_exit(self, status):
-        self.log.write("{} [{}]: proxy {}\n".format(
-            datetime.datetime.utcnow().isoformat(' '),
-            self.method.state_tag(),
-            format_exit_status(status)))
+        self.log_raw("exit: " + format_exit_status(status))
+
+    def log_proxy_ctl(self, what):
+        self.log_raw("ctl: " + what)
 
     def do_start(self):
         if (not self.method.fully_offline) or self.method.done:
@@ -576,43 +607,38 @@ class ProxyRunner:
         self.pending_stop = False
 
         if self.method.fully_offline:
-            if self.pending_finish:
+            if self.pending_fini:
                 self.method.done = True
-                self.pending_finish = False
+                self.pending_fini = False
             self.disp.proxy_offline(self)
 
-    def process_proxy_message(fp, data):
-        is_stderr = fp is self.method.proc.stderr
-        self.log_proxy_status(data, is_stderr)
-        if self.method.handle_proxy_status(data, is_stderr):
+    def process_proxy_message(self, fp, data):
+        self.log_proxy_status(data)
+        if self.method.handle_proxy_output(data, fp):
             self.update_prefix()
-            if (self.method.online and not self.method.stopping):
+            if self.method.online and not self.method.stopping:
                 self.disp.proxy_online(self)
 
-            if data is None:
-                # We assume that the proxy will only close
-                # both its stdout and stderr if it's about
-                # to exit.
-                if (self.method.proc.stdout.closed and
-                    self.method.proc.stderr.closed):
+            if self.method.online and self.method.stopping:
+                status = self.method.proc.wait()
+                self.log_proxy_exit(status)
+                self.method.handle_proxy_exit()
 
-                    status = self.method.proc.wait()
-                    self.log_proxy_exit(status)
-                    self.method.handle_proxy_exit()
-
-                    assert self.method.fully_offline
-                    if self.pending_finish:
-                        self.method.done = True
-                        self.pending_finish = False
-                    self.disp.proxy_offline(self)
+                assert self.method.fully_offline
+                if self.pending_fini:
+                    self.method.done = True
+                    self.pending_fini = False
+                self.disp.proxy_offline(self)
 
     # Main loop.
     def proxy_supervision_cycle(self):
         # Process actions from the previous cycle.
         if self.pending_stop or self.pending_intr or self.pending_fini:
+            self.log_proxy_ctl("stop requested")
             self.do_stop()
 
         if self.method.done:
+            self.log_proxy_ctl("finished")
             return
 
         # Delay start and interrupt actions until the proxy is
@@ -620,10 +646,17 @@ class ProxyRunner:
         if self.method.fully_offline:
             if self.pending_intr:
                 self.pending_intr = False
+                self.log_proxy_ctl("interrupted")
                 self.mon.maybe_pause_or_stop()
 
             if self.pending_start:
-                do_start()
+                self.log_proxy_ctl("start requested")
+                self.do_start()
+        else:
+            if self.pending_intr:
+                self.log_proxy_ctl("interrupt pending")
+            if self.pending_start:
+                self.log_proxy_ctl("start pending")
 
         # There is no deduplication of messages on the control
         # pipe, so we need to drain it, recording all of the
@@ -633,10 +666,13 @@ class ProxyRunner:
         fp, data = self.poller.get()
         while fp is not None:
             if fp is self.cpipe_r:
-                if   data == _BRING_DOWN: self.pending_stop  = True
-                elif data == _FINISHED:   self.pending_fini  = True
-                elif data == _INTERRUPT:  self.pending_intr  = True
-                elif data == _BRING_UP:   self.pending_start = True
+                self.log_proxy_ctl("control message: " + repr(data))
+                if   data == self._BRING_DOWN: self.pending_stop  = True
+                elif data == self._FINISHED:   self.pending_fini  = True
+                elif data == self._INTERRUPT:  self.pending_intr  = True
+                elif data == self._BRING_UP:   self.pending_start = True
+                else:
+                    raise RuntimeError("invalid control message: " + repr(data))
             else:
                 self.process_proxy_message(fp, data)
             fp, data = self.poller.get(0)
@@ -695,7 +731,7 @@ class ProxySet:
         if proxy_sort_key is None:
             proxy_sort_key = lambda l, m: (m != 'direct', l)
 
-        self.proxy_sort_key  = proxy_sort_kley
+        self.proxy_sort_key  = proxy_sort_key
         self.args            = args
         self.locations       = {}
         self.active_proxies  = set()
@@ -710,8 +746,8 @@ class ProxySet:
                 if w[0] == '#': continue
 
                 w = w.split()
-                if len(w) < 2 or not self._VALID_LOC_RE.match(w[0]):
-                    raise RuntimeError("invalid location: " + " ".join(w))
+                #if len(w) < 2 or not self._VALID_LOC_RE.match(w[0]):
+                #    raise RuntimeError("invalid location: " + " ".join(w))
 
                 loc = w[0]
                 if loc in self.locations:
@@ -729,6 +765,8 @@ class ProxySet:
                 self.locations[loc] = runner
                 proxies.append(runner)
 
+        self.args.max_simultaneous_proxies = \
+            min(self.args.max_simultaneous_proxies, len(proxies))
         self._refill_waiting_proxies(proxies)
 
     def _refill_waiting_proxies(self, new_proxies=None):
@@ -743,7 +781,7 @@ class ProxySet:
             proxy.cycle += 1
             # Exponential backoff, starting at 15 seconds and going up to
             # one hour.
-            if proxy.backoff = 0:
+            if proxy.backoff == 0:
                 proxy.backoff = 15
             elif proxy.backoff < 3600:
                 proxy.backoff *= 2
@@ -763,20 +801,31 @@ class ProxySet:
            the third entry is how many proxies are still not 'done'.
         """
 
+        PSL("active {} max {}".format(len(self.active_proxies),
+                                      self.args.max_simultaneous_proxies))
         if len(self.active_proxies) >= self.args.max_simultaneous_proxies:
             return (None, None, len(self.locations))
 
         if not self.waiting_proxies:
+            PSL("no proxies waiting")
             if not self.crashed_proxies:
+                PSL("no proxies crashed")
                 return (None, None, len(self.locations))
             self._refill_waiting_proxies()
+            PSL("after refill {} waiting".format(len(self.waiting_proxies)))
+        else:
+            PSL("{} waiting".format(len(self.waiting_proxies)))
 
         now = time.monotonic()
         proxy = None
         min_backoff = 3600
         for i, cand in enumerate(self.waiting_proxies):
-            remaining = now - (cand.last_attempt + cand.backoff)
+            remaining = (cand.last_attempt + cand.backoff) - now
+            PSL("cand {} last_attempt {} backoff {} remaining {}"
+                .format(cand.label(), cand.last_attempt, cand.backoff,
+                        remaining))
             if remaining <= 0:
+                PSL("{} selected".format(cand.label()))
                 proxy = cand
                 del self.waiting_proxies[i]
                 break
@@ -784,6 +833,7 @@ class ProxySet:
                 min_backoff = min(min_backoff, remaining)
 
         if proxy is None:
+            PSL("no proxy selected")
             return (None, max(min_backoff, 5), len(self.locations))
 
         proxy.last_attempt = now
@@ -802,7 +852,7 @@ class ProxySet:
            retried by start_a_proxy only after we work through the
            full list of not-yet-used proxies.
         """
-        self.active_proxies.remove(proxy)
+        self.active_proxies.discard(proxy)
         if proxy.done:
             del self.locations[proxy.loc]
         else:

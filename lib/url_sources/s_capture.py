@@ -55,6 +55,9 @@ def setup_argp(ap):
                     help="Comma-separated list of url-source tables to "
                     "process, without the 'urls_' prefix. (default: all "
                     "of them)")
+    ap.add_argument("-p", "--max-simultaneous-proxies",
+                    action="store", type=int, default=10,
+                    help="Maximum number of proxies to use simultaneously.")
 
 def run(args):
     Monitor(CaptureDispatcher(args),
@@ -395,7 +398,7 @@ class CaptureWorker(Worker):
             # the end of 'completed' should be retried later.  (We may
             # not notice promptly when the proxy has gone offline.)
             if not loc.proxy.online:
-                while completed and is_failure(completed[-1][1])):
+                while completed and is_failure(completed[-1][1]):
                     nfail -= 1
                     last_failure = completed.pop()
                     batch.append((last_failure[0], last_failure[1]['ourl']))
