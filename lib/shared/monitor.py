@@ -283,7 +283,7 @@ class Monitor:
                 "SIGILL", "SIGTRAP", "SIGABRT", "SIGIOT", "SIGEMT", "SIGFPE",
                 "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGSTOP", "SIGCONT",
                 # signals that we can get but don't care about
-                "SIGCLD", "SIGCHLD",
+                "SIGCLD", "SIGCHLD", "SIGPIPE",
                 # not actually signal numbers
                 "SIGRTMIN", "SIGRTMAX"))))
 
