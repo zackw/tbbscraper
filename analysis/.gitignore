@@ -1,0 +1,9 @@
+*~
+*.x
+*.o
+*.so
+*.mod
+*.pyc
+*.pyo
+__pycache__/
+python-vars.mk
