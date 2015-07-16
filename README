@@ -1,0 +1,14 @@
+# Automated website scraping (not actually using TBB)
+
+This software collects webpages, using a headless browser (PhantomJS),
+from many different network locations, via proxy servers.  It could
+in principle use Tor for the proxy but right now it does not.
+
+There is also some software for analyzing the contents of the
+collected webpages.
+
+The management cannot guarantee that this is of any use to anyone or
+indeed that it works at all outside the context where it is used.
+
+License labeling is pretty spotty, but the intent is to use the
+Apache license for everything ( http://www.apache.org/licenses/LICENSE-2.0 )
