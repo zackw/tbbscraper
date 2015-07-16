@@ -97,13 +97,15 @@ pj_trace_redir = os.path.realpath(os.path.join(
 
 # Utilities
 
-def queue_iter(q):
+def queue_iter(q, timeout=None):
     """Generator which yields messages pulled from a queue.Queue in
-       sequence, until empty.  Can block before yielding any items,
-       but not after at least one item has been yielded.
+       sequence, until empty or the timeout expires.  Can block before
+       yielding any items, but not after at least one item has been
+       yielded.
+
     """
-    yield q.get()
     try:
+        yield q.get(timeout=timeout)
         while True:
             yield q.get(block=False)
     except queue.Empty:
@@ -370,6 +372,8 @@ class CaptureWorker(Worker):
 
     def process_batch(self, loc, batch):
         batchsize = len(batch)
+        assert batchsize
+
         completed = []
         nsucc = 0
         nfail = 0
@@ -377,11 +381,10 @@ class CaptureWorker(Worker):
 
         self._mon.set_status_prefix("w " + loc.proxy.label())
         try:
-            while loc.proxy.online and not self.is_interrupted():
+            while batch and loc.proxy.online and not self.is_interrupted():
                 self._mon.report_status("processing {}: "
                                         "{} captured, {} failures"
-                                        .format(loc.proxy.label(),
-                                                batchsize, nsucc, nfail))
+                                        .format(batchsize, nsucc, nfail))
 
                 (url_id, url) = batch.pop()
                 report = CaptureTask(url, loc.proxy).report()
@@ -403,7 +406,7 @@ class CaptureWorker(Worker):
                     last_failure = completed.pop()
                     batch.append((last_failure[0], last_failure[1]['ourl']))
 
-            self._disp.complete_batch(loc, completed, batch)
+            self._disp.complete_batch(self, (completed, batch))
 
             if completed:
                 sec_per_url = (stop - start)/len(completed)
@@ -425,7 +428,7 @@ class CaptureDispatcher:
         # complete initialization deferred till we're on the right thread
         self.args                    = args
         self.idle_workers            = set()
-        self.active_workers          = set()
+        self.active_workers          = {}
         self.locations               = {}
         self.overall_jobsize         = 0
         self.proxies                 = None
@@ -436,14 +439,19 @@ class CaptureDispatcher:
 
     def __call__(self, mon, thr):
         self.mon = mon
-        self.db = url_database.ensure_database(self.args)
-        self.proxies = ProxySet(self, self.mon, self.args,
-                                self.proxy_sort_key)
-        self.prepare_database()
-
         self.status_queue = queue.PriorityQueue()
         self.mon.register_event_queue(self.status_queue,
                                       (self._MON_SAYS_STOP, -1))
+
+        self.mon.set_status_prefix("d")
+        self.mon.report_status("loading...")
+
+        self.proxies = ProxySet(self, self.mon, self.args,
+                                self.proxy_sort_key)
+        self.mon.report_status("loading... (proxies OK)")
+
+        self.db = url_database.ensure_database(self.args)
+        self.prepare_database()
 
         for _ in range(self.args.total_workers):
             wt = CaptureWorker(self)
@@ -453,10 +461,12 @@ class CaptureDispatcher:
         self.dispatcher_loop()
 
     # Status queue helper constants and methods.
-    _BATCH_COMPLETE = 0
     _PROXY_OFFLINE  = 1
     _PROXY_ONLINE   = 2
-    _MON_SAYS_STOP  = 3 # Stop after handling all incoming work
+    _BATCH_COMPLETE = 3
+    _BATCH_FAILED   = 4
+    _DROP_WORKER    = 5
+    _MON_SAYS_STOP  = 6 # Stop after handling all incoming work
 
     # Entries in a PriorityQueue must be totally ordered.  We just
     # want to service all COMPLETE messages ahead of all others, and
@@ -469,9 +479,15 @@ class CaptureDispatcher:
         return self.status_queue_serializer
 
     # worker-to-dispatcher API
-    def complete_batch(self, loc, success, failure):
-        self.status_queue.put((self._BATCH_COMPLETE, self.oq(), loc,
-                               success, failure))
+    def complete_batch(self, worker, result):
+        self.status_queue.put((self._BATCH_COMPLETE, self.oq(),
+                               worker, result))
+
+    def fail_batch(self, worker, exc_info):
+        self.status_queue.put((self._BATCH_FAILED, self.oq(), worker))
+
+    def drop_worker(self, worker):
+        self.status_queue.put((self._DROP_WORKER, self.oq(), worker))
 
     # proxy-to-dispatcher API
     def proxy_online(self, proxy):
@@ -486,37 +502,151 @@ class CaptureDispatcher:
 
     def dispatcher_loop(self):
 
-        handlers = {
-            self._BATCH_COMPLETE : self.handle_batch_complete,
-            self._PROXY_OFFLINE  : self.handle_proxy_offline,
-            self._PROXY_ONLINE   : self.handle_proxy_online,
-            self._MON_SAYS_STOP  : self.handle_stop
-        }
+        # Kick things off by starting one proxy.
+        (proxy, until_next, n_locations) = self.proxies.start_a_proxy()
 
-        while self.overall_jobsize > 0:
-            try:
-                self.update_progress_statistics()
-                for cmd in queue_iter(self.status_queue):
-                    handlers.get(cmd[0], self._invalid_message)(*cmd)
+        while n_locations:
+            time_now = time.monotonic()
+            # Technically, until_next being None means "wait for a proxy
+            # to exit", but use an hour as a backstop.  (When a proxy does
+            # exit, this will get knocked down to zero below.)
+            if until_next is None: until_next = 3600
+            time_next = time_now + until_next
+            pending_stop = False
 
-                self.maybe_start_more_proxies()
-                self.maybe_assign_more_work()
+            while time_now < time_next:
+                self.update_progress_statistics(n_locations, until_next)
 
-            except Exception:
-                self.mon.report_exception()
+                for msg in queue_iter(self.status_queue, until_next):
+                    if msg[0] == self._PROXY_ONLINE:
+                        self.proxies.note_proxy_online(msg[2])
 
-    def handle_stop(self, *unused):
-        self.mon.maybe_pause_or_stop()
+                    elif msg[0] == self._PROXY_OFFLINE:
+                        self.proxies.note_proxy_offline(msg[2])
+                        # Wait no more than 5 minutes before trying to
+                        # start another proxy.  (XXX This hardwires a
+                        # specific provider's policy.)
+                        time_now = time.monotonic()
+                        time_next = min(time_next, time_now + 300)
+                        until_next = time_next - time_now
 
-    def handle_proxy_offline(self, cmd, serial, proxy):
-        self.proxies.note_proxy_offline(proxy)
-        if proxy.done:
-            assert self.locations[proxy.loc].todo == 0
+                    elif msg[0] == self._BATCH_COMPLETE:
+                        worker, result = msg[2], msg[3]
+                        locstate, _ = self.active_workers[worker]
+                        del self.active_workers[worker]
+                        self.idle_workers.add(worker)
+                        self.record_batch(locstate, *result)
 
-    def handle_proxy_online(self, cmd, serial, proxy):
-        self.proxies.note_proxy_online(self, proxy)
+                    elif msg[0] == self._BATCH_FAILED:
+                        worker = msg[2]
+                        # We might've already gotten a COMPLETE message
+                        # with more precision.
+                        if worker in self.active_workers:
+                            locstate, batch = self.active_workers[worker]
+                            del self.active_workers[worker]
+                            self.idle_workers.add(worker)
+                            self.record_batch(locstate, [], batch)
 
-    def handle_batch_complete(self, cmd, serial, loc, successes, failures):
+                    elif msg[0] == self._DROP_WORKER:
+                        worker = msg[2]
+                        self.idle_workers.discard(worker)
+                        if worker in self.active_workers:
+                            self.active_workers[worker].fail_job()
+                            del self.active_workers[worker]
+
+                    elif msg[0] == self._MON_SAYS_STOP:
+                        self.mon.report_status("interrupt pending")
+                        pending_stop = True
+
+                    else:
+                        self.mon.report_error("bogus message: {!r}"
+                                              .format(message))
+
+                for loc, state in self.locations.items():
+                    if state.todo == 0 and loc in self.proxies.locations:
+                        self.proxies.locations[loc].finished()
+
+                if pending_stop:
+                    self.mon.report_status("interrupted")
+                    self.mon.maybe_pause_or_stop()
+                    # don't start new work yet, the set of proxies
+                    # available may be totally different now
+
+                else:
+                    # One-second delay before starting new work, because
+                    # proxies aren't always 100% up when they say they are.
+                    self.mon.idle(1)
+
+                    while self.idle_workers:
+                        assigned_work = False
+                        for proxy in self.proxies.active_proxies:
+                            if not proxy.online:
+                                continue
+                            state = self.locations[proxy.loc]
+                            if state.n_workers >= self.args.workers_per_loc:
+                                continue
+                            batch = self.select_batch(state)
+                            if not batch:
+                                # All work for this location is
+                                # assigned to other workers already.
+                                continue
+
+                            state.n_workers += 1
+                            state.in_progress.update(row[0] for row in batch)
+                            worker = self.idle_workers.pop()
+                            self.active_workers[worker] = (state, batch)
+                            worker.queue_batch(state, batch)
+                            assigned_work = True
+                            if not self.idle_workers:
+                                break
+
+                        if not assigned_work:
+                            break
+
+                time_now = time.monotonic()
+                until_next = time_next - time_now
+
+            # when we get to this point, it's time to start another proxy
+            (proxy, until_next, n_locations) = self.proxies.start_a_proxy()
+
+        # done, kill off all the workers
+        self.mon.report_status("finished")
+        assert not self.active_workers
+        for w in self.idle_workers:
+            w.finished()
+
+    def proxy_sort_key(self, loc, method):
+        # Consider locales that currently have no workers at all first.
+        # Consider locales with more work to do first.
+        # Consider locales whose proxy is 'direct' first.
+        # Consider locales named 'us' first.
+        # As a final tie breaker use alphabetical order of locale name.
+        state = self.locations[loc]
+        return (state.n_workers != 0,
+                -state.todo,
+                method != 'direct',
+                loc != 'us',
+                loc)
+
+    def select_batch(self, loc):
+        with self.db, self.db.cursor() as cr:
+
+            query = ('SELECT c.url as uid, s.url as url'
+                     '  FROM capture_progress c, url_strings s'
+                     ' WHERE c.url = s.id')
+
+            query += ' AND NOT c."l_{0}"'.format(loc.locale)
+
+            if loc.in_progress:
+                query += ' AND c.url NOT IN ('
+                query += ','.join(str(u) for u in loc.in_progress)
+                query += ')'
+
+            query += ' LIMIT {0}'.format(self.args.batch_size)
+            cr.execute(query)
+            return cr.fetchall()
+
+    def record_batch(self, loc, successes, failures):
         locale = loc.locale
         loc.n_workers -= 1
         for r in failures:
@@ -590,7 +720,7 @@ class CaptureDispatcher:
                            ' WHERE url = {1}'.format(locale, url_id))
                 loc.todo -= 1
 
-    def update_progress_statistics(self):
+    def update_progress_statistics(self, n_locations, until_next):
         jobsize = 0
         plreport = []
         for plstate in self.locations.values():
@@ -600,13 +730,17 @@ class CaptureDispatcher:
         plreport.sort()
         plreport = " ".join("{}:{}".format(pl[1], -pl[0]) for pl in plreport)
 
-        self.mon.report_status("Processing {}/{} URLs | {}"
+        self.mon.report_status("Processing {}/{} URLs | {}/{}/{} active, {} till next | {}"
                                .format(jobsize, self.overall_jobsize,
+                                       len(self.proxies.active_proxies),
+                                       n_locations,
+                                       len(self.locations),
+                                       until_next,
                                        plreport))
 
     def prepare_database(self):
         self.locations = { loc: PerLocaleState(loc, proxy)
-                           for loc, proxy in self.proxies.locations }
+                           for loc, proxy in self.proxies.locations.items() }
         with self.db, self.db.cursor() as cr:
             # Cache the status table in memory; it's reasonably small.
             self.mon.report_status("Preparing database... (capture detail)")
