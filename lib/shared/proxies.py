@@ -355,6 +355,9 @@ class OpenVPNMethod(ProxyMethod):
         self._openvpn_args = args
 
         openvpn_cfg = glob.glob(cfg)
+        if not openvpn_cfg:
+            raise RuntimeError("{!r} does not match any config files"
+                               .format(cfg))
         random.shuffle(openvpn_cfg)
         self._openvpn_cfgs = collections.deque(openvpn_cfg)
 
@@ -533,12 +536,12 @@ class ProxyRunner:
             self.pavg = self.pavg    * (1-self.alpha) + \
                          sec_per_job *    self.alpha
 
+        jph = 0 if sec_per_job == 0 else 3600/sec_per_job
+        aph = 0 if self.pavg   == 0 else 3600/self.pavg
+
         self.statm = ("{} complete, {} failures | "
                       "last {:.2f}, avg {:.2f} jobs/hr/wkr | "
-                      .format(self.nsucc,
-                              self.nfail,
-                              3600/sec_per_job,
-                              3600/self.pavg))
+                      .format(self.nsucc, self.nfail, jph, aph))
         self.update_prefix()
 
     def start(self):
@@ -720,14 +723,22 @@ class ProxySet:
             and hasattr(cls, 'TYPE'))
     }
 
-    def __init__(self, disp, mon, args, proxy_sort_key=None):
-        """Constructor.  ARGS is as described above.  PROXY_SORT_KEY takes two
-           arguments, the 'loc' and 'method' fields of the proxy
-           config file in that order, and controls the order in which
-           proxies should be started; they are put in a sorted list
-           using this as the sort key, and started low to high.  The
-           default is to sort all 'direct' proxies first, and then
-           alphabetically by 'loc'."""
+    def __init__(self, disp, mon, args,
+                 proxy_sort_key=None,
+                 include_locations=None):
+        """Constructor.  ARGS is as described above.
+
+           PROXY_SORT_KEY takes two arguments, the 'loc' and 'method'
+           fields of the proxy config file in that order, and controls
+           the order in which proxies should be started; they are put
+           in a sorted list using this as the sort key, and started
+           low to high.  The default is to sort all 'direct' proxies
+           first, and then alphabetically by 'loc'.
+
+           If INCLUDE_LOCATIONS is not None, it must be a set of
+           locations (anything for which "'str' in X" works) and only
+           the proxies for those locations will be activated.
+        """
         if proxy_sort_key is None:
             proxy_sort_key = lambda l, m: (m != 'direct', l)
 
@@ -746,9 +757,6 @@ class ProxySet:
                 if w[0] == '#': continue
 
                 w = w.split()
-                #if len(w) < 2 or not self._VALID_LOC_RE.match(w[0]):
-                #    raise RuntimeError("invalid location: " + " ".join(w))
-
                 loc = w[0]
                 if loc in self.locations:
                     raise RuntimeError("duplicate location: " + " ".join(w))
@@ -758,16 +766,17 @@ class ProxySet:
                     raise RuntimeError("unrecognized method: " + " ".join(w))
                 method = self._PROXY_METHODS[method]
 
-                args = w[2:]
-                method = method(loc, *args)
-                runner = ProxyRunner(disp, loc, method)
-                mon.add_work_thread(runner)
-                self.locations[loc] = runner
-                proxies.append(runner)
+                if include_locations is None or loc in include_locations:
+                    args = w[2:]
+                    method = method(loc, *args)
+                    runner = ProxyRunner(disp, loc, method)
+                    mon.add_work_thread(runner)
+                    self.locations[loc] = runner
+                    proxies.append(runner)
 
         self.args.max_simultaneous_proxies = \
             min(self.args.max_simultaneous_proxies, len(proxies))
-        self._refill_waiting_proxies(proxies)
+        self.waiting_proxies = proxies
 
     def _refill_waiting_proxies(self, new_proxies=None):
         """Internal: refill and sort the set of proxies that we could start."""
@@ -819,7 +828,22 @@ class ProxySet:
         now = time.monotonic()
         proxy = None
         min_backoff = 3600
+
+        # It's possible that the dispatcher has decided some of the
+        # waiting proxies are no longer required, since we were last here.
+        still_waiting_proxies = []
+        for cand in self.waiting_proxies:
+            if cand.method.done:
+                try: del self.locations[cand.loc]
+                except KeyError: pass
+            else:
+                still_waiting_proxies.append(cand)
+        self.waiting_proxies = still_waiting_proxies
+
         for i, cand in enumerate(self.waiting_proxies):
+            if cand.method.done:
+                del self.locations[cand.loc]
+
             remaining = (cand.last_attempt + cand.backoff) - now
             PSL("cand {} last_attempt {} backoff {} remaining {}"
                 .format(cand.label(), cand.last_attempt, cand.backoff,
@@ -854,6 +878,7 @@ class ProxySet:
         """
         self.active_proxies.discard(proxy)
         if proxy.done:
-            del self.locations[proxy.loc]
+            try: del self.locations[proxy.loc]
+            except KeyError: pass
         else:
             self.crashed_proxies.add(proxy)
