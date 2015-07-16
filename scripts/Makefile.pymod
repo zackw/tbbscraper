@@ -1,0 +1,28 @@
+NULL   =
+CC     = cc -std=c11
+PYTHON = python3
+CYTHON = cython3 -3 -Wextra
+
+all: # is the default.
+include python-vars.mk
+
+all: _dnslookup.$M
+_dnslookup.$M: LIBS = -lanl
+_dnslookup.$M: _dnslookup.$O
+	$(CC) $(LINKER_ARGS)
+
+clean:
+	-rm -f _dnslookup.$M _dnslookup.$O python-vars.mk
+	-rm -rf __pycache__
+
+# Python boilerplate
+python-vars.mk:
+	$(PYTHON) get-module-compile-cmds.py $@
+
+%.$O: %.c
+	$(CC) $(COMPILER_ARGS)
+
+%.c: %.pyx
+	$(CYTHON) -I. -o $@ $<
+
+.PHONY: all clean

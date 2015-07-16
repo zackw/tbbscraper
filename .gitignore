@@ -24,6 +24,8 @@ __pycache__/
 
 /scripts/isolate
 /scripts/openvpn-netns
+/scripts/*.so
+/scripts/python-vars.mk
 
 /pkg/selenium-server-2.33.0.jar
 /pkg/selenium-server-2.33.0/debian/files
