@@ -7,13 +7,14 @@
  * http://www.apache.org/licenses/LICENSE-2.0
  * There is NO WARRANTY.
  *
- *     openvpn-netns namespace config-file [args...]
+ *     openvpn-netns namespace tunnel config-file [args...]
  *
- * creates a network namespace called NAMESPACE, and brings up an
- * OpenVPN tunnel which that network namespace (and only that network
- * namespace) will use for communication.  CONFIG-FILE is an OpenVPN
- * configuration file, and any ARGS will be appended to the OpenVPN
- * command line.
+ * brings up an OpenVPN tunnel which network namespace NAMESPACE will
+ * use for communication.  Both NAMESPACE and TUNNEL must already
+ * exist, and TUNNEL must already have been assigned to NAMESPACE.
+ * (The program 'tunnel-ns' sets up namespaces and tunnels
+ * appropriately.)  CONFIG-FILE is an OpenVPN configuration file, and
+ * any ARGS will be appended to the OpenVPN command line.
  *
  * This program expects to be run with both stdin and stdout connected
  * to pipes.  When it detects that the namespace is ready for use, it
@@ -33,8 +34,8 @@
  * features.  A port to a different OS might well entail a complete
  * rewrite.  Apart from that, C99 and POSIX.1-2001 features are used
  * throughout.  It also requires dirfd, strdup, and strsignal, from
- * POSIX.1-2008; execvpe and vasprintf, from the shared BSD/GNU
- * extension set; and the currently Linux-specific pipe2, signalfd,
+ * POSIX.1-2008; execvpe, pipe2, and vasprintf, from the shared
+ * BSD/GNU extension set; and the currently Linux-specific signalfd
  * and getauxval.
  */
 
@@ -42,15 +43,17 @@
 #define _FILE_OFFSET_BITS 64 /* large directory readdir(), large rlimits */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
 
 #include <sys/auxv.h>
 #include <sys/resource.h>
 #include <sys/signalfd.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -85,15 +88,10 @@ static sigset_t child_sigmask;
 
 static bool is_controller;
 static bool controller_cleanups;
-static bool up_script_cleanups;
 static bool already_closed_stdout;
 
 /* controller cleanups need to know: */
 static pid_t cl_ovpn_pid;
-
-/* up-script cleanups need to know: */
-static const char *cl_namespace;
-static const char *cl_nsdir;
 
 /* Error reporting. */
 
@@ -187,6 +185,7 @@ xasprintf(const char *fmt, ...)
   va_start(ap, fmt);
   if (vasprintf(&rv, fmt, ap) == -1)
     fatal_perror("asprintf");
+  va_end(ap);
   return rv;
 }
 
@@ -458,7 +457,6 @@ spawn_with_redir(const char *const *argv, int child_stdin, int child_stdout)
      us to write to stderr under error conditions, but the cleanup
      handler should not do anything. */
   controller_cleanups = false;
-  up_script_cleanups = false;
 
   /* Child-side stdin and stdout redirections. */
   if (child_stdin != 0) {
@@ -609,7 +607,6 @@ do_up_script(int argc, char **argv, char **envp)
   const char *namespace = argv[2];
   const char *ppid_s = argv[3];
   child_env = (const char *const *)envp;
-  up_script_cleanups = true;
 
   /* Process ID of the parent instance of this program, above the
      openvpn client, passed down on command line. */
@@ -619,7 +616,7 @@ do_up_script(int argc, char **argv, char **envp)
      Most of these are not needed until we get to do_up_inside_ns,
      which runs in another process, but sanity-checking everything now
      avoids doing a bunch of work that will just have to be undone. */
-  const char *tun_dev = must_getenv("dev");
+  must_getenv("dev");
   must_getenv("tun_mtu");
   must_getenv("route_vpn_gateway");
   must_getenv("ifconfig_local");
@@ -630,26 +627,14 @@ do_up_script(int argc, char **argv, char **envp)
      This system call cannot fail.  */
   umask(022);
 
-  const char *nsdir = xasprintf("/etc/netns/%s", namespace);
-  if (mkdir(nsdir, 0777))
-    fatal_perror(nsdir);
-  cl_nsdir = nsdir;
-
   maybe_config_dns(namespace, envp);
 
-  run("ip", "netns", "add", namespace);
-  cl_namespace = namespace;
-
-  run("ip", "link", "set", "dev", tun_dev, "netns", namespace);
   run("ip", "netns", "exec", namespace,
       full_progname, "--as-up-inside-ns", namespace);
 
   /* The namespace is now ready for use; signal the parent instance. */
   if (kill(ppid, SIGUSR1))
     fatal_perror("signaling parent instance");
-
-  /* Our work is successful, do not tear it back down on the way out. */
-  up_script_cleanups = false;
 }
 
 static void
@@ -682,10 +667,6 @@ do_up_inside_ns(int argc, char **argv, char **envp)
   /* 'ip addr add' wants a CIDR-format netmask. */
   if_local = xasprintf("%s/%u", if_local, mask2cidr(if_nmask));
 
-  /* lo is automatically assigned the usual address by the kernel, but is
-     not automatically brought up. */
-  run("ip", "link", "set", "dev", "lo", "up");
-
   run("ip", "addr", "add",
             "dev", tun_dev,
             "local", if_local,
@@ -697,13 +678,15 @@ do_up_inside_ns(int argc, char **argv, char **envp)
 static void
 do_down_script(int argc, char **argv, char **envp)
 {
-  if (argc < 3) {
-    fprintf(stderr, "INTERNAL-ONLY usage: %s --as-down-script namespace ...\n",
+  if (argc < 4) {
+    fprintf(stderr,
+            "INTERNAL-ONLY usage: %s --as-down-script namespace tunnel ...\n",
             progname);
     exit(2);
   }
 
   const char *namespace = argv[2];
+  const char *tunnel = argv[3];
   child_env = (const char *const *)envp;
 
   const char *nsdir = xasprintf("/etc/netns/%s", namespace);
@@ -727,11 +710,11 @@ do_down_script(int argc, char **argv, char **envp)
     pidvec_kill(&to_kill, SIGKILL);
   }
 
-  run("ip", "netns", "exec", namespace,
-      "ip", "link", "set", "dev", "lo", "down");
+  run_ignore_failure("ip", "netns", "exec", namespace,
+                     "ip", "link", "set", "dev", tunnel, "down");
 
-  run("ip", "netns", "delete", namespace);
-  run("rm", "-rf", nsdir);
+  const char *path = xasprintf("/etc/netns/%s/resolv.conf", namespace);
+  (void) unlink(path);
 }
 
 /* Master control. */
@@ -760,7 +743,7 @@ close_unnecessary_fds(void)
                           "invalid /proc/self/fd entry");
 
       if (fd >= 3 && fd != dfd)
-        close((int)fd);
+        close(fd);
     }
 
   } else {
@@ -896,13 +879,14 @@ prepare_signals(void)
 }
 
 static pid_t
-launch_ovpn(const char *namespace, const char *cfgfile, char **ovpn_args)
+launch_ovpn(const char *namespace, const char *tunnel,
+            const char *cfgfile, char **ovpn_args)
 {
   pid_t mypid = getpid();
   const char *up_script = xasprintf
     ("%s --as-up-script %s %d", full_progname, namespace, mypid);
   const char *down_script = xasprintf
-    ("%s --as-down-script %s", full_progname, namespace);
+    ("%s --as-down-script %s %s", full_progname, namespace, tunnel);
 
   strvec oargv;
   memset(&oargv, 0, sizeof(strvec));
@@ -910,6 +894,8 @@ launch_ovpn(const char *namespace, const char *cfgfile, char **ovpn_args)
   strvec_append(&oargv, "openvpn");
   strvec_append(&oargv, "--config");
   strvec_append(&oargv, cfgfile);
+  strvec_append(&oargv, "--dev");
+  strvec_append(&oargv, tunnel);
   strvec_append(&oargv, "--ifconfig-noexec");
   strvec_append(&oargv, "--route-noexec");
   strvec_append(&oargv, "--script-security");
@@ -1073,7 +1059,7 @@ static void
 do_controller(int argc, char **argv, char **envp)
 {
   /* argument validation */
-  if (argc < 3)
+  if (argc < 4)
     usage();
 
   const char *namespace = argv[1];
@@ -1083,7 +1069,14 @@ do_controller(int argc, char **argv, char **envp)
     fatal_printf("namespace name '%s' should consist solely of letters, "
                  "digits, and underscores", argv[1]);
 
-  const char *cfgfile = argv[2];
+  const char *tunnel = argv[2];
+  if (strlen(tunnel) > strspn(tunnel, "_0123456789"
+                              "abcdefghijklmnopqrstuvwxyz"
+                              "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    fatal_printf("tunnel name '%s' should consist solely of letters, "
+                 "digits, and underscores", argv[2]);
+
+  const char *cfgfile = argv[3];
   int testfd = open(cfgfile, O_RDONLY);
   if (testfd == -1 || close(testfd))
     fatal_perror(cfgfile);
@@ -1096,13 +1089,8 @@ do_controller(int argc, char **argv, char **envp)
   prepare_child_env(envp);
   int sigfd = prepare_signals();
 
-  pid_t ovpn_pid = launch_ovpn(namespace, cfgfile, argv + 3);
+  pid_t ovpn_pid = launch_ovpn(namespace, tunnel, cfgfile, argv + 4);
   cl_ovpn_pid = ovpn_pid;
-
-  /* parent also cleans up the namespace and /etc/netns directory in case
-     the down-script doesn't run for some reason */
-  cl_namespace = namespace;
-  cl_nsdir = xasprintf("/etc/netns/%s", namespace);
 
   controller_idle_loop(sigfd, ovpn_pid);
 }
@@ -1118,16 +1106,8 @@ usage(void)
 static NORETURN
 cleanup_and_exit(int status)
 {
-  if (controller_cleanups) {
-    if (cl_ovpn_pid)
-      kill(cl_ovpn_pid, SIGTERM);
-  }
-  if (up_script_cleanups || controller_cleanups) {
-    if (cl_namespace)
-      run_ignore_failure("ip", "netns", "del", cl_namespace);
-    if (cl_nsdir)
-      run_ignore_failure("rm", "-rf", cl_nsdir);
-  }
+  if (controller_cleanups && cl_ovpn_pid)
+    kill(cl_ovpn_pid, SIGTERM);
   exit(status);
 }
 
