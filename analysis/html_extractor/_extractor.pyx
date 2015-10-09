@@ -283,7 +283,8 @@ cdef class TreeWalker:
                            GUMBO_NODE_WHITESPACE):
             self.walk_text(node.v.text.text)
 
-        elif node.type == GUMBO_NODE_COMMENT:
+        elif node.type in (GUMBO_NODE_COMMENT,
+                           GUMBO_NODE_TEMPLATE):
             pass
 
         else:

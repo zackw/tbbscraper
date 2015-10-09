@@ -20,7 +20,8 @@ cdef extern from "gumbo.h":
         GUMBO_NODE_TEXT,
         GUMBO_NODE_CDATA,
         GUMBO_NODE_COMMENT,
-        GUMBO_NODE_WHITESPACE
+        GUMBO_NODE_WHITESPACE,
+        GUMBO_NODE_TEMPLATE
 
     ctypedef enum GumboNamespaceEnum:
         GUMBO_NAMESPACE_HTML,
@@ -177,6 +178,7 @@ cdef extern from "gumbo.h":
         GUMBO_TAG_NOBR,
         GUMBO_TAG_SPACER,
         GUMBO_TAG_TT,
+        GUMBO_TAG_RTC,
         GUMBO_TAG_UNKNOWN,
         GUMBO_TAG_LAST
 
