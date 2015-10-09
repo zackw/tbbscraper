@@ -14,9 +14,9 @@ import time
 # workers.  (Each process has its own copy of the global.)
 
 DATABASE = None
-def worker_init(dbname):
+def worker_init(dbname, runs):
     global DATABASE
-    DATABASE = pagedb.PageDB(dbname)
+    DATABASE = pagedb.PageDB(dbname, runs)
 
 # worker functions
 def corpus_wide_statistics(lang, db):
@@ -27,9 +27,8 @@ def corpus_wide_statistics(lang, db):
     raw_doc_freq     = collections.Counter()
     n_documents      = 0
 
-    for text in db.get_page_texts(
-            where_clause="p.has_boilerplate=false and p.lang_code='{}'"
-            .format(lang)):
+    for text in db.get_page_texts(where_clause="lang_code='{}'"
+                                  .format(lang)):
 
         n_documents += 1
         already_this_document = set()
@@ -40,7 +39,7 @@ def corpus_wide_statistics(lang, db):
                 already_this_document.add(word)
 
     idf = compute_idf(n_documents, raw_doc_freq)
-    db.update_corpus_statistics(lang, False, n_documents,
+    db.update_corpus_statistics(lang, n_documents,
                                 [('cwf', corpus_word_freq),
                                  ('rdf', raw_doc_freq),
                                  ('idf', idf)])
@@ -68,7 +67,7 @@ def compute_tfidf(db, lang, text, idf):
     for word in tf.keys():
         tf[word] *= idf[word]
 
-    db.update_text_statistic('tfidf', text.id, tf)
+    db.update_text_statistic('tfidf', text.origin, tf)
 
 def compute_nfidf(db, lang, text, idf):
     # This is "augmented normalized" tf-idf: the term frequency within
@@ -87,28 +86,28 @@ def compute_nfidf(db, lang, text, idf):
     for word in tf.keys():
         tf[word] = (0.5 + (0.5 * tf[word])/max_tf) * idf[word]
 
-    db.update_text_statistic('nfidf', text.id, tf)
+    db.update_text_statistic('nfidf', text.origin, tf)
 
 def process_language(lang):
     db = DATABASE
 
     idf = corpus_wide_statistics(lang, db)
-    ndoc, idf = db.get_corpus_statistic('idf', lang, False)
+    ndoc, idf = db.get_corpus_statistic('idf', lang)
 
     # Note: the entire get_page_texts() operation must be enclosed in a
     # single transaction; committing in the middle will invalidate the
     # server-side cursor it holds.
     with db:
         for text in db.get_page_texts(
-                where_clause="p.has_boilerplate=false and p.lang_code='{}'"
+                where_clause="lang_code='{}'"
                 .format(lang)):
             compute_tfidf(db, lang, text, idf)
             compute_nfidf(db, lang, text, idf)
 
     return lang
 
-def prep_database(dbname):
-    db = pagedb.PageDB(dbname)
+def prep_database(dbname, runs):
+    db = pagedb.PageDB(dbname, runs)
     langs  = db.prepare_text_statistic('tfidf')
     langs |= db.prepare_text_statistic('nfidf')
     return langs
@@ -119,10 +118,12 @@ def fmt_interval(interval):
     return "{}:{:>02}:{:>05.2f}".format(int(h), int(m), s)
 
 def main():
-    lang_codes = prep_database(sys.argv[1])
+    dbname = sys.argv[1]
+    runs = sys.argv[2:]
+    lang_codes = prep_database(dbname, runs)
 
     pool = multiprocessing.Pool(initializer=worker_init,
-                                initargs=(sys.argv[1],))
+                                initargs=(dbname, runs))
 
     start = time.time()
     sys.stderr.write("{}: processing {} languages...\n"

@@ -13,63 +13,116 @@ __all__ = ['PageText', 'PageObservation', 'DOMStatistics', 'PageDB']
 
 class PageText:
     """The text of at least one page.  Corresponds to one row of the
-       ts_analysis.page_text table.  Must cross-reference to
+       analysis.capture_pruned_content table.  Must cross-reference to
        .page_observations to learn where it came from.
 
        Properties:
-          id              - Serial number of this text blob.
-          has_boilerplate - True if site boilerplate is included in the text.
+          origin          - Serial number of this text blob.
+                            (.origin field in the database, *not* .id)
           lang_code       - ISO 639 code: language as identified by CLD2.
           lang_name       - English name of the language.
           lang_conf       - % confidence in the language identification.
+          hash            - SHA256 hash of the *compressed* text.
           contents        - The text itself (lazily uncompressed).
+          raw_hash        - SHA256 hash of the *compressed* unpruned text.
+          raw_contents    - The text before pruning.
           observations    - Array of PageObservation objects: all the page
                             observations that have this text.
           tfidf           - Raw tf-idf scores for each word in the text.
           nfidf           - Augmented normalized tf-idf scores ditto.
+          headings         - Array of strings: all text found within <hN> tags.
+          links            - Array of strings: all outbound hyperlinks
+                             from this page.
+          resources        - Array of strings: all resources loaded by
+                             this page.
+          dom_stats        - DOMStatistics object counting tags and
+                             tree depth.
     """
-    def __init__(self, db, id, has_boilerplate,
-                 lang_code, lang_name, lang_conf,
+    def __init__(self, db, origin,
+                 lang_code, lang_name, lang_conf, hash, raw_hash,
                  *,
-                 contents=None, tfidf=None, nfidf=None):
+                 contents=None, raw_contents=None, tfidf=None, nfidf=None,
+                 headings=None, links=None, resources=None, dom_stats=None):
         self._db             = db
-        self.id              = id
-        self.has_boilerplate = has_boilerplate
+        self.origin          = origin
         self.lang_code       = lang_code
         self.lang_name       = lang_name
         self.lang_conf       = lang_conf
+        self.hash            = hash
+        self.raw_hash        = raw_hash
 
-        # For memory efficiency, contents, observations, and statistics
-        # are lazily loaded from the database.
+        # For memory efficiency, these are lazily loaded from the database.
         self._contents       = contents
+        self._raw_contents   = raw_contents
+        self._tfidf          = tfidf
+        self._nfidf          = nfidf
+        self._headings       = headings
+        self._links          = links
+        self._resources      = resources
+        self._dom_stats      = dom_stats
         self._observations   = None
-        self._tfidf          = None
-        self._nfidf          = None
+
+    def __hash__(self):
+        return self.id
 
     @property
     def contents(self):
         if self._contents is None:
-            self._contents = self._db.get_contents_for_text(self.id)
+            self._contents = self._db.get_contents_for_text(self.origin)
         return self._contents
 
     @property
-    def observations(self):
-        if self._observations is None:
-            self._observations = \
-                self._db.get_observations_for_text(self)
-        return self._observations
+    def raw_contents(self):
+        if self._raw_contents is None:
+            self._raw_contents = self._db.get_raw_contents_for_text(self.origin)
+        return self._raw_contents
 
     @property
     def tfidf(self):
         if self._tfidf is None:
-            self._tfidf = self._db.get_text_statistic('tfidf', self.id)
+            self._tfidf = self._db.get_text_statistic('tfidf', self.origin)
         return self._tfidf
 
     @property
     def nfidf(self):
         if self._nfidf is None:
-            self._nfidf = self._db.get_text_statistic('nfidf', self.id)
+            self._nfidf = self._db.get_text_statistic('nfidf', self.origin)
         return self._nfidf
+
+    @property
+    def headings(self):
+        if self._headings is None:
+            self._headings = \
+                self._db.get_headings_for_text(self.origin)
+        return self._headings
+
+    @property
+    def links(self):
+        if self._links is None:
+            self._links = \
+                self._db.get_links_for_text(self.origin)
+        return self._links
+
+    @property
+    def resources(self):
+        if self._resources is None:
+            self._resources = \
+                self._db.get_resources_for_text(self.origin)
+        return self._resources
+
+    @property
+    def dom_stats(self):
+        if self._dom_stats is None:
+            self._dom_stats = \
+                self._db.get_dom_stats_for_text(self.origin)
+        return self._dom_stats
+
+    @property
+    def observations(self):
+        if self._observations is None:
+            self._observations = \
+                self._db.get_observations_for_text(self.origin)
+        return self._observations
 
 class DOMStatistics:
     """Statistics about the DOM structure.  Has two attributes:
@@ -96,73 +149,51 @@ class DOMStatistics:
 class PageObservation:
     """A page as observed from a particular locale.  Corresponds to one
        row of the ts_analysis.page_observations table.  Many properties
-       are lazily loaded.  Use (run, locale, url_id) for a unique key.
+       are lazily loaded.
 
+           id               - Unique id for this observation.
            run              - Which data collection run this is from.
            locale           - ISO 631 code of country where the page
-                              was observed, possibly with a suffix.
+                              was observed.
            country          - English name corresponding to 'locale'.
-           url_id           - Serial number of the page URL.
+           vantage          - Location within the country where the page
+                              was observed; may be the empty string.
            url              - The page URL.
            access_time      - Date and time the page was accessed (UTC).
+           elapsed_time     - Time taken to capture the page (seconds).
            result           - High-level result code.
            detail           - More detailed result code.
            redir_url        - URL of the page after following redirections.
-           html_len         - Length of the HTML as received from phantom,
-                              in UTF-8 bytes.
-           html_hash        - Strong hash (currently SHA-256) of the HTML
-                              as received from phantom, for duplicate page
-                              detection.
-
-           document         - PageText object: the text of the page,
-                              boilerplate stripped.
-           document_with_bp - PageText object: the text of the page,
-                              boilerplate included.
-           headings         - Array of strings: all text found within <hN> tags.
-           links            - Array of strings: all outbound hyperlinks
-                              from this page.
-           resources        - Array of strings: all resources loaded by
-                              this page.
-           dom_stats        - DOMStatistics object counting tags and
-                              tree depth.
+           document_id      - Database ID of the text of the page.
+           document         - PageText object: the text of the page.
 
        NOTE: retrieving the capture log is currently not implemented.
 
     """
 
-    def __init__(self, db, run, locale, country, url_id, url,
-                 access_time, result, detail, redir_url, html_len, html_hash,
-                 document_id, document_with_bp_id,
+    def __init__(self, db, id, run, locale, country, vantage,
+                 access_time, elapsed_time, result, detail, redir_url,
+                 document_id,
                  *,
-                 document=None, document_with_bp=None,
-                 headings=None, links=None, resources=None,
-                 dom_stats=None, html_content=None):
+                 document=None):
 
         self._db                  = db
-
+        self.id                   = id
         self.run                  = run
         self.locale               = locale
         self.country              = country
-        self.url_id               = url_id
+        self.vantage              = vantage
         self.url                  = url
         self.access_time          = access_time
+        self.elapsed_time         = elapsed_time
         self.result               = result
         self.detail               = detail
         self.redir_url            = redir_url
-        self.html_len             = html_len
-        self.html_hash            = html_hash
-
-        self._document_id         = document_id
+        self.document_id          = document_id
         self._document            = document
-        self._document_with_bp_id = document_with_bp_id
-        self._document_with_bp    = document_with_bp
 
-        self._headings            = headings
-        self._links               = links
-        self._resources           = resources
-        self._dom_stats           = dom_stats
-
-        self._html_content        = html_content
+    def __hash__(self):
+        return self.id
 
     @property
     def document(self):
@@ -170,76 +201,21 @@ class PageObservation:
             self._document = self._db.get_page_text(self._document_id)
         return self._document
 
-    @property
-    def document_with_bp(self):
-        if self._document_with_bp is None:
-            self._document_with_bp = \
-                self._db.get_page_text(self._document_with_bp_id)
-        return self._document
-
-    @property
-    def headings(self):
-        if self._headings is None:
-            self._headings = self._db.get_headings(self.run,
-                                                   self.locale,
-                                                   self.url_id)
-        return self._headings
-
-    @property
-    def links(self):
-        if self._links is None:
-            self._links = self._db.get_links(self.run,
-                                             self.locale,
-                                             self.url_id)
-        return self._links
-
-    @property
-    def resources(self):
-        if self._resources is None:
-            self._resources = self._db.get_resources(self.run,
-                                                     self.locale,
-                                                     self.url_id)
-        return self._resources
-
-    @property
-    def dom_stats(self):
-        if self._dom_stats is None:
-            self._dom_stats = self._db.get_dom_stats(self.run,
-                                                     self.locale,
-                                                     self.url_id)
-        return self._dom_stats
-
-    @property
-    def html_content(self):
-        if self._html_content is None:
-            self._html_content = self._db.get_html_content(self.run,
-                                                           self.locale,
-                                                           self.url_id)
-        return self._html_content
 
 
 class PageDB:
     """Wraps a database handle and knows how to extract pages or other
        interesting material (add queries as they become useful!)"""
 
-    def __init__(self, connstr, exclude_partial_locales=True):
-        """If 'exclude_partial_locales' is True, a hardcoded list of
-           incompletely-scanned locales will be excluded from all
-           processing."""
+    def __init__(self, connstr, only_runs=[]):
+        """If 'only_runs' is a list, only those runs will be examined."""
 
         self._locales    = None
-        self._runs       = None
+        self._runs       = [int(x) for x in only_runs]
         self._lang_codes = None
         self._lang_names = None
         self._cursor_tag = "pagedb_qtmp_{}_{}".format(os.getpid(), id(self))
         self._cursor_ctr = 0
-
-        if exclude_partial_locales:
-            self._exclude_partial_where = "o.locale NOT IN ('cn', 'jp_kobe')"
-            self._exclude_partial_list  = frozenset(('cn', 'jp_kobe'))
-        else:
-            self._exclude_partial_where = ""
-            self._exclude_partial_list  = frozenset()
 
         if "=" not in connstr:
             connstr = "dbname="+connstr
@@ -249,7 +225,7 @@ class PageDB:
         # All tables are referenced with explicit schemas.
         cur.execute("SET search_path TO ''")
 
-        # Dscourage the query planner from doing anything that will
+        # Discourage the query planner from doing anything that will
         # involve sorting the entire page_text or page_observations
         # table before emitting a single row.
         #
@@ -263,33 +239,21 @@ class PageDB:
     @property
     def locales(self):
         """Retrieve a list of all available locales.  This involves a
-           moderately expensive query, which has now been memoized on
-           the server, but we memoize it again here just to be sure.
+           moderately expensive query, so we memoize it.
         """
         if self._locales is None:
             cur = self._db.cursor()
-            cur.execute("SELECT locale FROM ts_analysis.captured_locales")
-            self._locales = sorted(
-                row[0] for row in cur
-                if row[0] not in self._exclude_partial_list
-            )
+            if not self._runs:
+                cur.execute("SELECT DISTINCT country"
+                            "  FROM collection.captured_pages"
+                            " ORDER BY country")
+            else:
+                cur.execute("SELECT DISTINCT country"
+                            "  FROM collection.captured_pages"
+                            " WHERE run = ANY(%s)"
+                            " ORDER BY country", (self._runs,))
+            self._locales = [row[0] for row in cur]
         return self._locales
-
-    @property
-    def runs(self):
-        """Retrieve a list of all runs indexed in ts_analysis.url_strings.
-           (Right now that means run 0 is not included.)
-        """
-        if self._runs is None:
-            cur = self._db.cursor()
-            cur.execute("SELECT CAST(n AS INTEGER) FROM ("
-                        "SELECT SUBSTRING(column_name FROM 'r([0-9]+)id') AS n"
-                        "  FROM information_schema.columns"
-                        " WHERE table_schema = 'ts_analysis'"
-                        "   AND table_name = 'url_strings') _"
-                        " WHERE n <> ''")
-            self._runs = sorted(row[0] for row in cur)
-        return self._runs
 
     @property
     def lang_codes(self):
@@ -298,8 +262,9 @@ class PageDB:
         """
         if self._lang_codes is None:
             cur = self._db.cursor()
-            cur.execute("SELECT code FROM ts_analysis.captured_languages"
-                        " ORDER BY code")
+            cur.execute("SELECT DISTINCT lang_code"
+                        "  FROM analysis.capture_pruned_content"
+                        " ORDER BY lang_code")
             self._lang_codes = [row[0] for row in cur]
         return self._lang_codes
 
@@ -311,12 +276,13 @@ class PageDB:
         """
         if self._lang_names is None:
             cur = self._db.cursor()
-            cur.execute("SELECT lc.name FROM ts_analysis.language_codes lc"
-                        "  JOIN ts_analysis.captured_languages cl"
-                        "    ON cl.code = lc.code"
-                        " ORDER BY cl.code")
-            self._locales = [row[0] for row in cur]
-        return self._locales
+            cur.execute("SELECT DISTINCT lc.name"
+                        "  FROM analysis.capture_pruned_content cp"
+                        "  JOIN collection.language_codes lc"
+                        "    ON cp.lang_code = lc.code"
+                        " ORDER BY cp.lang_code")
+            self._lang_names = [row[0] for row in cur]
+        return self._lang_names
 
     #
     # Methods for retrieving pages or observations in bulk.
@@ -331,7 +297,6 @@ class PageDB:
 
            Useful 'where_clause' terms include
 
-               has_boilerplate = [true | false]
                lang_code       [=, <>] <ISO 639 code>
 
            'ordered' may be either None or 'lang' to sort by language code.
@@ -340,40 +305,58 @@ class PageDB:
            in the latter case at most that many page texts are produced.
 
            'load' is a list of PageText attributes to load eagerly from the
-           database: zero or more of 'contents', 'tfidf', and 'nfidf'.
-           If you know you're going to use these for every observation,
-           requesting them up front is more efficient than allowing them
-           to be loaded lazily.
+           database: zero or more of
+
+               contents raw_contents tfidf nfidf headings links resources
+               dom_stats
+
+           If you know you're going to use these for every page, requesting
+           them up front is more efficient than allowing them to be loaded
+           lazily.
         """
 
-        columns = { "id"              : "p.id",
-                    "has_boilerplate" : "p.has_boilerplate",
-                    "lang_code"       : "p.lang_code",
-                    "lang_name"       : "lc.name",
-                    "lang_conf"       : "p.lang_conf" }
+        def up_iden(x):  return x
+        def up_text(x):  return zlib.decompress(x).decode("utf-8")
+        def up_ojson(x): return json.loads(zlib.decompress(x).decode("utf-8")) if x else {}
+        def up_ajson(x): return json.loads(zlib.decompress(x).decode("utf-8")) if x else []
+        def up_dstat(x): return DOMStatistics(json.loads(zlib.decompress(x).decode("utf-8")) if x else {})
 
-        joins = ["  FROM ts_analysis.page_text p",
-                 "  JOIN ts_analysis.language_codes lc ON p.lang_code = lc.code"]
+        no_join    = []
+        tfidf_join = ["LEFT JOIN analysis.page_text_stats st"
+                      "       ON st.stat = 'tfidf' AND st.text_id = p.id"]
+        nfidf_join = ["LEFT JOIN analysis.page_text_stats sn"
+                      "       ON sn.stat = 'nfidf' AND sn.text_id = p.id"]
 
-        unpackers = defaultdict(lambda: (lambda x: x))
+        columns = {
+            "origin"          : "p.origin",
+            "lang_code"       : "p.lang_code",
+            "lang_name"       : "p.lang_name",
+            "lang_conf"       : "p.lang_conf",
+            "hash"            : "p.hash",
+            "raw_hash"        : "p.raw_hash",
+        }
 
-        if "contents" in load:
-            columns["contents"] = "p.contents"
-            unpackers["contents"] = lambda x: zlib.decompress(x).decode("utf-8")
-        if "tfidf" in load:
-            joins.append("LEFT JOIN ts_analysis.page_text_stats s1"
-                         "       ON s1.stat = 'tfidf' AND s1.text_id = p.id")
-            columns["tfidf"] = "s1.data"
-            unpackers["tfidf"] = lambda x: \
-                json.loads(zlib.decompress(x).decode('utf-8')) \
-                if x else {}
-        if "nfidf" in load:
-            joins.append("LEFT JOIN ts_analysis.page_text_stats s1"
-                         "       ON s1.stat = 'nfidf' AND s1.text_id = p.id")
-            columns["nfidf"] = "s1.data"
-            unpackers["nfidf"] = lambda x: \
-                json.loads(zlib.decompress(x).decode('utf-8')) \
-                if x else {}
+        op_columns = {
+            "contents":     ("p.contents",     up_text, no_join),
+            "raw_contents": ("p.raw_contents", up_text, no_join),
+            "tfidf":        ("st.data",        up_ojson, tfidf_join),
+            "nfidf":        ("sn.data",        up_ojson, nfidf_join),
+            "headings":     ("p.headings",     up_ajson, no_join),
+            "links":        ("p.links",        up_ajson, no_join),
+            "resources":    ("p.resources",    up_ajson, no_join),
+            "dom_stats":    ("p.dom_stats",    up_dstat, no_join)
+        }
+
+        joins = ["  FROM analysis.page_text p"]
+        unpackers = defaultdict(lambda: up_iden)
+
+        for col in load:
+            if col not in op_columns:
+                raise ValueError("unknown optional column "+repr(col))
+            dcol, unpack, join = op_columns[col]
+            columns[col] = dcol
+            unpackers[col] = unpack
+            joins.extend(join)
 
         # Fix a column ordering.
         column_order = list(enumerate(columns.keys()))
@@ -387,8 +370,8 @@ class PageDB:
 
         if ordered == "lang":
             query += " ORDER BY p.lang_code"
-        else:
-            assert ordered is None
+        elif ordered is not None:
+            raise ValueError("unknown ordering: " + ordered)
 
         if limit:
             query += " LIMIT {}".format(limit)
@@ -415,13 +398,13 @@ class PageDB:
     def get_random_page_texts(self, count, seed, where_clause="", **kwargs):
 
         cur = self._db.cursor()
-        cur.execute("SELECT min(id), max(id) FROM ts_analysis.page_text")
+        cur.execute("SELECT min(id), max(id)"
+                    "  FROM collection.capture_html_content")
         lo, hi = cur.fetchone()
 
-        cur.execute("SELECT x.id FROM generate_series(%s, %s) as x(id)"
-                    " LEFT JOIN ts_analysis.page_text p"
-                    "        ON x.id = p.id WHERE p.id IS NULL",
-                    (lo, hi))
+        cur.execute("SELECT x.id FROM generate_series(%s, %s) AS x(id)"
+                    "  LEFT JOIN collection.capture_html_content p"
+                    "         ON x.id = p.id WHERE p.id IS NULL", (lo, hi))
         gaps = set(x[0] for x in cur.fetchall())
 
         rng = random.Random(seed)
@@ -430,7 +413,7 @@ class PageDB:
             block = set(rng.sample(range(lo, hi+1), count - len(sample))) - gaps
             sample.extend(block)
         sample.sort()
-        selection = "p.id IN (" + ",".join(str(id) for id in sample) + ")"
+        selection = "p.origin IN (" + ",".join(str(id) for id in sample) + ")"
 
         if where_clause:
             where_clause = "({}) AND ({})".format(where_clause, selection)
@@ -443,7 +426,6 @@ class PageDB:
                               where_clause="",
                               ordered='url',
                               limit=None,
-                              load=[],
                               constructor_kwargs={}):
         """Retrieve page observations from the database matching the
            where_clause.  This is a generator, which produces one
@@ -451,110 +433,37 @@ class PageDB:
 
            Useful 'where_clause' terms include
 
-               o.locale = <ISO 631 code>
-               o.result = <high-level result>
+               country = <ISO 631 code>
+               result = <high-level result>
 
            'limit' may be either None for no limit, or a positive integer;
            in the latter case at most that many page texts are produced.
 
            'ordered' may be None for unordered, 'url' to sort by URL id
-           (_not_ actual URL text), or 'locale' to sort by locale.
-
-           'load' is a list of PageObservation attributes to load
-           eagerly from the database: zero or more of 'headings',
-           'links', 'resources', 'dom_stats', and 'html_content'.
-           If you know you're going to use these for every observation,
-           requesting them up front is more efficient than allowing them
-           to be loaded lazily.
+           (_not_ actual URL text), or 'country' to sort by country code.
 
            'constructor_kwargs' is for passing additional arguments to the
            PageObservation constructor; external code should not need it.
         """
-        columns = { "run"                 : "o.run",
-                    "locale"              : "o.locale",
-                    "country"             : "cc.name",
-                    "url_id"              : "o.url",
-                    "url"                 : "u.url",
-                    "access_time"         : "o.access_time",
-                    "result"              : "o.result",
-                    "detail"              : "d.detail",
-                    "redir_url"           : "v.url",
-                    "html_len"            : "o.html_length",
-                    "html_hash"           : "o.html_sha2",
-                    "document_id"         : "o.document",
-                    "document_with_bp_id" : "o.document_with_bp" }
 
-        joins = [
-            "FROM ts_analysis.page_observations o",
-            "JOIN ts_analysis.capture_detail d ON o.detail = d.id",
-            "JOIN ts_analysis.locale_data cc"
-            "     ON SUBSTRING(o.locale FOR 2) = cc.cc2",
-            "JOIN ts_analysis.url_strings u ON o.url = u.id",
-            "LEFT JOIN ts_analysis.url_strings v ON o.redir_url = v.id",
-        ]
+        query = ("SELECT id, run, country, country_name, vantage,"
+                 "       url, access_time, elapsed_time, result, detail,"
+                 "       redir_url, document_id"
+                 "  FROM analysis.page_observations")
 
-        unpackers = defaultdict(lambda: (lambda x: x))
-
-        if "headings" in load:
-            columns["headings"] = "o.headings"
-            unpackers["headings"] = \
-                lambda x: (json.loads(zlib.decompress(x).decode("utf-8"))
-                           if x else [])
-        if "links" in load:
-            columns["links"] = "o.links"
-            unpackers["links"] = \
-                lambda x: (json.loads(zlib.decompress(x).decode("utf-8"))
-                           if x else [])
-        if "resources" in load:
-            columns["resources"] = "o.resources"
-            unpackers["resources"] = \
-                lambda x: (json.loads(zlib.decompress(x).decode("utf-8"))
-                           if x else [])
-        if "dom_stats" in load:
-            columns["dom_stats"] = "o.dom_stats"
-            unpackers["dom_stats"] = \
-                lambda x: DOMStatistics(json.loads(zlib.decompress(x)
-                                                   .decode("utf-8"))
-                                        if x else {})
-        if "html_content" in load:
-            # This is extra-hairy because the HTML content is only
-            # stored in the captured_pages table for the original run,
-            # and that means we have to join _all of them_.
-            # The access_time condition is necessary to handle cases where
-            # the same locale visited the same URL more than once.
-            coalesce = []
-            for run in self.runs:
-                coalesce.append("r{n}.html_content".format(n=run))
-                joins.append(
-                    "LEFT JOIN ts_run_{n}.captured_pages r{n}"
-                    "       ON o.locale = r{n}.locale AND u.r{n}id = r{n}.url"
-                    "      AND o.access_time = r{n}.access_time"
-                    .format(n=run))
-            columns["html_content"] = "COALESCE(" + ",".join(coalesce) + ")"
-            unpackers["html_content"] = \
-                lambda x: (zlib.decompress(x).decode("utf-8")
-                           if x else "")
-
-        # Fix a column ordering.
-        column_order = list(enumerate(columns.keys()))
-
-        query = "SELECT " + ",".join(columns[oc[1]] for oc in column_order)
-        query += " "
-        query += " ".join(joins)
-
-        if where_clause and self._exclude_partial_where:
-            query += " WHERE ({}) AND ({})".format(where_clause,
-                                                   self._exclude_partial_where)
+        if where_clause and self._runs:
+            query += " WHERE ({}) AND run IN ({})".format(
+                where_clause, ",".join(str(r) for r in self._runs))
         elif where_clause:
             query += " WHERE ({})".format(where_clause)
-
-        elif self._exclude_partial_where:
-            query += " WHERE ({})".format(self._exclude_partial_where)
+        elif self._runs:
+            query += " WHERE run IN ({})".format(
+                ",".join(str(r) for r in self._runs))
 
         if ordered == 'url':
-            query += " ORDER BY o.url"
-        elif ordered == 'locale':
-            query += " ORDER BY o.locale, o.url"
+            query += " ORDER BY url"
+        elif ordered == 'country':
+            query += " ORDER BY country, url"
         else:
             assert ordered is None
 
@@ -585,14 +494,27 @@ class PageDB:
                                      where_clause="", **kwargs):
 
         cur = self._db.cursor()
-        cur.execute("SELECT min(url), max(url)"
-                    "  FROM ts_analysis.page_observations")
+        if self._runs:
+            cur.execute("SELECT min(url), max(url)"
+                        "  FROM collection.captured_pages"
+                        " WHERE run = ANY(%s)", (self._runs,))
+        else:
+            cur.execute("SELECT min(url), max(url)"
+                        "  FROM collection.captured_pages")
+
         lo, hi = cur.fetchone()
 
-        cur.execute("SELECT x.url FROM generate_series(%s, %s) as x(url)"
-                    " LEFT JOIN ts_analysis.page_observations p"
-                    "        ON x.url = p.url WHERE p.url IS NULL",
-                    (lo, hi))
+        if self._runs:
+            cur.execute("SELECT x.url FROM generate_series(%s, %s) as x(url)"
+                        " LEFT JOIN collection.captured_pages p"
+                        "        ON x.url = p.url"
+                        " WHERE p.url IS NULL AND p.run = ANY(%s)",
+                        (lo, hi, self._runs))
+        else:
+            cur.execute("SELECT x.url FROM generate_series(%s, %s) as x(url)"
+                        " LEFT JOIN collection.captured_pages p"
+                        "        ON x.url = p.url WHERE p.url IS NULL",
+                        (lo, hi))
         gaps = set(x[0] for x in cur.fetchall())
 
         rng = random.Random(seed)
@@ -601,7 +523,7 @@ class PageDB:
             block = set(rng.sample(range(lo, hi+1), count - len(sample))) - gaps
             sample.extend(block)
         sample.sort()
-        selection = "o.url IN (" + ",".join(str(u) for u in sample) + ")"
+        selection = "url IN (" + ",".join(str(u) for u in sample) + ")"
 
         if where_clause:
             where_clause = "({}) AND ({})".format(where_clause, selection)
@@ -613,95 +535,72 @@ class PageDB:
     #
     # Methods primarily for internal use by PageText and PageObservation.
     #
-    def get_observations_for_text(self, text):
-        if text.has_boilerplate:
-            where = "o.document_with_bp = {}".format(text.id)
-            args = { 'document_with_bp': text }
-        else:
-            where = "o.document = {}".format(text.id)
-            args = { 'document': text }
+    def get_observations_for_text(self, origin):
+        return list(self.get_page_observations(
+            where_clause       = "document_id = {}".format(origin),
+            ordered            = None,
+            constructor_kwargs = { "document": text }))
 
-        return list(self.get_page_observations(where_clause=where,
-                                               ordered=None,
-                                               constructor_kwargs=args))
-
-    def get_page_text(self, id):
+    def get_page_text(self, origin):
         cur = self._db.cursor()
-        cur.execute("SELECT p.id, p.has_boilerplate, p.lang_code,"
-                    "       lc.name, p.lang_conf, p.contents"
-                    "  FROM ts_analysis.page_text p"
-                    "  JOIN ts_analysis.language_codes lc"
-                    "    ON p.lang_code = lc.code"
-                    " WHERE p.id = %s", (id,))
+        cur.execute("SELECT origin, lang_code, lang_name, lang_conf,"
+                    "       hash, raw_hash"
+                    "  FROM analysis.page_text"
+                    " WHERE origin = %s", (origin,))
         return PageText(self, *cur.fetchone())
 
-    def get_contents_for_text(self, id):
+    def get_contents_for_text(self, origin):
         cur = self._db.cursor()
-        cur.execute("SELECT contents FROM ts_analysis.page_text"
-                    " WHERE id = %s", (id,))
-
+        cur.execute("SELECT contents FROM analysis.page_text"
+                    " WHERE origin = %s", (origin,))
         return zlib.decompress(cur.fetchone()[0]).decode("utf-8")
 
-    def get_headings(self, run, locale, url_id):
+    def get_raw_contents_for_text(self, origin):
         cur = self._db.cursor()
-        cur.execute("SELECT headings FROM ts_analysis.page_observations"
-                    " WHERE run = %s AND locale = %s AND url = %s",
-                    (run, locale, url_id))
+        cur.execute("SELECT raw_contents FROM analysis.page_text"
+                    " WHERE origin = %s", (origin,))
+        return zlib.decompress(cur.fetchone()[0]).decode("utf-8")
+
+    def get_headings(self, origin):
+        cur = self._db.cursor()
+        cur.execute("SELECT headings FROM analysis.page_text"
+                    " WHERE origin = %s", (origin,))
         return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
 
-    def get_links(self, run, locale, url_id):
+    def get_links(self, origin):
         cur = self._db.cursor()
-        cur.execute("SELECT links FROM ts_analysis.page_observations"
-                    " WHERE run = %s AND locale = %s AND url = %s",
-                    (run, locale, url_id))
+        cur.execute("SELECT links FROM analysis.page_text"
+                    " WHERE origin = %s", (origin,))
         return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
 
-    def get_resources(self, run, locale, url_id):
+    def get_resources(self, origin):
         cur = self._db.cursor()
-        cur.execute("SELECT resources FROM ts_analysis.page_observations"
-                    " WHERE run = %s AND locale = %s AND url = %s",
-                    (run, locale, url_id))
+        cur.execute("SELECT resources FROM analysis.page_text"
+                    " WHERE origin = %s", (origin,))
         return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
 
     def get_dom_stats(self, run, locale, url_id):
         cur = self._db.cursor()
-        cur.execute("SELECT dom_stats FROM ts_analysis.page_observations"
-                    " WHERE run = %s AND locale = %s AND url = %s",
-                    (run, locale, url_id))
+        cur.execute("SELECT dom_stats FROM analysis.page_text"
+                    " WHERE origin = %s", (origin,))
         return DOMStatistics(
             json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8")))
-
-    # This query is a little more complicated because the HTML content
-    # is only stored in the captured_pages table for the original run.
-    def get_html_content(self, run, locale, url_id):
-        cur = self._db.cursor()
-        cur.execute("SELECT c.html_content"
-                    "  FROM ts_run_{n}.captured_pages c"
-                    "  JOIN ts_analysis.url_strings u ON u.r{n}id = c.url"
-                    " WHERE c.locale = %s AND u.id = %s".format(n=run),
-                    (locale, url_id))
-        # The blob in the database might be NULL or the empty string;
-        # either makes zlib barf.
-        blob = cur.fetchone()[0]
-        if not blob:
-            return ""
-        return zlib.decompress(blob).decode("utf-8")
 
     #
     # Corpus-wide and per-document statistics.
     #
-    def get_corpus_statistic(self, stat, lang, has_boilerplate):
+    def get_corpus_statistic(self, stat, lang):
         cur = self._db.cursor()
-        cur.execute("SELECT n_documents, data FROM ts_analysis.corpus_stats"
-                    " WHERE stat = %s AND lang = %s AND has_boilerplate = %s",
-                    (stat, lang, has_boilerplate))
+        cur.execute("SELECT n_documents, data FROM analysis.corpus_stats"
+                    " WHERE stat = %s AND lang = %s AND runs = %s",
+                    (stat, lang, self._runs))
         row = cur.fetchone()
         if row:
             return (row[0], json.loads(zlib.decompress(row[1]).decode('utf-8')))
         else:
             return (0, {})
 
-    def update_corpus_statistics(self, lang, has_boilerplate, n_documents,
+    def update_corpus_statistics(self, lang, n_documents,
                                  statistics):
         cur = self._db.cursor()
 
@@ -711,24 +610,24 @@ class PageDB:
         # EXCLUSIVE and SHARE ROW EXCLUSIVE, so I'm being conservative.
         try:
             cur.execute("BEGIN")
-            cur.execute("LOCK ts_analysis.corpus_stats IN EXCLUSIVE MODE")
+            cur.execute("LOCK analysis.corpus_stats IN EXCLUSIVE MODE")
 
             for stat, data in statistics:
                 blob = zlib.compress(json.dumps(data, separators=(',',':'))
                                      .encode("utf-8"))
 
                 # try UPDATE first, if it affects zero rows, then INSERT
-                cur.execute("UPDATE ts_analysis.corpus_stats"
+                cur.execute("UPDATE analysis.corpus_stats"
                             "   SET n_documents = %s, data = %s"
-                            " WHERE stat=%s AND lang=%s AND has_boilerplate=%s",
-                            (n_documents, blob, stat, lang, has_boilerplate))
+                            " WHERE stat=%s AND lang=%s AND runs=%s",
+                            (n_documents, blob, stat, lang, self._runs))
 
                 if cur.rowcount == 0:
-                    cur.execute("INSERT INTO ts_analysis.corpus_stats"
-                                " (stat, lang, has_boilerplate, "
+                    cur.execute("INSERT INTO analysis.corpus_stats"
+                                " (stat, lang, runs, "
                                 "  n_documents, data)"
                                 " VALUES (%s, %s, %s, %s, %s)",
-                                (stat, lang, has_boilerplate,
+                                (stat, lang, self._runs,
                                  n_documents, blob))
 
             self._db.commit()
@@ -737,16 +636,14 @@ class PageDB:
             self._db.rollback()
             raise
 
-    def update_corpus_statistic(self, stat, lang, has_boilerplate,
-                                n_documents, data):
-        self.update_corpus_statistics(lang, has_boilerplate, n_documents,
-                                      [(stat, data)])
+    def update_corpus_statistic(self, stat, lang, n_documents, data):
+        self.update_corpus_statistics(lang, n_documents, [(stat, data)])
 
     def get_text_statistic(self, stat, text_id):
         cur = self._db.cursor()
-        cur.execute("SELECT data FROM ts_analysis.page_text_stats"
-                    " WHERE stat = %s AND text_id = %s",
-                    (stat, text_id))
+        cur.execute("SELECT data FROM analysis.pruned_content_stats"
+                    " WHERE stat = %s AND text_id = %s AND runs = %s",
+                    (stat, text_id, self._runs))
         row = cur.fetchone()
         if row and row[0]:
             return json.loads(zlib.decompress(row[0]).decode('utf-8'))
@@ -758,25 +655,26 @@ class PageDB:
         # For document statistics, we take a two-phase approach to the
         # upsert problem.  This function wields the big-lockout
         # hammer, but all it does is ensure that every document in
-        # page_text has a row for this statistic in page_text_stats;
+        # page_text has a row for this statistic in pruned_content_stats;
         # the actual data will be null.  This allows update_text_statistic
         # to just do a regular old UPDATE and not worry about missing rows.
         try:
             cur.execute("BEGIN")
-            cur.execute("LOCK ts_analysis.page_text_stats IN EXCLUSIVE MODE")
-            cur.execute("INSERT INTO ts_analysis.page_text_stats"
-                        "  (stat, text_id)"
-                        "SELECT %s AS stat, p.id AS text_id"
-                        "  FROM ts_analysis.page_text p"
+            cur.execute("LOCK analysis.pruned_content_stats IN EXCLUSIVE MODE")
+            cur.execute("INSERT INTO analysis.pruned_content_stats"
+                        "  (stat, text_id, runs)"
+                        "SELECT %s AS stat, p.origin AS text_id, %s AS runs"
+                        "  FROM analysis.page_text p"
                         " WHERE NOT EXISTS ("
-                        "  SELECT 1 FROM ts_analysis.page_text_stats ps"
-                        "   WHERE ps.stat = %s AND ps.text_id = p.id)",
-                        (stat, stat))
-            cur.execute("SELECT lang_code FROM ts_analysis.page_text p"
-                        "   LEFT JOIN ts_analysis.page_text_stats ps"
-                        "   ON ps.stat = %s AND ps.text_id = p.id"
+                        "  SELECT 1 FROM analysis.pruned_content_stats ps"
+                        "   WHERE ps.stat = %s AND ps.text_id = p.id"
+                        "     AND runs = %s)",
+                        (stat, self._runs, stat, self._runs))
+            cur.execute("SELECT lang_code FROM analysis.page_text p"
+                        "   LEFT JOIN analysis.pruned_content_stats ps"
+                        "   ON ps.stat = %s AND ps.text_id = p.id AND runs = %s"
                         "   WHERE ps.data IS NULL",
-                        (stat,))
+                        (stat, self._runs))
             rv = set(row[0] for row in cur)
             rv.discard("und")
             rv.discard("zxx")
@@ -791,13 +689,13 @@ class PageDB:
         cur = self._db.cursor()
         blob = zlib.compress(json.dumps(data, separators=(',',':'))
                              .encode("utf-8"))
-        cur.execute("UPDATE ts_analysis.page_text_stats"
+        cur.execute("UPDATE analysis.pruned_content_stats"
                     "   SET data = %s"
-                    " WHERE stat = %s AND text_id = %s",
-                    (blob, stat, text_id))
+                    " WHERE stat = %s AND text_id = %s AND runs = %s",
+                    (blob, stat, text_id, self._runs))
         if cur.rowcount == 0:
-            raise RuntimeError("%s/%s: no row in page_text_stats"
-                               % (stat, text_id))
+            raise RuntimeError("%s/%s/%r: no row in pruned_content_stats"
+                               % (stat, text_id, self._runs))
 
     # Transaction manager issues a regular database transaction.
     def __enter__(self):

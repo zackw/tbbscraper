@@ -172,3 +172,4 @@ CREATE TABLE captured_pages (
 );
 CREATE INDEX captured_pages_url_idx ON captured_pages(url);
 CREATE INDEX captured_pages_result_idx ON captured_pages(result);
+
