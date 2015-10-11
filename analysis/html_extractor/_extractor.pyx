@@ -4,6 +4,8 @@ walking as well as the parsing in C(ython).
 """
 
 from gumbo cimport *
+from prescan cimport *
+
 from .unicode_utils cimport strip_ascii_space, split_ascii_space, normalize_text
 from .boilerplate_removal cimport *
 from .relative_urls cimport urljoin, urljoin_outbound
@@ -11,6 +13,7 @@ from .relative_urls cimport urljoin, urljoin_outbound
 from re import compile as _Regexp
 from re import DOTALL  as _Re_DOTALL
 from collections import Counter as _Counter
+from chardet import detect as detect_encoding_statistically
 
 # "Common" tag names are those that have GUMBO_TAG_* constants.
 _common_tagnames = [gumbo_normalized_tagname(<GumboTag>i).decode("utf-8")
@@ -35,6 +38,76 @@ cdef inline bint _X_(GumboElement *element, bytes attr,
     if v is not None:
         links.append(strip_ascii_space(v))
     return True
+
+cdef bytes convert_to_utf8(bytes page, str encoding):
+    """Convert PAGE from ENCODING to UTF-8 and strip any byte order mark."""
+    if encoding == "replacement":
+        # The 'replacement' decoding maps all input to a single U+FFFD
+        # OBJECT REPLACEMENT CHARACTER.  This is "to prevent certain
+        # attacks that abuse a mismatch between encodings supported on
+        # the server and the client." I reserve the right to go back
+        # and reanalyze stuff with this particular quirk of HTML5
+        # disabled.
+        return "\ufffd".encode("utf-8")
+
+    # Python knows these encodings by other names.
+    if encoding == "windows-874": encoding = "cp874"
+    if encoding == "x-mac-cyrillic": encoding = "mac_cyrillic"
+
+    page = page.decode(encoding).encode("utf-8")
+    if page.startswith(b"\xef\xbb\xbf"):
+        page = page[:3]
+    return page
+
+cdef inline bytes determine_encoding_and_convert(bytes page, ext_encoding):
+
+    """Determine the encoding of PAGE, following HTML5's "encoding
+       sniffing algorithm"
+       (https://html.spec.whatwg.org/multipage/syntax.html#determining-the-character-encoding).
+       EXT_ENCODING may be either None or an encoding label in the
+       list at https://encoding.spec.whatwg.org/#names-and-labels.
+
+       Regardless of what the encoding was detected to be, the return value
+       is PAGE converted to UTF-8, with BOM (if any) stripped.
+
+    """
+    cdef const char *rv
+    cdef bytes encoding, prefix
+    cdef object sencoding
+
+    # Step 1 does nothing (there is no user override).
+    # Step 2 does nothing (we already have the full text).
+
+    # Step 3
+    if page.startswith(b"\xfe\xff"):
+        return convert_to_utf8(page, "utf-16be")
+    if page.startswith(b"\xff\xfe"):
+        return convert_to_utf8(page, "utf-16le")
+    if page.startswith(b"\xef\xbb\xbf"):
+        return page[3:] # already UTF-8, just strip the BOM
+
+    # Step 4
+    if ext_encoding:
+        if isinstance(ext_encoding, "unicode"):
+            ext_encoding = ext_encoding.encode("ascii")
+        rv = canonical_encoding_for_label(ext_encoding)
+        if rv:
+            encoding = rv
+            return convert_to_utf8(page, encoding.decode("ascii"))
+
+    # Step 5
+    prefix = page[:1024]
+    rv = prescan_a_byte_stream_to_determine_its_encoding(prefix, len(prefix))
+    if rv:
+        encoding = rv
+        return convert_to_utf8(page, encoding.decode("ascii"))
+
+    # Step 6 does nothing (there is no parent browsing context)
+
+    # Steps 7, 8, and 9
+    sencoding = detect_encoding_statistically(page).get('encoding', '')
+    if not sencoding: sencoding = 'windows-1252'
+    return convert_to_utf8(page, sencoding)
 
 # Main tree walker.  Since this gets compiled now, we are safe to just
 # go ahead and use recursive function calls.
@@ -297,6 +370,7 @@ cdef class TreeWalker:
 # External API
 #
 cdef class DomStatistics:
+
     """Statistics about the DOM structure.  Has two attributes:
 
     tags - Dictionary of counters.  Each key is an HTML tag that
@@ -347,7 +421,7 @@ cdef class ExtractedContent:
     cdef readonly double threshold # ditto
     cdef readonly object links, resources, headings, dom_stats
 
-    def __init__(self, url, page):
+    def __init__(self, url, page, external_charset='utf-8'):
 
         cdef size_t pagelen
         cdef char *pagebuf
@@ -362,8 +436,9 @@ cdef class ExtractedContent:
             pagebuf = bytestr
             pagelen = len(bytestr)
         else:
-            pagebuf = page
-            pagelen = len(page)
+            bytestr = determine_encoding_and_convert(page, external_charset)
+            pagebuf = bytestr
+            pagelen = len(bytestr)
 
         opts = kGumboDefaultOptions
         opts.stop_on_first_error = False

@@ -9,7 +9,7 @@ include python-vars.mk
 all: _extractor.$M unicode_utils.$M relative_urls.$M boilerplate_removal.$M
 
 _extractor.$M: LIBS = -lgumbo
-_extractor.$M: _extractor.$O
+_extractor.$M: _extractor.$O prescan.$O
 	$(CC) $(LINKER_ARGS)
 unicode_utils.$M: unicode_utils.$O gbp_tbl.$O
 	$(CC) $(LINKER_ARGS)
@@ -35,13 +35,14 @@ clean:
 	-rm -rf __pycache__
 
 # Header dependencies
-_extractor.c: _extractor.pyx gumbo.pxd relative_urls.pxd \
+_extractor.c: _extractor.pyx gumbo.pxd prescan.pxd relative_urls.pxd \
   boilerplate_removal.pxd unicode_utils.pxd
 boilerplate_removal.c: boilerplate_removal.pyx gumbo.pxd unicode_utils.pxd
 unicode_utils.c: unicode_utils.pyx unicode_utils.pxd gbp_tbl.pxd
 relative_urls.c: relative_urls.pyx relative_urls.pxd
 
-_extractor.$O: _extractor.c
+_extractor.$O: _extractor.c prescan.h
+prescan.$O: prescan.c prescan.h
 gbp_tbl.$O: gbp_tbl.c gbp_tbl.h
 unicode_utils.$O: unicode_utils.c gbp_tbl.h
 relative_urls.$O: relative_urls.c
