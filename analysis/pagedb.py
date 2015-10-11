@@ -447,7 +447,7 @@ class PageDB:
         """
 
         query = ("SELECT id, run, country, country_name, vantage,"
-                 "       url, access_time, elapsed_time, result, detail,"
+                 "       orig_url, access_time, elapsed_time, result, detail,"
                  "       redir_url, document_id"
                  "  FROM analysis.page_observations")
 
@@ -461,9 +461,9 @@ class PageDB:
                 ",".join(str(r) for r in self._runs))
 
         if ordered == 'url':
-            query += " ORDER BY url"
+            query += " ORDER BY orig_url"
         elif ordered == 'country':
-            query += " ORDER BY country, url"
+            query += " ORDER BY country, orig_url"
         else:
             assert ordered is None
 
@@ -482,11 +482,8 @@ class PageDB:
         cur.execute(query)
         try:
             for row in cur:
-                data = constructor_kwargs.copy()
-                for slot, label in column_order:
-                    data[label] = unpackers[label](row[slot])
+                yield PageObservation(self, *row, **constructor_kwargs)
 
-                yield PageObservation(self, **data)
         finally:
             cur.close()
 
