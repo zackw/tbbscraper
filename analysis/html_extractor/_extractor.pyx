@@ -41,22 +41,34 @@ cdef inline bint _X_(GumboElement *element, bytes attr,
 
 cdef bytes convert_to_utf8(bytes page, str encoding):
     """Convert PAGE from ENCODING to UTF-8 and strip any byte order mark."""
-    if encoding == "replacement":
-        # The 'replacement' decoding maps all input to a single U+FFFD
-        # OBJECT REPLACEMENT CHARACTER.  This is "to prevent certain
-        # attacks that abuse a mismatch between encodings supported on
-        # the server and the client." I reserve the right to go back
-        # and reanalyze stuff with this particular quirk of HTML5
-        # disabled.
-        return "\ufffd".encode("utf-8")
 
-    # Python knows these encodings by other names.
-    if encoding == "windows-874": encoding = "cp874"
-    if encoding == "x-mac-cyrillic": encoding = "mac_cyrillic"
+    cdef str intermediate
 
-    page = page.decode(encoding).encode("utf-8")
+    assert encoding != "replacement" and encoding != "x-user-defined"
+
+    # Python knows these encodings only by other names.
+    # https://bugs.python.org/issue25416
+    if encoding == "windows-874":
+        encoding = "cp874"
+    elif encoding == "x-mac-cyrillic":
+        encoding = "mac_cyrillic"
+    # The Encoding Standard makes a distinction between iso-8859-8-i
+    # (logical order Hebrew) and iso-8859-8(-e) (visual order Hebrew)
+    # because HTML5 makes *some* attempt to handle visual-order Hebrew
+    # (our parser doesn't, though).  At the codecs level they are
+    # identical, and Python doesn't know the -i alias
+    # (https://bugs.python.org/issue18624).
+    elif encoding == "iso-8859-8-i":
+        encoding = "iso-8859-8"
+
+    if encoding != "utf-8":
+        # This is a type hint.  Without the intermediate variable,
+        # Cython doesn't realize it can use PyUnicode_AsUTF8String
+        # for the second step.
+        intermediate = page.decode(encoding)
+        page = intermediate.encode("utf-8")
     if page.startswith(b"\xef\xbb\xbf"):
-        page = page[:3]
+        page = page[3:]
     return page
 
 cdef inline bytes determine_encoding_and_convert(bytes page, ext_encoding):
@@ -72,8 +84,7 @@ cdef inline bytes determine_encoding_and_convert(bytes page, ext_encoding):
 
     """
     cdef const char *rv
-    cdef bytes encoding, prefix
-    cdef object sencoding
+    cdef str encoding
 
     # Step 1 does nothing (there is no user override).
     # Step 2 does nothing (we already have the full text).
@@ -88,26 +99,41 @@ cdef inline bytes determine_encoding_and_convert(bytes page, ext_encoding):
 
     # Step 4
     if ext_encoding:
-        if isinstance(ext_encoding, "unicode"):
+        if isinstance(ext_encoding, str):
             ext_encoding = ext_encoding.encode("ascii")
         rv = canonical_encoding_for_label(ext_encoding)
         if rv:
-            encoding = rv
-            return convert_to_utf8(page, encoding.decode("ascii"))
+            encoding = rv.decode("ascii")
+            return convert_to_utf8(page, encoding)
 
     # Step 5
-    prefix = page[:1024]
-    rv = prescan_a_byte_stream_to_determine_its_encoding(prefix, len(prefix))
+    rv = prescan_a_byte_stream_to_determine_its_encoding(
+        page, min(len(page), 1024))
     if rv:
-        encoding = rv
-        return convert_to_utf8(page, encoding.decode("ascii"))
+        encoding = rv.decode('ascii')
+        # This is mandated by HTML5, with the justification that
+        # if the page were _really_ in utf-16 then the prescanner
+        # wouldn't have been able to parse it.
+        if encoding.startswith("utf-16"):
+            encoding = "utf-8"
+
+        # HTML5 specifically says _not_ to let "replacement" and
+        # "x-user-defined" through to steps 7-9.  This is because
+        # HTML5 is more concerned with blocking XSS smuggling via
+        # rarely-used, non-ASCII-superset encodings than with keeping
+        # old pages working.  Our concerns are precisely the opposite.
+        if encoding != "replacement" and encoding != "x-user-defined":
+            return convert_to_utf8(page, encoding)
 
     # Step 6 does nothing (there is no parent browsing context)
 
     # Steps 7, 8, and 9
-    sencoding = detect_encoding_statistically(page).get('encoding', '')
-    if not sencoding: sencoding = 'windows-1252'
-    return convert_to_utf8(page, sencoding)
+    # senc might be None, so not reusing 'encoding' for it
+    senc = detect_encoding_statistically(page).get('encoding', '')
+    # HTML5's last-ditch default
+    if not senc: senc = 'windows-1252'
+
+    return convert_to_utf8(page, senc)
 
 # Main tree walker.  Since this gets compiled now, we are safe to just
 # go ahead and use recursive function calls.
@@ -434,8 +460,10 @@ cdef class ExtractedContent:
         self.url = url
         self.dom_stats = DomStatistics()
 
-        if isinstance(page, unicode):
-            bytestr = page.encode('utf-8')
+        if isinstance(page, str):
+            # Without the cast, Cython doesn't realize it can use
+            # PyUnicode_AsUTF8String here.
+            bytestr = (<str>page).encode('utf-8')
         else:
             bytestr = determine_encoding_and_convert(page, external_charset)
 

@@ -1,4 +1,5 @@
 NULL   =
+AWK    = awk
 CC     = cc -std=c11
 PYTHON = python3
 CYTHON = cython3 -3
@@ -24,6 +25,10 @@ boilerplate_removal.$M: boilerplate_removal.$O
 %_tbl.c %_tbl.h %_tbl.pxd: %_tblgen.py GraphemeBreakProperty.txt
 	$(PYTHON) $<
 
+uncanon-max.inc: encodings.inc uncanon-max.awk
+	$(AWK) -f uncanon-max.awk encodings.inc > uncanon-max.incT
+	mv -f uncanon-max.incT uncanon-max.inc
+
 clean:
 	-rm -f \
 	   _extractor.$M _extractor.$O _extractor.c \
@@ -31,6 +36,7 @@ clean:
 	   relative_urls.$M relative_urls.$O relative_urls.c \
 	   boilerplate_removal.$M boilerplate_removal.$O boilerplate_removal.c \
 	   gbp_tbl.$O gbp_tbl.c gbp_tbl.h gbp_tbl.pxd \
+	   uncanon-max.inc uncanon-max.incT \
 	   python-vars.mk
 	-rm -rf __pycache__
 
@@ -42,7 +48,7 @@ unicode_utils.c: unicode_utils.pyx unicode_utils.pxd gbp_tbl.pxd
 relative_urls.c: relative_urls.pyx relative_urls.pxd
 
 _extractor.$O: _extractor.c prescan.h
-prescan.$O: prescan.c prescan.h
+prescan.$O: prescan.c prescan.h encodings.inc uncanon-max.inc
 gbp_tbl.$O: gbp_tbl.c gbp_tbl.h
 unicode_utils.$O: unicode_utils.c gbp_tbl.h
 relative_urls.$O: relative_urls.c

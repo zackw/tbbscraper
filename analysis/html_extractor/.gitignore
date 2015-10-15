@@ -5,3 +5,5 @@ unicode_utils.c
 gbp_tbl.c
 gbp_tbl.h
 gbp_tbl.pxd
+uncanon-max.inc
+uncanon-max.incT
