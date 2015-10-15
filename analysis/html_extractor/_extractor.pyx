@@ -413,6 +413,8 @@ cdef class ExtractedContent:
     resources    - Array of strings: all resources referenced by this page.
                    Relative URLs have already been made absolute.
     dom_stats    - DomStatistics object calculated from this page.
+    original     - Bytes: the original HTML of the page, converted to UTF-8
+                   if necessary.
     """
 
     cdef readonly unicode url, title, text_content
@@ -420,6 +422,7 @@ cdef class ExtractedContent:
     cdef readonly object blocktree # for debugging
     cdef readonly double threshold # ditto
     cdef readonly object links, resources, headings, dom_stats
+    cdef readonly bytes original
 
     def __init__(self, url, page, external_charset='utf-8'):
 
@@ -433,12 +436,12 @@ cdef class ExtractedContent:
 
         if isinstance(page, unicode):
             bytestr = page.encode('utf-8')
-            pagebuf = bytestr
-            pagelen = len(bytestr)
         else:
             bytestr = determine_encoding_and_convert(page, external_charset)
-            pagebuf = bytestr
-            pagelen = len(bytestr)
+
+        self.original = bytestr
+        pagebuf = bytestr
+        pagelen = len(bytestr)
 
         opts = kGumboDefaultOptions
         opts.stop_on_first_error = False
