@@ -1,9 +1,10 @@
 from . import mmseg
-from . import tinysegmenter
 from . import dongdu
 from . import pythai
 from . import minipunkt
 from . import arabic
+
+import MeCab
 
 from collections import defaultdict
 import re
@@ -11,13 +12,14 @@ import unicodedata
 
 __all__ = ('segment',)
 
-# Japanese: tinysegmenter
-_TinySegmenter = None
+# Japanese: MeCab
+_MeCabSegmenter = None
 def _segment_ja(text):
-    global _TinySegmenter
-    if _TinySegmenter is None:
-        _TinySegmenter = tinysegmenter.TinySegmenter()
-    return _TinySegmenter.tokenize(text)
+    global _MeCabSegmenter
+    if _MeCabSegmenter is None:
+        # '-O wakati' means "put spaces between the words"
+        _MeCabSegmenter = MeCab.Tagger('-O wakati')
+    return _MeCabSegmenter.parse(text).split()
 
 # Chinese: mmseg
 _mmseg_initialized = False
