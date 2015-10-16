@@ -1,8 +1,7 @@
-from . import mmseg
 from . import dongdu
 from . import pythai
 from . import minipunkt
-from . import arabic
+from . import stanford
 
 import MeCab
 
@@ -21,14 +20,13 @@ def _segment_ja(text):
         _MeCabSegmenter = MeCab.Tagger('-O wakati')
     return _MeCabSegmenter.parse(text).split()
 
-# Chinese: mmseg
-_mmseg_initialized = False
+# Chinese: SNLP
+_chinese_segm = None
 def _segment_zh(text):
-    global _mmseg_initialized
-    if not _mmseg_initialized:
-        mmseg.dict_load_defaults()
-        _mmseg_initialized = True
-    return (str(t) for t in mmseg.Algorithm(text))
+    global _chinese_segm
+    if not _chinese_segm:
+        _chinese_segm = stanford.ChineseSegmenter()
+    return _chinese_segm.segment(text)
 
 # Vietnamese: dongdu
 _dongdu_segm = None
@@ -48,7 +46,7 @@ _arabic_segm = None
 def _segment_ar(text):
     global _arabic_segm
     if _arabic_segm is None:
-        _arabic_segm = arabic.Segmenter()
+        _arabic_segm = stanford.ArabicSegmenter()
     return _arabic_segm.segment(text)
 
 # default: minipunkt
