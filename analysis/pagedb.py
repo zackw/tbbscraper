@@ -19,13 +19,15 @@ class PageText:
        Properties:
           origin          - Serial number of this text blob.
                             (.origin field in the database, *not* .id)
-          lang_code       - ISO 639 code: language as identified by CLD2.
-          lang_name       - English name of the language.
-          lang_conf       - % confidence in the language identification.
-          hash            - SHA256 hash of the *compressed* text.
+          hash            - SHA256 hash of the text.
           contents        - The text itself (lazily uncompressed).
-          raw_hash        - SHA256 hash of the *compressed* unpruned text.
+          raw_hash        - SHA256 hash of the unpruned text.
           raw_contents    - The text before pruning.
+          segmented       - The text, broken into runs of a single language,
+                            and then further divided into words in a language-
+                            specific manner.  This is an array of JSON pairs:
+                              [{ "l": "en", "t": ["word", "word", "word"]},
+                               { "l": "it", "t": ["parola", "parola"]}, ...]
           observations    - Array of PageObservation objects: all the page
                             observations that have this text.
           tfidf           - Raw tf-idf scores for each word in the text.
@@ -38,22 +40,20 @@ class PageText:
           dom_stats        - DOMStatistics object counting tags and
                              tree depth.
     """
-    def __init__(self, db, origin,
-                 lang_code, lang_name, lang_conf, hash, raw_hash,
+    def __init__(self, db, eid, hash, raw_hash,
                  *,
-                 contents=None, raw_contents=None, tfidf=None, nfidf=None,
+                 contents=None, raw_contents=None, segmented=None,
+                 tfidf=None, nfidf=None,
                  headings=None, links=None, resources=None, dom_stats=None):
         self._db             = db
-        self.origin          = origin
-        self.lang_code       = lang_code
-        self.lang_name       = lang_name
-        self.lang_conf       = lang_conf
+        self.eid             = eid
         self.hash            = hash
         self.raw_hash        = raw_hash
 
         # For memory efficiency, these are lazily loaded from the database.
         self._contents       = contents
         self._raw_contents   = raw_contents
+        self._segmented      = segmented
         self._tfidf          = tfidf
         self._nfidf          = nfidf
         self._headings       = headings
@@ -68,60 +68,66 @@ class PageText:
     @property
     def contents(self):
         if self._contents is None:
-            self._contents = self._db.get_contents_for_text(self.origin)
+            self._contents = self._db.get_contents_for_text(self.eid)
         return self._contents
 
     @property
     def raw_contents(self):
         if self._raw_contents is None:
-            self._raw_contents = self._db.get_raw_contents_for_text(self.origin)
+            self._raw_contents = self._db.get_raw_contents_for_text(self.eid)
         return self._raw_contents
+
+    @property
+    def segmented(self):
+        if self._segmented is None:
+            self._segmented = self._db.get_segmented_for_text(self.eid)
+        return self._segmented
 
     @property
     def tfidf(self):
         if self._tfidf is None:
-            self._tfidf = self._db.get_text_statistic('tfidf', self.origin)
+            self._tfidf = self._db.get_text_statistic('tfidf', self.eid)
         return self._tfidf
 
     @property
     def nfidf(self):
         if self._nfidf is None:
-            self._nfidf = self._db.get_text_statistic('nfidf', self.origin)
+            self._nfidf = self._db.get_text_statistic('nfidf', self.eid)
         return self._nfidf
 
     @property
     def headings(self):
         if self._headings is None:
             self._headings = \
-                self._db.get_headings_for_text(self.origin)
+                self._db.get_headings_for_text(self.eid)
         return self._headings
 
     @property
     def links(self):
         if self._links is None:
             self._links = \
-                self._db.get_links_for_text(self.origin)
+                self._db.get_links_for_text(self.eid)
         return self._links
 
     @property
     def resources(self):
         if self._resources is None:
             self._resources = \
-                self._db.get_resources_for_text(self.origin)
+                self._db.get_resources_for_text(self.eid)
         return self._resources
 
     @property
     def dom_stats(self):
         if self._dom_stats is None:
             self._dom_stats = \
-                self._db.get_dom_stats_for_text(self.origin)
+                self._db.get_dom_stats_for_text(self.eid)
         return self._dom_stats
 
     @property
     def observations(self):
         if self._observations is None:
             self._observations = \
-                self._db.get_observations_for_text(self.origin)
+                self._db.get_observations_for_text(self.eid)
         return self._observations
 
 class DOMStatistics:
@@ -212,8 +218,6 @@ class PageDB:
 
         self._locales    = None
         self._runs       = [int(x) for x in only_runs]
-        self._lang_codes = None
-        self._lang_names = None
         self._cursor_tag = "pagedb_qtmp_{}_{}".format(os.getpid(), id(self))
         self._cursor_ctr = 0
 
@@ -255,51 +259,15 @@ class PageDB:
             self._locales = [row[0] for row in cur]
         return self._locales
 
-    @property
-    def lang_codes(self):
-        """Retrieve a list of all available language codes.  Cost similar
-           to locales.
-        """
-        if self._lang_codes is None:
-            cur = self._db.cursor()
-            cur.execute("SELECT DISTINCT lang_code"
-                        "  FROM analysis.capture_pruned_content"
-                        " ORDER BY lang_code")
-            self._lang_codes = [row[0] for row in cur]
-        return self._lang_codes
-
-    @property
-    def lang_names(self):
-        """Retrieve a list of all available language names.  Note that the
-           order of this list matches the order of language _codes_, i.e.
-           zip(db.lang_codes, db.lang_names) produces a correct mapping.
-        """
-        if self._lang_names is None:
-            cur = self._db.cursor()
-            cur.execute("SELECT DISTINCT lc.name"
-                        "  FROM analysis.capture_pruned_content cp"
-                        "  JOIN collection.language_codes lc"
-                        "    ON cp.lang_code = lc.code"
-                        " ORDER BY cp.lang_code")
-            self._lang_names = [row[0] for row in cur]
-        return self._lang_names
-
     #
     # Methods for retrieving pages or observations in bulk.
     #
     def get_page_texts(self, *,
                        where_clause="",
-                       ordered=None,
                        limit=None,
                        load=["contents"]):
         """Retrieve page texts from the database matching the where_clause.
            This is a generator, which produces one PageText object per row.
-
-           Useful 'where_clause' terms include
-
-               lang_code       [=, <>] <ISO 639 code>
-
-           'ordered' may be either None or 'lang' to sort by language code.
 
            'limit' may be either None for no limit, or a positive integer;
            in the latter case at most that many page texts are produced.
@@ -307,47 +275,43 @@ class PageDB:
            'load' is a list of PageText attributes to load eagerly from the
            database: zero or more of
 
-               contents raw_contents tfidf nfidf headings links resources
-               dom_stats
+               contents raw_contents segmented tfidf nfidf headings
+               links resources dom_stats
 
            If you know you're going to use these for every page, requesting
            them up front is more efficient than allowing them to be loaded
            lazily.
+
         """
 
         def up_iden(x):  return x
-        def up_text(x):  return zlib.decompress(x).decode("utf-8")
-        def up_ojson(x): return json.loads(zlib.decompress(x).decode("utf-8")) if x else {}
-        def up_ajson(x): return json.loads(zlib.decompress(x).decode("utf-8")) if x else []
-        def up_dstat(x): return DOMStatistics(json.loads(zlib.decompress(x).decode("utf-8")) if x else {})
+        def up_dstat(x): return DOMStatistics(x if x else {})
 
         no_join    = []
-        tfidf_join = ["LEFT JOIN analysis.page_text_stats st"
-                      "       ON st.stat = 'tfidf' AND st.text_id = p.id"]
-        nfidf_join = ["LEFT JOIN analysis.page_text_stats sn"
-                      "       ON sn.stat = 'nfidf' AND sn.text_id = p.id"]
+        tfidf_join = ["LEFT JOIN analysis.pruned_content_stats st"
+                      "  ON st.stat = 'tfidf' AND st.text_id = p.id"]
+        nfidf_join = ["LEFT JOIN analysis.pruned_content_stats sn"
+                      "  ON sn.stat = 'nfidf' AND sn.text_id = p.id"]
 
         columns = {
-            "origin"          : "p.origin",
-            "lang_code"       : "p.lang_code",
-            "lang_name"       : "p.lang_name",
-            "lang_conf"       : "p.lang_conf",
-            "hash"            : "p.hash",
-            "raw_hash"        : "p.raw_hash",
+            "eid"          : "p.id",
+            "hash"         : "p.hash",
+            "raw_hash"     : "p.raw_hash",
         }
 
         op_columns = {
-            "contents":     ("p.contents",     up_text, no_join),
-            "raw_contents": ("p.raw_contents", up_text, no_join),
-            "tfidf":        ("st.data",        up_ojson, tfidf_join),
-            "nfidf":        ("sn.data",        up_ojson, nfidf_join),
-            "headings":     ("p.headings",     up_ajson, no_join),
-            "links":        ("p.links",        up_ajson, no_join),
-            "resources":    ("p.resources",    up_ajson, no_join),
-            "dom_stats":    ("p.dom_stats",    up_dstat, no_join)
+            "contents":     ("p.pruned_text",    up_iden,  no_join),
+            "raw_contents": ("p.raw_text",       up_iden,  no_join),
+            "segmented":    ("p.segmented_text", up_iden,  no_join),
+            "tfidf":        ("st.data",          up_iden,  tfidf_join),
+            "nfidf":        ("sn.data",          up_iden,  nfidf_join),
+            "headings":     ("p.headings",       up_iden,  no_join),
+            "links":        ("p.links",          up_iden,  no_join),
+            "resources":    ("p.resources",      up_iden,  no_join),
+            "dom_stats":    ("p.dom_stats",      up_dstat, no_join)
         }
 
-        joins = ["  FROM analysis.page_text p"]
+        joins = ["  FROM analysis.extracted_content p"]
         unpackers = defaultdict(lambda: up_iden)
 
         for col in load:
@@ -367,11 +331,6 @@ class PageDB:
 
         if where_clause:
             query += " WHERE ({})".format(where_clause)
-
-        if ordered == "lang":
-            query += " ORDER BY p.lang_code"
-        elif ordered is not None:
-            raise ValueError("unknown ordering: " + ordered)
 
         if limit:
             query += " LIMIT {}".format(limit)
@@ -399,21 +358,22 @@ class PageDB:
 
         cur = self._db.cursor()
         cur.execute("SELECT min(id), max(id)"
-                    "  FROM collection.capture_html_content")
+                    "  FROM analysis.extracted_content_ov")
         lo, hi = cur.fetchone()
 
         cur.execute("SELECT x.id FROM generate_series(%s, %s) AS x(id)"
-                    "  LEFT JOIN collection.capture_html_content p"
+                    "  LEFT JOIN analysis.extracted_content_ov p"
                     "         ON x.id = p.id WHERE p.id IS NULL", (lo, hi))
         gaps = set(x[0] for x in cur.fetchall())
 
         rng = random.Random(seed)
-        sample = []
+        sample = set()
         while len(sample) < count:
-            block = set(rng.sample(range(lo, hi+1), count - len(sample))) - gaps
-            sample.extend(block)
-        sample.sort()
-        selection = "p.origin IN (" + ",".join(str(id) for id in sample) + ")"
+            block = set(rng.sample(range(lo, hi+1),
+                                   count - len(sample))) - gaps
+            sample |= block
+
+        selection = "p.id IN (" + ",".join(str(id) for id in sample) + ")"
 
         if where_clause:
             where_clause = "({}) AND ({})".format(where_clause, selection)
@@ -515,11 +475,11 @@ class PageDB:
         gaps = set(x[0] for x in cur.fetchall())
 
         rng = random.Random(seed)
-        sample = []
+        sample = set()
         while len(sample) < count:
-            block = set(rng.sample(range(lo, hi+1), count - len(sample))) - gaps
-            sample.extend(block)
-        sample.sort()
+            block = set(rng.sample(range(lo, hi+1),
+                                   count - len(sample))) - gaps
+            sample |= block
         selection = "url IN (" + ",".join(str(u) for u in sample) + ")"
 
         if where_clause:
@@ -532,56 +492,60 @@ class PageDB:
     #
     # Methods primarily for internal use by PageText and PageObservation.
     #
-    def get_observations_for_text(self, origin):
+    def get_observations_for_text(self, eid):
         return list(self.get_page_observations(
-            where_clause       = "document_id = {}".format(origin),
+            where_clause       = "document_id = {}".format(eid),
             ordered            = None,
             constructor_kwargs = { "document": text }))
 
-    def get_page_text(self, origin):
+    def get_page_text(self, eid):
         cur = self._db.cursor()
-        cur.execute("SELECT origin, lang_code, lang_name, lang_conf,"
-                    "       hash, raw_hash"
-                    "  FROM analysis.page_text"
-                    " WHERE origin = %s", (origin,))
+        cur.execute("SELECT id, hash, raw_hash"
+                    "  FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
         return PageText(self, *cur.fetchone())
 
-    def get_contents_for_text(self, origin):
+    def get_contents_for_text(self, eid):
         cur = self._db.cursor()
-        cur.execute("SELECT contents FROM analysis.page_text"
-                    " WHERE origin = %s", (origin,))
-        return zlib.decompress(cur.fetchone()[0]).decode("utf-8")
+        cur.execute("SELECT pruned_text FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
+        return cur.fetchone()[0]
 
-    def get_raw_contents_for_text(self, origin):
+    def get_raw_contents_for_text(self, eid):
         cur = self._db.cursor()
-        cur.execute("SELECT raw_contents FROM analysis.page_text"
-                    " WHERE origin = %s", (origin,))
-        return zlib.decompress(cur.fetchone()[0]).decode("utf-8")
+        cur.execute("SELECT raw_text FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
+        return cur.fetchone()[0]
 
-    def get_headings(self, origin):
+    def get_segmented_for_text(self, eid):
         cur = self._db.cursor()
-        cur.execute("SELECT headings FROM analysis.page_text"
-                    " WHERE origin = %s", (origin,))
-        return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
+        cur.execute("SELECT segmented_text FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
+        return cur.fetchone()[0]
 
-    def get_links(self, origin):
+    def get_headings(self, eid):
         cur = self._db.cursor()
-        cur.execute("SELECT links FROM analysis.page_text"
-                    " WHERE origin = %s", (origin,))
-        return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
+        cur.execute("SELECT headings FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
+        return cur.fetchone()[0]
 
-    def get_resources(self, origin):
+    def get_links(self, eid):
         cur = self._db.cursor()
-        cur.execute("SELECT resources FROM analysis.page_text"
-                    " WHERE origin = %s", (origin,))
-        return json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8"))
+        cur.execute("SELECT links FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
+        return cur.fetchone()[0]
+
+    def get_resources(self, eid):
+        cur = self._db.cursor()
+        cur.execute("SELECT resources FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
+        return cur.fetchone()[0]
 
     def get_dom_stats(self, run, locale, url_id):
         cur = self._db.cursor()
-        cur.execute("SELECT dom_stats FROM analysis.page_text"
-                    " WHERE origin = %s", (origin,))
-        return DOMStatistics(
-            json.loads(zlib.decompress(cur.fetchone()[0]).decode("utf-8")))
+        cur.execute("SELECT dom_stats FROM analysis.extracted_content"
+                    " WHERE id = %s", (eid,))
+        return DOMStatistics(cur.fetchone()[0])
 
     #
     # Corpus-wide and per-document statistics.
@@ -652,25 +616,26 @@ class PageDB:
         # For document statistics, we take a two-phase approach to the
         # upsert problem.  This function wields the big-lockout
         # hammer, but all it does is ensure that every document in
-        # page_text has a row for this statistic in pruned_content_stats;
-        # the actual data will be null.  This allows update_text_statistic
-        # to just do a regular old UPDATE and not worry about missing rows.
+        # extracted_content has a row for this statistic in
+        # pruned_content_stats; the actual data will be null.
+        # This allows update_text_statistic to just do a regular old
+        # UPDATE and not worry about missing rows.
         try:
             cur.execute("BEGIN")
             cur.execute("LOCK analysis.pruned_content_stats IN EXCLUSIVE MODE")
             cur.execute("INSERT INTO analysis.pruned_content_stats"
                         "  (stat, text_id, runs)"
-                        "SELECT %s AS stat, p.origin AS text_id, %s AS runs"
-                        "  FROM analysis.page_text p"
+                        "SELECT %s AS stat, p.id AS text_id, %s AS runs"
+                        "  FROM analysis.extracted_content_ov p"
                         " WHERE NOT EXISTS ("
                         "  SELECT 1 FROM analysis.pruned_content_stats ps"
                         "   WHERE ps.stat = %s AND ps.text_id = p.id"
                         "     AND runs = %s)",
                         (stat, self._runs, stat, self._runs))
-            cur.execute("SELECT lang_code FROM analysis.page_text p"
-                        "   LEFT JOIN analysis.pruned_content_stats ps"
-                        "   ON ps.stat = %s AND ps.text_id = p.id AND runs = %s"
-                        "   WHERE ps.data IS NULL",
+            cur.execute("SELECT lang_code FROM analysis.lang_codes p"
+                        "  LEFT JOIN analysis.pruned_content_stats ps"
+                        "  ON ps.stat = %s AND ps.text_id = p.id AND runs = %s"
+                        "  WHERE ps.data IS NULL",
                         (stat, self._runs))
             rv = set(row[0] for row in cur)
             rv.discard("und")
