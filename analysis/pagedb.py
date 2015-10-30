@@ -17,11 +17,9 @@ class PageText:
        .page_observations to learn where it came from.
 
        Properties:
-          origin          - Serial number of this text blob.
-                            (.origin field in the database, *not* .id)
-          hash            - SHA256 hash of the text.
+          eid             - Serial number of this text blob
+                            (database column analysis.extracted_content.id).
           contents        - The text itself (lazily uncompressed).
-          raw_hash        - SHA256 hash of the unpruned text.
           raw_contents    - The text before pruning.
           segmented       - The text, broken into runs of a single language,
                             and then further divided into words in a language-
@@ -40,15 +38,13 @@ class PageText:
           dom_stats        - DOMStatistics object counting tags and
                              tree depth.
     """
-    def __init__(self, db, eid, hash, raw_hash,
+    def __init__(self, db, eid,
                  *,
                  contents=None, raw_contents=None, segmented=None,
                  tfidf=None, nfidf=None,
                  headings=None, links=None, resources=None, dom_stats=None):
         self._db             = db
         self.eid             = eid
-        self.hash            = hash
-        self.raw_hash        = raw_hash
 
         # For memory efficiency, these are lazily loaded from the database.
         self._contents       = contents
@@ -63,7 +59,7 @@ class PageText:
         self._observations   = None
 
     def __hash__(self):
-        return self.id
+        return self.eid
 
     @property
     def contents(self):
@@ -295,8 +291,6 @@ class PageDB:
 
         columns = {
             "eid"          : "p.id",
-            "hash"         : "p.hash",
-            "raw_hash"     : "p.raw_hash",
         }
 
         op_columns = {
@@ -499,11 +493,7 @@ class PageDB:
             constructor_kwargs = { "document": text }))
 
     def get_page_text(self, eid):
-        cur = self._db.cursor()
-        cur.execute("SELECT id, hash, raw_hash"
-                    "  FROM analysis.extracted_content"
-                    " WHERE id = %s", (eid,))
-        return PageText(self, *cur.fetchone())
+        return PageText(self, eid)
 
     def get_contents_for_text(self, eid):
         cur = self._db.cursor()
@@ -600,11 +590,11 @@ class PageDB:
     def update_corpus_statistic(self, stat, lang, n_documents, data):
         self.update_corpus_statistics(lang, n_documents, [(stat, data)])
 
-    def get_text_statistic(self, stat, text_id):
+    def get_text_statistic(self, stat, text):
         cur = self._db.cursor()
         cur.execute("SELECT data FROM analysis.pruned_content_stats"
                     " WHERE stat = %s AND text_id = %s AND runs = %s",
-                    (stat, text_id, self._runs))
+                    (stat, text.eid, self._runs))
         row = cur.fetchone()
         if row and row[0]:
             return json.loads(zlib.decompress(row[0]).decode('utf-8'))
@@ -620,55 +610,37 @@ class PageDB:
         # pruned_content_stats; the actual data will be null.
         # This allows update_text_statistic to just do a regular old
         # UPDATE and not worry about missing rows.
-        try:
+        with self._db:
             cur.execute("BEGIN")
             cur.execute("LOCK analysis.pruned_content_stats IN EXCLUSIVE MODE")
             cur.execute("INSERT INTO analysis.pruned_content_stats"
                         "  (stat, text_id, runs)"
                         "SELECT %s AS stat, p.id AS text_id, %s AS runs"
-                        "  FROM analysis.extracted_content_ov p"
-                        " WHERE NOT EXISTS ("
+                        "  FROM analysis.extracted_content p"
+                        " WHERE p.segmented_text IS NOT NULL"
+                        " AND NOT EXISTS ("
                         "  SELECT 1 FROM analysis.pruned_content_stats ps"
                         "   WHERE ps.stat = %s AND ps.text_id = p.id"
                         "     AND runs = %s)",
                         (stat, self._runs, stat, self._runs))
-            cur.execute("SELECT lang_code FROM analysis.lang_codes p"
-                        "  LEFT JOIN analysis.pruned_content_stats ps"
-                        "  ON ps.stat = %s AND ps.text_id = p.id AND runs = %s"
-                        "  WHERE ps.data IS NULL",
-                        (stat, self._runs))
-            rv = set(row[0] for row in cur)
-            rv.discard("und")
-            rv.discard("zxx")
-            self._db.commit()
-            return rv
 
-        except:
-            self._db.rollback()
-            raise
-
-    def update_text_statistic(self, stat, text_id, data):
+    def update_text_statistic(self, stat, text, data):
         cur = self._db.cursor()
         blob = zlib.compress(json.dumps(data, separators=(',',':'))
                              .encode("utf-8"))
         cur.execute("UPDATE analysis.pruned_content_stats"
                     "   SET data = %s"
                     " WHERE stat = %s AND text_id = %s AND runs = %s",
-                    (blob, stat, text_id, self._runs))
+                    (blob, stat, text.eid, self._runs))
         if cur.rowcount == 0:
             raise RuntimeError("%s/%s/%r: no row in pruned_content_stats"
-                               % (stat, text_id, self._runs))
+                               % (stat, text.eid, self._runs))
 
-    # Transaction manager issues a regular database transaction.
+    # Transaction manager issues a regular database transaction,
+    # committed on normal exit and rolled back on exception.
     def __enter__(self):
-        cur = self._db.cursor()
-        cur.execute("BEGIN")
-        cur.close()
+        self._db.__enter__()
         return self
 
-    def __exit__(self, ty, vl, tb):
-        if ty is None:
-            self._db.commit()
-        else:
-            self._db.rollback()
-        return False
+    def __exit__(self, *args):
+        return self._db.__exit__(*args)
