@@ -86,6 +86,7 @@ CREATE VIEW page_text AS
 SELECT e.id      AS extracted_id,
        h.id      AS document_id,
        e.content_len AS html_content_len,
+       h.hash    AS html_content_hash,
        h.content AS html_content_compressed,
        e.raw_text, e.pruned_text, e.segmented_text,
        e.links, e.resources, e.headings, e.dom_stats
