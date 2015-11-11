@@ -6,7 +6,7 @@ from . import stanford
 import MeCab
 
 from collections import defaultdict
-import re
+import regex as re
 import unicodedata
 
 __all__ = ('segment',)
@@ -82,11 +82,20 @@ def _prep_cleanup_re():
     for c in range(0x10FFFF):
         x = chr(c)
         cat = unicodedata.category(x)
-        # All punctuation, all whitespace, C0 and C1 controls,
+        # All punctuation, symbols, and whitespace, C0 and C1 controls,
         # and "format effectors" (e.g. ZWNJ, RLE).  Cn (unassigned),
         # Cs (surrogate), and Co (private use) are not stripped.
-        if cat[0] in ('P', 'Z') or cat in ('Cc', 'Cf'):
-            unwanted_chars.append(x)
+        if cat[0] in ('P', 'S', 'Z') or cat in ('Cc', 'Cf'):
+            # Don't strip leading and trailing hyphens and apostrophes.
+            # FIXME: this really ought to be an exhaustive list of P-
+            # and S-class characters that can be *part of* a word.
+            if x in ('-', '‐', '\'', '’'): continue
+            # These characters need to be escaped inside a character class.
+            # '-' is not included because the preceding 'if' removed it.
+            if (x in '\\', '[', ']'):
+                unwanted_chars.append('\\' + x)
+            else:
+                unwanted_chars.append(x)
     return (re.compile("^[" + "".join(unwanted_chars) + "]+"),
             re.compile("[" + "".join(unwanted_chars) + "]+$"))
 
