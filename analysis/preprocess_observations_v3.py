@@ -205,7 +205,7 @@ def main():
     with multiprocessing.Pool() as pool:
         db = psycopg2.connect("dbname="+sys.argv[1])
         cur = db.cursor()
-        cur.execute("SET search_path TO n_analysis, public")
+        cur.execute("SET search_path TO analysis, public")
         cur.execute("SET standard_conforming_strings TO on")
         preprocess_pages(db, cur, pool)
 
