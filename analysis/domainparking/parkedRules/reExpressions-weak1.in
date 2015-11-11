@@ -1,0 +1,3 @@
+_parkedDomain_noad parked.{0,20}domain
+_domainParking_noad domain.{0,20}(parking|sale)
+_buyDomain_noad (buy|purchase).{0,20}domain
