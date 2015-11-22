@@ -110,8 +110,11 @@ class Segmenter:
 
     def segment(self, text):
         presegmented = deque()
-        for token in self._presegment_re.finditer(text):
-            presegmented.extend(token.group(0).split())
+        if isinstance(text, str):
+            text = [text]
+        for block in text:
+            for token in self._presegment_re.finditer(block):
+                presegmented.extend(token.group(0).split())
 
         # Sentinel value to tell us when we're done with this block of
         # text.  This has to pass through the segmenter proper
