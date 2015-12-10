@@ -5,6 +5,7 @@ walking as well as the parsing in C(ython).
 
 from gumbo cimport *
 from prescan cimport *
+from mimesniff cimport *
 
 from .unicode_utils cimport strip_ascii_space, split_ascii_space, normalize_text
 from .boilerplate_removal cimport *
@@ -71,12 +72,13 @@ cdef bytes convert_to_utf8(bytes page, str encoding):
         page = page[3:]
     return page
 
-cdef inline bytes determine_encoding_and_convert(bytes page, ext_encoding):
+cdef inline bytes determine_encoding_and_convert(bytes page,
+                                                 bytes ext_encoding):
 
     """Determine the encoding of PAGE, following HTML5's "encoding
        sniffing algorithm"
        (https://html.spec.whatwg.org/multipage/syntax.html#determining-the-character-encoding).
-       EXT_ENCODING may be either None or an encoding label in the
+       EXT_ENCODING may be either b"" or an encoding label in the
        list at https://encoding.spec.whatwg.org/#names-and-labels.
 
        Regardless of what the encoding was detected to be, the return value
@@ -99,8 +101,6 @@ cdef inline bytes determine_encoding_and_convert(bytes page, ext_encoding):
 
     # Step 4
     if ext_encoding:
-        if isinstance(ext_encoding, str):
-            ext_encoding = ext_encoding.encode("ascii")
         rv = canonical_encoding_for_label(ext_encoding)
         if rv:
             encoding = rv.decode("ascii")
@@ -441,16 +441,18 @@ cdef class ExtractedContent:
     dom_stats    - DomStatistics object calculated from this page.
     original     - Bytes: the original HTML of the page, converted to UTF-8
                    if necessary.
+    mimetype     - The computed MIME type of the page.
     """
 
-    cdef readonly unicode url, title, text_content
+    cdef readonly unicode url, title, mimetype, text_content
     cdef readonly unicode text_pruned
     cdef readonly object blocktree # for debugging
     cdef readonly double threshold # ditto
     cdef readonly object links, resources, headings, dom_stats
     cdef readonly bytes original
 
-    def __init__(self, url, page, external_charset='utf-8'):
+    def __init__(self, url, page, external_ctype='text/html',
+                 external_charset='utf-8'):
 
         cdef size_t pagelen
         cdef char *pagebuf
@@ -460,13 +462,45 @@ cdef class ExtractedContent:
         self.url = url
         self.dom_stats = DomStatistics()
 
+        mimetype = external_ctype.casefold().encode("ascii")
+        charset  = external_charset.casefold().encode("ascii")
+
         if isinstance(page, str):
             # Without the cast, Cython doesn't realize it can use
             # PyUnicode_AsUTF8String here.
             bytestr = (<str>page).encode('utf-8')
-        else:
-            bytestr = determine_encoding_and_convert(page, external_charset)
+            mimetype = get_computed_mimetype(mimetype, charset,
+                                             bytestr, len(bytestr))
 
+        else:
+            mimetype = get_computed_mimetype(mimetype, charset,
+                                             page, len(page))
+            bytestr = determine_encoding_and_convert(page, charset)
+
+        mimetype = mimetype.decode("ascii")
+        if mimetype != "text/html":
+            # Match what PhantomJS does when asked to load certain types of
+            # non-HTML resources as the base document.
+            if mimetype.startswith("text/"):
+                bytestr = (b"<html><head></head><body><pre style=\"word-wrap: "
+                           b"break-word; white-space: pre-wrap;\">" +
+                           bytestr.replace(b"&", b"&amp;")
+                                  .replace(b"<", b"&lt;")
+                                  .replace(b">", b"&gt;") +
+                           b"</pre></body></html>")
+
+            elif mimetype.startswith("image/"):
+                bytestr = ("<html><body style=\"margin: 0px;\">"
+                           "<img style=\"-webkit-user-select: none\" src=\"" +
+                           url.replace(b"&", b"&amp;")
+                              .replace(b"<", b"&lt;")
+                              .replace(b">", b"&gt;") +
+                           "\"></body></html>").encode("utf-8")
+
+            else:
+                bytestr = b"<html><head></head><body></body></html>"
+
+        self.mimetype = mimetype
         self.original = bytestr
         pagebuf = bytestr
         pagelen = len(bytestr)

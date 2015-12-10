@@ -10,7 +10,7 @@ include python-vars.mk
 all: _extractor.$M unicode_utils.$M relative_urls.$M boilerplate_removal.$M
 
 _extractor.$M: LIBS = -lgumbo
-_extractor.$M: _extractor.$O prescan.$O
+_extractor.$M: _extractor.$O prescan.$O mimesniff.$O
 	$(CC) $(LINKER_ARGS)
 unicode_utils.$M: unicode_utils.$O gbp_tbl.$O
 	$(CC) $(LINKER_ARGS)
@@ -29,6 +29,10 @@ uncanon-max.inc: encodings.inc uncanon-max.awk
 	$(AWK) -f uncanon-max.awk encodings.inc > uncanon-max.incT
 	mv -f uncanon-max.incT uncanon-max.inc
 
+mimesniff.inc: mimesniff.pat mimesniff.convert.py
+	$(PYTHON) mimesniff.convert.py < mimesniff.pat > mimesniff.incT
+	mv -f mimesniff.incT mimesniff.inc
+
 clean:
 	-rm -f \
 	   _extractor.$M _extractor.$O _extractor.c \
@@ -37,6 +41,7 @@ clean:
 	   boilerplate_removal.$M boilerplate_removal.$O boilerplate_removal.c \
 	   gbp_tbl.$O gbp_tbl.c gbp_tbl.h gbp_tbl.pxd \
 	   uncanon-max.inc uncanon-max.incT \
+	   mimesniff.inc mimesniff.incT \
 	   python-vars.mk
 	-rm -rf __pycache__
 
@@ -49,6 +54,7 @@ relative_urls.c: relative_urls.pyx relative_urls.pxd
 
 _extractor.$O: _extractor.c prescan.h
 prescan.$O: prescan.c prescan.h encodings.inc uncanon-max.inc
+mimesniff.$O: mimesniff.c mimesniff.h mimesniff.inc
 gbp_tbl.$O: gbp_tbl.c gbp_tbl.h
 unicode_utils.$O: unicode_utils.c gbp_tbl.h
 relative_urls.$O: relative_urls.c
