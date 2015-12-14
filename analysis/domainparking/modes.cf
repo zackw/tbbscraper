@@ -1,0 +1,83 @@
+# This file defines parked-domain detection modes.  Each section is
+# a mode, which consists of a list of rule tags (see rules.cf) that
+# are to be used.  No value is required, nor will any attention be
+# paid to any value provided.
+#
+# Mode 'full', which uses all available rules, is defined
+# automatically and does not need to appear in this file.
+
+# The 'balanced' mode includes all rules which, on a labeled training
+# data set, scored a higher true-positive than false-positive count.
+[balanced]
+domainsponsor_frameset
+new_123-reg_ad
+new_bodis_ad
+new_buydomainscom_noad
+new_crazydomainscom_noad
+new_dadapro_ad
+new_domainsalesorinternettraffic2_ad
+new_domainsalesorinternettraffic_ad
+new_domainsponsor_ad
+new_dsnextgencom_ad
+new_godaddyparking_ad
+new_googledomainparking_ad
+new_informationcom_ad
+new_nameservicesparking_ad
+new_parallel_noad
+new_parkedcom2_cykon_ad
+new_parkedcom_ad
+new_parkingcrew_ad
+new_parklogic2_ad
+new_sedoparking_ad
+newer_domainsalescom
+newer_hugedomains
+newer_registercom
+newer_sombrerodomainscom
+newer_wpimgcom_ad
+newest_bodis
+newest_cartersons
+newest_godaddy
+newest_godaddy2
+old_123regparking_noad
+old_buydomainscom_noad
+old_colorparking_noad
+old_domainadsparking_noad
+old_gandinetparking_noad
+old_gstaticparking_noad
+old_imagefromsmartname_noad
+old_namedrivecom_noad
+old_nameservicesparking_ad
+old_sedoparking_ad
+w_buydomain_noad
+w_domainparking_noad
+w_parkeddomain_noad
+w_searchweb_ad
+w_sponsoredresults_ad
+
+# The 'min' mode includes an approximately-minimal (greedily selected)
+# set of rules, sufficient to detect every parking page in the labeled
+# training set.
+[min]
+domainsponsor_frameset
+new_bodis_ad
+new_buydomainscom_noad
+new_dadapro_ad
+new_domainsponsor_ad
+new_dsnextgencom_ad
+new_godaddyparking_ad
+new_informationcom_ad
+new_parallel_noad
+new_parkedcom_ad
+new_parklogic2_ad
+newer_registercom
+newer_wpimgcom_ad
+newest_bodis
+newest_cartersons
+newest_godaddy
+old_gandinetparking_noad
+old_gstaticparking_noad
+old_sedoparking_ad
+w_buydomain_noad
+w_domainparking_noad
+w_searchweb_ad
+w_sponsoredresults_ad

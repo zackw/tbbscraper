@@ -1,0 +1,76 @@
+# This file defines all of the parked-domain detection rules.
+#
+# Each rule line has the form tag = regexp.  All regexps are compiled
+# in /ix mode, which in particular means you must always use \s for
+# whitespace (and it should be \s+ unless you have a specific reason
+# not to use +).
+#
+# A page is classified as parked if it matches at least one rule from
+# the [strong] section, or if it matches at least one rule from the
+# [weak1] section *and* at least one rule from the [weak2] section.
+# (This may be modified by a detection mode, see modes.cf.)
+
+[strong]
+old_buydomainscom_noad                = <\s*a\s+href\s*=\s*\"http://www\.buydomains\.com/find-premium-domains/domain-details\.jsp\?domain=
+new_buydomainscom_noad                = hugedomains\.com\.\s+all\s+rights\s+reserved\.
+old_imagefromsmartname_noad           = <\s*img\s+src\s*=\s*\"http://images\.smartname\.com/images
+old_snapnamescomorinformationcom_noad = <\s*a\s+href\s*=\s*\"http://searchportal\.information\.com/\?o_id=.*?&domainname=
+old_namedrivecom_noad                 = href\s*=\s*\"http://www\.namedrive\.com/contact_owner\.php\?domain_id=
+old_colorparking_noad                 = index\.php\?keywords=
+old_sedoparking_ad                    = sedoparking\.com
+new_godaddyparking_ad                 = godaddy\.com\?isc=
+old_1and1parking_noad                 = services\s+by\s+1&amp;1
+old_registerparking_noad              = ua-7541826-11
+old_nameservicesparking_ad            = i\.nuseek\.com
+new_nameservicesparking_ad            = i\.nuseek\.com.*?parking
+old_networksolutionsparking_noad      = <\s*frameset\s+rows\s*=\s*\"100%,\*\"\s+frameborder\s*=\s*\"no\"\s+border\s*=\s*\"0\"\s+framespacing\s*=\s*\"0\"\s*>\s*(?:\\r\s*)?<\s*frame\s+src\s*=\s*\".*?fp=.*?\"\s*>
+old_ovhnetparking_noad                = http://imp\.ovh\.net/test/roundcube
+old_123regparking_noad                = http://cdn\.dsultra\.com/favicon/mi_favicon\.ico
+old_gandinetparking_noad              = gandi\.net/hosting
+old_domainadsparking_noad             = gstatic\.com/domainads/privacy
+old_gstaticparking_noad               = apps/domainpark/
+old_googledomainparking_ad            = google\.com/domainpark
+new_domainsponsor_ad                  = script\s+src\s*=\s*\"http://dsnetservices\.com/\?epl=
+new_sedoparking_ad                    = disclaimer:\s+domain\s+owner\s+and\s+sedo\s+maintain\s+no\s+relationship\s+with\s+third\s+party\s+advertisers
+new_parkedcom_ad                      = <\s*span\s+class\s*=\s*\"forsale\"\s*>
+new_parkedcom2_cykon_ad               = src\s*=\s*\"/images/parked_layouts
+new_domainsalesorinternettraffic_ad   = href\s*=\s*\"http://domainnamesales\.com/domain/
+new_domainsalesorinternettraffic2_ad  = domainnamesales\.com/return_js\.php
+new_googledomainparking_ad            = src\s*=\s*\"http://pagead2\.googlesyndication\.com/apps/domainpark/show_afd_ads\.js
+new_parkingcrew_ad                    = http://parkingcrew\.net/track\.php
+new_parklogic_ad                      = a\s+href\s*=\s*\"http://parklogic\.com/login/sales/
+new_parklogic2_ad                     = frame\s+id\s*=\s*\"main\"\s+src\s*=\s*\"/cf\.php\"
+new_bodis_ad                          = meta\s+http-equiv\s*=\s*\"refresh\"\s+content\s*=\s*\"0;url=/\?framerequest=1\"
+new_parallel_noad                     = you\s+have\s+not\s+put\s+any\s+content\s+on\s+your\s+website\.
+new_dadapro_ad                        = src\s*=\s*\"http://dompark\.dadapro\.com
+new_123-reg_ad                        = \"expiredtext\".registered\s+through\s+123-reg
+new_dsparkingcom_ad                   = script\s+src\s*=\s*\"http://dsparking\.com/\?epl=
+new_domainparkingru_ad                = src\s*=\s*\"http://domain-parking\.ru
+new_nicru_ad                          = href\s*=\s*\"http://auction\.nic\.ru/forbuyer/buy
+new_informationcom_ad                 = information\.com/\?o_id
+new_uniteddomainscom_noad             = frame\s+src\s*=\s*\"http://www.uniteddomains\.com/defaultpage/
+new_safelinktrackercom_noad           = frame\s+src\s*=\s*\"http://safelinktracker\.com
+new_hugedomainscom_noad               = this\s+domain\s+is\s+<\s*a\s+href\s*=\s*\"http://www.hugedomains\.com/domain
+new_enamecom_noad                     = if\s+you\s+would\s+like\s+to\s+purchase\s+this\s+domain\s+name,\s*please\s+<\s*a\s+href\s*=\s*\"http://escrow\.ename\.com
+new_dsnextgencom_ad                   = frame\s+src\s*=\s*\"http://dsnextgen\.com/
+new_crazydomainscom_noad              = this\s+domain\s+name\s+is\s+registered\s+and\s+parked\s+with\s+crazy\s+domains\.
+newer_wpimgcom_ad                     = <\s*img\s+src\s*=\s*\"http://www\.wpimg\.com
+newer_sombrerodomainscom              = <\s*a\s+href\s*=\s*\"http://www\.sombrerodomains\.com
+newer_registercom                     = <\s*script\s+language\s*=\s*\"javascript1\.1\"\s+src\s*=\s*\"http://oascentral\.register\.com/
+newer_domainsalescom                  = domainnamesales\.com\s+takes\s+your\s+personal\s+information\s+very\s+seriously
+newer_hugedomains                     = href\s*=\s*\"http://searchtermresults\.com/sk-domsale\.php
+newest_bodis                          = bodis\.\s+all\s+rights\s+reserved\.
+newest_godaddy                        = <\s*iframe\s+src\s*=\s*\"http://mcc\.godaddy\.com
+newest_godaddy2                       = godaddy\s+auctions\s+is\s+the\s+place\s+to\s+go\s+for\s+great\s+domain\s+names
+newest_cartersons                     = copyright\s+.\s+201.\s+cartersons\s+ltd
+newest_dnbiz                          = dnbiz\.cn.{0,4}domain_parking\.htm
+domainsponsor_frameset                = \A\s*<!doctype\s+html\s+public\s*\"-//w3c//dtd\shtml\s4\.01\sframeset//en\"\s*(?:\"http://www\.w3\.org/tr/html4/frameset\.dtd\")?\s*>.*?<\s*meta\s+name\s*=\s*\"\s*keywords\s*\"\s+content\s*=\s*\"\s*([A-Za-z0-9_.-]+)\s*\"\s*>.*?(?:<|&lt;)\s*a\s+href\s*=\s*\"\s*https?://(?:[A-Za-z0-9_.-]+\.)?\1/?\?epl=[^\"\s]+\s*\"\s*(?:>|&gt;)\s*click\s+here\s+to\s+go\s+to\s+\1\s*(?:<|&lt;)\s*/\s*a\s*(?:>|&gt;)
+
+[weak1]
+w_parkeddomain_noad   = parked.{0,20}domain
+w_domainparking_noad  = domain.{0,20}(parking|sale)
+w_buydomain_noad      = (buy|purchase).{0,20}domain
+
+[weak2]
+w_sponsoredresults_ad = (sponsored|related).{0,20}(results|ads|listings|links|searches)
+w_searchweb_ad        = search.{0,20}web
