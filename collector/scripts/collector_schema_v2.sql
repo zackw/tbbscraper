@@ -67,9 +67,12 @@ CREATE VIEW capture_result (id, result, detail) AS
    WHERE f.result = c.id;
 
 CREATE TABLE capture_html_content (
-  id      SERIAL   NOT NULL PRIMARY KEY,
-  hash    BYTEA    NOT NULL UNIQUE,
-  content BYTEA    NOT NULL
+  id                    SERIAL   NOT NULL PRIMARY KEY,
+  hash                  BYTEA    NOT NULL UNIQUE,
+  content               BYTEA    NOT NULL,
+  extracted             INTEGER,
+  is_parked             BOOLEAN,
+  parking_rules_matched TEXT[]
 );
 ALTER TABLE capture_html_content
   ALTER COLUMN hash    SET STORAGE PLAIN,    -- incompressible (SHA256)
@@ -116,5 +119,27 @@ CREATE TABLE captured_pages (
 CREATE INDEX captured_pages_url_idx ON captured_pages(url);
 CREATE INDEX captured_pages_url_country_idx ON captured_pages(url, country);
 CREATE INDEX captured_pages_url_result_idx ON captured_pages(url, result);
+
+-- Historical data retrieved from the Wayback Machine.
+CREATE TABLE historical_pages (
+  id              SERIAL  NOT NULL PRIMARY KEY,
+  url             INTEGER NOT NULL REFERENCES url_strings(id),
+  archive         TEXT    NOT NULL,
+  archive_time    TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+  result          INTEGER NOT NULL REFERENCES capture_fine_result(id),
+  redir_url       INTEGER NOT NULL REFERENCES url_strings(id),
+  html_content    INTEGER NOT NULL REFERENCES capture_html_content(id),
+  topic_tag       INTEGER,
+  is_parked       BOOLEAN,
+  UNIQUE (url, archive, archive_time)
+);
+CREATE INDEX historical_pages_url_idx ON historical_pages(url);
+
+CREATE TABLE historical_page_availability (
+  archive         TEXT    NOT NULL,
+  url             INTEGER NOT NULL REFERENCES url_strings(id),
+  snapshots       TIMESTAMP WITHOUT TIME ZONE[] NOT NULL,
+  PRIMARY KEY(archive, url)
+);
 
 COMMIT;
