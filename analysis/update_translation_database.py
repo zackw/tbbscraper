@@ -4,6 +4,7 @@ import collections
 import os
 import sys
 import time
+import unicodedata
 
 import psycopg2
 import requests
@@ -98,7 +99,8 @@ def get_translations(source, target, words):
         'q': words
     })
     return list(zip(words,
-                    (x["translatedText"]
+                    (unicodedata.normalize("NFKC", x["translatedText"])
+                     .casefold()
                      for x in blob["data"]["translations"])))
 
 def get_google_languages():
@@ -113,16 +115,13 @@ def translate_block(lc, wordlist):
         return []
 
     translations = []
-    i = 0
     skipped = 0
     nwords = len(wordlist)
     nchars = 0
-    this_block = []
+    to_translate = []
 
-    while i < nwords and len(this_block) < WORDS_PER_POST:
-        x = wordlist[i]
-        i += 1
-
+    while wordlist and len(to_translate) < WORDS_PER_POST:
+        x = wordlist.pop()
         l = len(x)
         if l > WORD_LENGTH_LIMIT:
             sys.stdout.write("{}: word too long, skipping: {}\n"
@@ -140,52 +139,77 @@ def translate_block(lc, wordlist):
             continue
 
         if nchars + l > CHARS_PER_POST:
-            i -= 1
+            wordlist.add(x)
             break
 
-        this_block.append(x)
+        to_translate.append(x)
         nchars += l
 
     sys.stdout.write("{} {}: translating {} words {} chars, "
                      "{} passthru, {} left..."
-                     .format(elapsed(), lc, len(this_block), nchars,
-                             len(translations), nwords - i))
+                     .format(elapsed(), lc, len(to_translate), nchars,
+                             len(translations), len(wordlist)))
     sys.stdout.flush()
 
-    if this_block:
-        translations.extend(get_translations(CLD2_TO_GOOGLE[lc], 'en',
-                                             this_block))
-    assert len(translations) + skipped == i
-    sys.stdout.write("ok\n")
-    sys.stdout.flush()
+    try:
+        if to_translate:
+            translations.extend(get_translations(CLD2_TO_GOOGLE[lc], 'en',
+                                                 to_translate))
+        sys.stdout.write("ok\n")
+        sys.stdout.flush()
 
-    del wordlist[:i]
+    except Exception as e:
+        sys.stdout.write("error ({})\n".format(e))
+        sys.stdout.flush()
+        wordlist.update(to_translate)
+        raise
+
     return translations
 
-##
-## Database interaction
-##
-
 def load_todo(cur, can_translate):
-    todo = collections.defaultdict(list)
-    cur.execute("SELECT w.lang, w.word FROM ("
-                "  SELECT DISTINCT chunk->>'l' AS lang,"
-                "                  jsonb_array_elements_text(chunk->'t') AS word"
-                "    FROM (SELECT jsonb_array_elements(segmented) AS chunk"
-                "            FROM extracted_plaintext "
-                "           WHERE segmented is not null) _"
-                "   WHERE chunk->>'l' = ANY(%s)) w"
-                " LEFT JOIN translations t"
-                "        ON w.lang = t.lang AND w.word = t.word"
-                "     WHERE t.word IS NULL",
-                (sorted(can_translate),))
+    todo = collections.defaultdict(set)
+    count = 0
+
+    cur.execute("SELECT segmented FROM extracted_plaintext "
+                " WHERE segmented IS NOT NULL")
     for row in cur:
-        todo[row[0]].append(row[1])
+        for chunk in row[0]:
+            lang = chunk['l']
+            if lang not in can_translate: continue
+            words = chunk['t']
+            for word in words:
+                todo[lang].add(word)
+                count += 1
+
+                if count % 10000 == 0:
+                    sys.stderr.write("{}: {}...\n".format(elapsed(), count))
+
+    sys.stderr.write("{}: {}...\n".format(elapsed(), count))
+
+    cur.execute("SELECT lang, word FROM translations")
+    count = 0
+    for lang, word in cur:
+        todo[lang].discard(word)
+        count += 1
+        if count % 10000 == 0:
+            sys.stderr.write("{}: {}...\n".format(elapsed(), count))
+
+    sys.stderr.write("{}: {}...\n".format(elapsed(), count))
+
     return todo
 
-def record_translations(cur, lc, translations):
-    cur.executemany("INSERT INTO translations VALUES (%s, %s, %s)",
-                    ( (lc, word, engl) for word, engl in translations ))
+def record_translations(db, cur, lc, translations):
+    values = b",".join(sorted(set(
+        cur.mogrify("(%s,%s,%s)", (lc, word, engl))
+        for word, engl in translations
+    )))
+    try:
+        cur.execute(b"INSERT INTO translations (lang, word, engl) VALUES" +
+                    values)
+    except:
+        sys.stderr.write(values.decode("utf8") + "\n")
+        raise
+    db.commit()
 
 def todo_report(todo):
     words = 0
@@ -219,7 +243,7 @@ def main():
             wordlist = todo[lc]
             if wordlist:
                 done = False
-                record_translations(cur, lc, translate_block(lc, wordlist))
+                record_translations(db, cur, lc, translate_block(lc, wordlist))
                 time.sleep(0.05)
             else:
                 del todo[lc]
