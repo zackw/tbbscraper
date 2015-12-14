@@ -7,3 +7,4 @@ gbp_tbl.h
 gbp_tbl.pxd
 uncanon-max.inc
 uncanon-max.incT
+mimesniff.inc
