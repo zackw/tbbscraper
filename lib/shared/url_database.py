@@ -290,7 +290,6 @@ def add_site(db, site, http_only=False, www_only=False):
 # codes not listed are mapped to "crawler failure" because they
 # shouldn't be possible.
 look_at_the_detail = object()
-maybe_ok = object()
 network_errors_by_code = {
     "N1":   "connection refused",
     "N2":   "connection interrupted",
@@ -329,7 +328,7 @@ misc_errors_by_status = {
     "timeout":              "timeout",
 }
 http_statuses_by_code = {
-    200: maybe_ok,
+    200: "ok",
 
     301: "redirection loop",
     302: "redirection loop",
@@ -361,7 +360,21 @@ http_statuses_by_code = {
 }
 
 def categorize_result(status, detail, original_uid, canon_uid):
+    cat = categorize_result_nr(status, detail)
 
+    if cat == "ok":
+        if canon_uid is None:
+            return "invalid URL"
+        if original_uid == canon_uid:
+            return "ok"
+        return "ok (redirected)"
+
+    if cat == "other HTTP response" and canon_uid is None:
+        return "invalid URL"
+
+    return cat
+
+def categorize_result_nr(status, detail):
     if not isinstance(status, int):
         if status.startswith("N"):
             cat = network_errors_by_code.get(status, "crawler failure")
@@ -370,32 +383,18 @@ def categorize_result(status, detail, original_uid, canon_uid):
 
             return cat
 
-        # I'm not sure if these can still happen, but best be safe.
-        if status == "hostname not found":
-            return "host not found"
-        if status == "timeout":
-            return "timeout"
         if status == "crawler failure":
             return "crawler failure"
+        if status == "timeout":
+            return "timeout"
+
+        # I'm not sure if this can still happen, but best be safe.
+        if status == "hostname not found":
+            return "host not found"
 
         try:
             status = int(status)
         except ValueError:
             return "crawler failure"
 
-    cat = http_statuses_by_code.get(status, None)
-
-    if cat is maybe_ok:
-        if canon_uid is None:
-            return "invalid URL"
-        if original_uid == canon_uid:
-            return "ok"
-        return "ok (redirected)"
-
-    if cat is not None:
-        return cat
-
-    if canon_uid is None:
-        return "invalid URL"
-
-    return "other HTTP response"
+    return http_statuses_by_code.get(status, "other HTTP response")

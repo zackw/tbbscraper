@@ -56,19 +56,26 @@ def parse_input(fp):
     # in a particular domain all at once, maximizing DNS cache efficiency.
     return sorted(names, key = lambda v: list(reversed(v[0].split('.'))))
 
-def lookup_names(resolver, names):
+def lookup_names(names):
     """Look up IP addresses for all requested names."""
+
+    todo = []
+    for name, addr in names:
+        if addr is not None:
+            sys.stdout.write("{} {}\n".format(name, addr))
+        else:
+            todo.append(name.encode("ascii"))
 
     # glibc's getaddrinfo_a has a hardwired undocumented assumption
     # that you will only ask for 64 names at a time.
     count = 0
-    for block in chunked(names, 64):
-        eblock = [n.encode("ascii") for n in block if n is not None]
+    for block in chunked(todo, 64):
+        eblock = [n for n in block if n is not None]
         count += len(eblock)
-        eresults = getaddrinfo_batch(eblock)
-        sys.stderr.write(count + "\n")
+        results = getaddrinfo_batch(eblock)
+        sys.stderr.write("{}\n".format(count))
         sys.stderr.flush()
-        for ename, addrs in eresults:
+        for ename, addrs in results:
             name = ename.decode("ascii")
             if isinstance(addrs, OSError):
                 sys.stdout.write("{} X:{}\n".format(name, addrs.strerror))
@@ -76,7 +83,8 @@ def lookup_names(resolver, names):
                 sys.stdout.write("{} X:{}\n".format(name, str(addrs)))
             else:
                 for addr in addrs:
-                    sys.stdout.write("{} {}\n".format(name, addr))
+                    sys.stdout.write("{} {}\n".format(
+                        name, addr.decode("ascii")))
 
 def get_dns_servers():
     """Report all the configured name servers (under the pseudo-name
@@ -91,13 +99,8 @@ def main():
     if not names:
         sys.exit(1)
 
-    if len(sys.argv) > 1:
-        resolver = dns.resolver.Resolver(configure=False)
-        resolver.nameservers = sys.argv[1:]
-        lookup_names(resolver, names)
-    else:
-        lookup_names(dns.resolver.Resolver(), names)
-        get_dns_servers()
+    lookup_names(names)
+    get_dns_servers()
 
 if __name__ == '__main__':
     main()

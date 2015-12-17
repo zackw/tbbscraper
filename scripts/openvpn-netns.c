@@ -7,14 +7,13 @@
  * http://www.apache.org/licenses/LICENSE-2.0
  * There is NO WARRANTY.
  *
- *     openvpn-netns namespace tunnel config-file [args...]
+ *     openvpn-netns namespace config-file [args...]
  *
  * brings up an OpenVPN tunnel which network namespace NAMESPACE will
- * use for communication.  Both NAMESPACE and TUNNEL must already
- * exist, and TUNNEL must already have been assigned to NAMESPACE.
- * (The program 'tunnel-ns' sets up namespaces and tunnels
- * appropriately.)  CONFIG-FILE is an OpenVPN configuration file, and
- * any ARGS will be appended to the OpenVPN command line.
+ * use for communication.  NAMESPACE must already exist.  (The program
+ * 'tunnel-ns' sets up namespaces appropriately.)  CONFIG-FILE is an
+ * OpenVPN configuration file, and any ARGS will be appended to the
+ * OpenVPN command line.
  *
  * This program expects to be run with both stdin and stdout connected
  * to pipes.  When it detects that the namespace is ready for use, it
@@ -510,17 +509,6 @@ runv(const char *const *argv)
 }
 #define run(...) runv((const char *const []){ __VA_ARGS__, 0 })
 
-static void
-runv_ignore_failure(const char *const *argv)
-{
-  pid_t pid = xspawnvp(argv);
-  int status;
-  if (waitpid(pid, &status, 0) != pid)
-    fatal_perror("waitpid");
-}
-#define run_ignore_failure(...) \
-  runv_ignore_failure((const char *const []){ __VA_ARGS__, 0 })
-
 static char *
 runv_get_output(const char *const *argv)
 {
@@ -616,7 +604,7 @@ do_up_script(int argc, char **argv, char **envp)
      Most of these are not needed until we get to do_up_inside_ns,
      which runs in another process, but sanity-checking everything now
      avoids doing a bunch of work that will just have to be undone. */
-  must_getenv("dev");
+  const char *tun_dev = must_getenv("dev");
   must_getenv("tun_mtu");
   must_getenv("route_vpn_gateway");
   must_getenv("ifconfig_local");
@@ -629,6 +617,7 @@ do_up_script(int argc, char **argv, char **envp)
 
   maybe_config_dns(namespace, envp);
 
+  run("ip", "link", "set", "dev", tun_dev, "netns", namespace);
   run("ip", "netns", "exec", namespace,
       full_progname, "--as-up-inside-ns", namespace);
 
@@ -641,7 +630,7 @@ static void
 do_up_inside_ns(int argc, char **argv, char **envp)
 {
   if (argc != 3) {
-    fprintf(stderr, "INTERNAL-ONLY usage: %s --as-up-inside-ns namespace\n",
+    fprintf(stderr, "INTERNAL-ONLY usage: %s --as-up-inside-ns namespace ...\n",
             progname);
     exit(2);
   }
@@ -673,21 +662,37 @@ do_up_inside_ns(int argc, char **argv, char **envp)
             "broadcast", if_bcast);
   run("ip", "link", "set", "dev", tun_dev, "mtu", tun_mtu, "up");
   run("ip", "route", "add", "default", "via", tun_gw, "dev", tun_dev);
+
+  /* If we got an IPv6 address, configure that too. */
+  const char *if6_local = getenv("ifconfig_ipv6_local");
+  const char *if6_cidr  = getenv("ifconfig_ipv6_netbits");
+  const char *if6_rnet  = getenv("route_ipv6_network_1");
+  const char *if6_rgw   = getenv("route_ipv6_gateway_1");
+  if (if6_local && if6_cidr && if6_rnet && if6_rgw) {
+
+    if6_local = xasprintf("%s/%s", if6_local, if6_cidr);
+    run("ip", "addr", "add", "dev", tun_dev, "local", if6_local);
+    run("ip", "route", "add", if6_rnet, "via", if6_rgw, "dev", tun_dev);
+  }
 }
 
 static void
 do_down_script(int argc, char **argv, char **envp)
 {
-  if (argc < 4) {
-    fprintf(stderr,
-            "INTERNAL-ONLY usage: %s --as-down-script namespace tunnel ...\n",
+  if (argc < 3) {
+    fprintf(stderr, "INTERNAL-ONLY usage: %s --as-down-script namespace ...\n",
             progname);
     exit(2);
   }
 
   const char *namespace = argv[2];
-  const char *tunnel = argv[3];
   child_env = (const char *const *)envp;
+
+  /* When this is called, the OpenVPN daemon has already closed its end of
+     the tunnel device, which makes the kernel automatically tear down all
+     of the tunnel-interface-related state that we would otherwise have
+     to clear with more "ip" commands.  All that remains to do is kill
+     anything still running in the namespace, and delete resolv.conf. */
 
   const char *nsdir = xasprintf("/etc/netns/%s", namespace);
   struct stat st;
@@ -709,9 +714,6 @@ do_down_script(int argc, char **argv, char **envp)
     runv_get_output_pids(&to_kill, ipcmd);
     pidvec_kill(&to_kill, SIGKILL);
   }
-
-  run_ignore_failure("ip", "netns", "exec", namespace,
-                     "ip", "link", "set", "dev", tunnel, "down");
 
   const char *path = xasprintf("/etc/netns/%s/resolv.conf", namespace);
   (void) unlink(path);
@@ -879,14 +881,13 @@ prepare_signals(void)
 }
 
 static pid_t
-launch_ovpn(const char *namespace, const char *tunnel,
-            const char *cfgfile, char **ovpn_args)
+launch_ovpn(const char *namespace, const char *cfgfile, char **ovpn_args)
 {
   pid_t mypid = getpid();
   const char *up_script = xasprintf
     ("%s --as-up-script %s %d", full_progname, namespace, mypid);
   const char *down_script = xasprintf
-    ("%s --as-down-script %s %s", full_progname, namespace, tunnel);
+    ("%s --as-down-script %s", full_progname, namespace);
 
   strvec oargv;
   memset(&oargv, 0, sizeof(strvec));
@@ -894,8 +895,6 @@ launch_ovpn(const char *namespace, const char *tunnel,
   strvec_append(&oargv, "openvpn");
   strvec_append(&oargv, "--config");
   strvec_append(&oargv, cfgfile);
-  strvec_append(&oargv, "--dev");
-  strvec_append(&oargv, tunnel);
   strvec_append(&oargv, "--ifconfig-noexec");
   strvec_append(&oargv, "--route-noexec");
   strvec_append(&oargv, "--script-security");
@@ -1010,7 +1009,7 @@ controller_process_stdin(int fd, short events)
     ssize_t n;
     do
       n = read(fd, scratch, 4096);
-    while (n >= 0);
+    while (n > 0);
     if (n == 0)
       closed = true;
     if (n < 0 && errno != EAGAIN)
@@ -1059,24 +1058,17 @@ static void
 do_controller(int argc, char **argv, char **envp)
 {
   /* argument validation */
-  if (argc < 4)
+  if (argc < 3)
     usage();
 
   const char *namespace = argv[1];
-  if (strlen(namespace) > strspn(namespace, "_0123456789"
-                                 "abcdefghijklmnopqrstuvwxyz"
-                                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+  if (strlen(namespace) != strspn(namespace, "_0123456789"
+                                  "abcdefghijklmnopqrstuvwxyz"
+                                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
     fatal_printf("namespace name '%s' should consist solely of letters, "
                  "digits, and underscores", argv[1]);
 
-  const char *tunnel = argv[2];
-  if (strlen(tunnel) > strspn(tunnel, "_0123456789"
-                              "abcdefghijklmnopqrstuvwxyz"
-                              "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-    fatal_printf("tunnel name '%s' should consist solely of letters, "
-                 "digits, and underscores", argv[2]);
-
-  const char *cfgfile = argv[3];
+  const char *cfgfile = argv[2];
   int testfd = open(cfgfile, O_RDONLY);
   if (testfd == -1 || close(testfd))
     fatal_perror(cfgfile);
@@ -1089,7 +1081,7 @@ do_controller(int argc, char **argv, char **envp)
   prepare_child_env(envp);
   int sigfd = prepare_signals();
 
-  pid_t ovpn_pid = launch_ovpn(namespace, tunnel, cfgfile, argv + 4);
+  pid_t ovpn_pid = launch_ovpn(namespace, cfgfile, argv + 3);
   cl_ovpn_pid = ovpn_pid;
 
   controller_idle_loop(sigfd, ovpn_pid);
@@ -1124,16 +1116,16 @@ main(int argc, char **argv, char **envp)
   if (!full_progname) {
     full_progname = realpath(argv[0], 0);
     if (!full_progname)
-      fatal_eprintf("unable to determine full pathname of executable (argv[0]=%s)", argv[0]);
+      fatal_eprintf("unable to determine full pathname of executable "
+                    "(argv[0]=%s)", argv[0]);
   }
 
-  /* Because of the way we get openvpn to reexecute this program, argv[0]
-     must not contain shell metacharacters. */
-  for (const char *p = full_progname; *p; p++)
-    if (!strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                "abcdefghijklmnopqrstuvwxyz"
-                "0123456789%+,-./:=@_",
-                *p)) {
+  /* Because of the way we get openvpn to reexecute this program,
+     'full_progname' must not contain shell metacharacters. */
+  if (strlen(full_progname) != strspn(full_progname,
+                                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                      "abcdefghijklmnopqrstuvwxyz"
+                                      "0123456789%+,-./:=@_")) {
       fprintf(stderr, "usage: the absolute pathname of this program,\n  %s\n"
               "may contain only ASCII letters, digits, and 'safe' "
               "punctuation\n",

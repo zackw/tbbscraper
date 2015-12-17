@@ -11,18 +11,20 @@
  *     tunnel-ns PREFIX N
  *
  * creates N network namespaces, imaginatively named PREFIX_ns0,
- * PREFIX_ns1, ...  For each, it creates a tunnel device (equally
- * imaginatively named PREFIX_tun0, PREFIX_tun1, ...) and inserts the
- * tunnel into the namespace.  Also, the loopback device in each
- * namespace is brought up, with the usual address.  The tunnel
- * device is *not* brought up or assigned an address, and no routing
- * rules are created.
+ * PREFIX_ns1, ... The loopback device in each namespace is brought
+ * up, with the usual address.  /etc/netns directories for each
+ * namespace are created.  No other setup is performed.  (The tunnel
+ * interfaces are expected to be created on the fly by a program like
+ * 'openvpn-netns', which see.  This is because (AFAICT) if you create
+ * a persistent tunnel ahead of time, and put its interface side into
+ * a namespace, it then becomes impossible for anything to reattach
+ * to the device side.)
  *
  * This program expects to be run with both stdin and stdout connected
  * to pipes.  As it creates each namespace, it writes one line to its
  * stdout:
  *
- *   PREFIX_nsX <space> PREFIX_tunX <newline>
+ *   PREFIX_nsX <newline>
  *
  * After all namespaces have been created, stdout is closed.
  *
@@ -88,8 +90,6 @@ static bool is_child_process;
 static size_t n_namespaces;
 static const char **namespace_names;
 static const char **nsconfdir_names;
-static const char **tunneldev_names;
-static bool *tunnel_in_ns;
 
 /* Error reporting. */
 
@@ -392,7 +392,7 @@ spawn_with_redir(const char *const *argv, int child_stdin, int child_stdout)
 
   /* Child-side stdin and stdout redirections. */
   if (child_stdin != 0) {
-    if (close(0))
+    if (close(0) && errno != EBADF)
       fatal_perror("close");
 
     if (child_stdin < 0) {
@@ -405,7 +405,7 @@ spawn_with_redir(const char *const *argv, int child_stdin, int child_stdout)
   }
 
   if (child_stdout != 1) {
-    if (close(1))
+    if (close(1) && errno != EBADF)
       fatal_perror("close");
     if (child_stdout < 1) {
       if (open("/dev/null", O_WRONLY) != 1)
@@ -606,7 +606,9 @@ process_signals(int sigfd)
 
   for (;;) {
     ssize_t n = read(sigfd, &ssi, sizeof ssi);
-    if (n == 0 || (n == -1 && errno == EAGAIN))
+    if (n == -1 && errno != EAGAIN)
+      fatal_perror("read(signalfd)");
+    if (n <= 0)
       break;
 
     done = true;
@@ -623,7 +625,7 @@ process_stdin(int fd, short events)
     ssize_t n;
     do
       n = read(fd, scratch, 4096);
-    while (n >= 0);
+    while (n > 0);
     if (n == 0)
       closed = true;
     if (n < 0 && errno != EAGAIN)
@@ -665,21 +667,14 @@ create_namespaces(const char *prefix, size_t n)
 {
   namespace_names = xreallocarray(0, n+1, sizeof(const char *));
   nsconfdir_names = xreallocarray(0, n+1, sizeof(const char *));
-  tunneldev_names = xreallocarray(0, n+1, sizeof(const char *));
-  tunnel_in_ns    = xreallocarray(0, n+1, sizeof(bool));
   memset(namespace_names, 0, (n+1) * sizeof(const char *));
   memset(nsconfdir_names, 0, (n+1) * sizeof(const char *));
-  memset(tunneldev_names, 0, (n+1) * sizeof(const char *));
-  memset(tunnel_in_ns,    0, (n+1) * sizeof(bool));
   n_namespaces = n;
 
   for (size_t i = 0; i < n; i++) {
     const char *nsp = xasprintf("%s_ns%zd", prefix, i);
     const char *nsc = xasprintf("/etc/netns/%s", nsp);
-    const char *tun = xasprintf("%s_tun%zd", prefix, i);
 
-    /* Create the namespace first, because there is no way to create a
-       persistent tunnel _exclusively_. */
     if (mkdir(nsc, 0777))
       fatal_perror(nsc);
     nsconfdir_names[i] = nsc;
@@ -687,19 +682,16 @@ create_namespaces(const char *prefix, size_t n)
     run("ip", "netns", "add", nsp);
     namespace_names[i] = nsp;
 
-
     /* The loopback interface automatically exists in the namespace,
        with the usual address and an appropriate routing table entry,
        but it is not brought up automatically. */
     run("ip", "netns", "exec", nsp,
         "ip", "link", "set", "dev", "lo", "up");
 
-    run("ip", "tuntap", "add", "dev", tun, "mode", "tun");
-    tunneldev_names[i] = tun;
-
-    run("ip", "link", "set", tun, "netns", nsp);
-    tunnel_in_ns[i] = true;
+    puts(nsp);
+    fflush(stdout);
   }
+  fclose(stdout);
 }
 
 static NORETURN
@@ -712,7 +704,6 @@ cleanup_and_exit(int status)
     for (size_t i = 0; i < n_namespaces; i++) {
       const char *nsp = namespace_names[i];
       const char *nsc = nsconfdir_names[i];
-      const char *tun = tunneldev_names[i];
 
       if (nsp) {
         const char *ipcmd[] = { "ip", "netns", "pids", nsp, 0 };
@@ -726,21 +717,7 @@ cleanup_and_exit(int status)
           pidvec_kill(&to_kill, SIGKILL);
           pidvec_clear(&to_kill);
         }
-      }
 
-      if (tun) {
-        if (nsp && tunnel_in_ns) {
-          run_ignore_failure("ip", "netns", "exec", tun,
-                             "ip", "link", "set", "dev", tun, "down");
-          run_ignore_failure("ip", "netns", "exec", tun,
-                             "ip", "tuntap", "del", "dev", tun, "mode", "tun");
-        } else {
-          run_ignore_failure("ip", "link", "set", "dev", tun, "down");
-          run_ignore_failure("ip", "tuntap", "del", "dev", tun, "mode", "tun");
-        }
-      }
-
-      if (nsp) {
         run_ignore_failure("ip", "netns", "exec", nsp,
                            "ip", "link", "set", "dev", "lo", "down");
         run_ignore_failure("ip", "netns", "del", nsp);
@@ -749,7 +726,7 @@ cleanup_and_exit(int status)
       if (nsc)
         run_ignore_failure("rm", "-rf", nsc);
 
-      if (!nsp || !nsc || !tun)
+      if (!nsp || !nsc)
         break;
     }
   }
@@ -784,8 +761,9 @@ main(int argc, char **argv, char **envp)
   size_t nnsp = (size_t)xstrtonum_usage(argv[2], 0, 1024,
                                         "number of namespaces");
 
-  int sigfd = prepare_signals();
   close_unnecessary_fds();
+
+  int sigfd = prepare_signals();
   prepare_child_env(envp);
   create_namespaces(prefix, nnsp);
   idle_loop(sigfd);
