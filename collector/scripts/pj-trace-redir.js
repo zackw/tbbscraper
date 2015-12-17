@@ -81,6 +81,44 @@ function log_event(evt) {
     event_log.push(evt);
 }
 
+function inline_all_frames(page) {
+    // Code injected by page.evaluate is subject to the same-origin
+    // policy, so we have to extract the contents of each frame using
+    // the page API.  And there's no way to mutate the DOM using the
+    // page API, so we have to do *that* using page.evaluate.  And we
+    // have to cross our fingers and hope that the indexing of
+    // window.frames is the same as the indexing accepted by
+    // page.switchToFrame, because frames do not necessarily have a
+    // name attribute, the fake names provided by page.framesName[] in
+    // that case are invisible to page.evaluate code, and
+    // page.framesName[] is *not* updated if you add name attributes
+    // in page.evaluate.
+    //
+    // A post-order recursive tree walk naturally handles nested frames.
+    //
+    // The contents of each iframe will come out as quoted text; there
+    // doesn't seem to be any way to get around that.
+    function inline_all_frames_r () {
+        var i, frameContents = [];
+        if (page.framesCount == 0) return;
+        for (i = 0; i < page.framesCount; i++) {
+            page.switchToFrame(i);
+            inline_all_frames_r();
+            frameContents[i] = page.frameContent;
+            page.switchToParentFrame();
+        }
+        page.evaluate(function (frameContents) {
+            for (var i = 0; i < frameContents.length; i++) {
+                // There seems to be a Webkit bug where not all of the frames
+                // visible to page.frames* are visible in window.frames.  Feh.
+                if (window.frames[i] && window.frames[i].frameElement)
+                    window.frames[i].frameElement.innerHTML = frameContents[i];
+            }
+        }, frameContents);
+    }
+    inline_all_frames_r();
+}
+
 function report(page) {
     var i, final_url, status, output;
 
@@ -102,8 +140,10 @@ function report(page) {
             chain:  redirection_chain,
             log:    event_log
         };
-        if (capture)
+        if (capture) {
+            inline_all_frames(page);
             output.content = page.content.replace(/\s+/g, " ");
+        }
         if (render)
             output.render = page.renderBase64("PNG");
 

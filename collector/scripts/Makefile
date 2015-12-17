@@ -3,7 +3,7 @@
 # use aggressive warnings and hardening settings.  Currently
 # hardwired for GCC 4.9.
 
-ALL = isolate openvpn-netns
+ALL = isolate openvpn-netns tunnel-ns
 
 CPPFLAGS = -D_FORTIFY_SOURCE=2
 CFLAGS   = -std=c11 -g -O2 -pie -fPIE -fwhole-program -fstack-protector-strong \

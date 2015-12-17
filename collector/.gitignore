@@ -24,6 +24,7 @@ __pycache__/
 
 /scripts/isolate
 /scripts/openvpn-netns
+/scripts/tunnel-ns
 /scripts/*.so
 /scripts/python-vars.mk
 
