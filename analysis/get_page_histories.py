@@ -28,6 +28,8 @@ import aiohttp
 import aiopg
 from werkzeug.http import parse_options_header
 
+import word_seg
+
 #
 # Utilities
 #
@@ -106,6 +108,58 @@ def sync_wait(coro, loop):
     loop.run_until_complete(task)
     return task.result()
 
+# This appears in the official documentation for asyncio, but is not
+# actually defined by the library!  But it _is_ defined by the
+# externally maintained backport to 3.3 (and that's where this code
+# comes from).  No, I don't understand either.
+
+try:
+    aio_timeout = asyncio.timeout
+
+except AttributeError:
+    def aio_timeout(timeout, *, loop=None):
+        """A factory which produce a context manager with timeout.
+        Useful in cases when you want to apply timeout logic around block
+        of code or in cases when asyncio.wait_for is not suitable.
+        For example:
+        >>> with asyncio.timeout(0.001):
+        ...     yield from coro()
+        timeout: timeout value in seconds
+        loop: asyncio compatible event loop
+        """
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        return _Timeout(timeout, loop=loop)
+
+    class _Timeout:
+        def __init__(self, timeout, *, loop):
+            self._timeout = timeout
+            self._loop = loop
+            self._task = None
+            self._cancelled = False
+            self._cancel_handler = None
+
+        def __enter__(self):
+            self._task = asyncio.Task.current_task(loop=self._loop)
+            if self._task is None:
+                raise RuntimeError('Timeout context manager should be used '
+                                   'inside a task')
+            self._cancel_handler = self._loop.call_later(
+                self._timeout, self._cancel_task)
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if exc_type is asyncio.futures.CancelledError and self._cancelled:
+                self._cancel_handler = None
+                self._task = None
+                raise asyncio.futures.TimeoutError
+            self._cancel_handler.cancel()
+            self._cancel_handler = None
+            self._task = None
+
+        def _cancel_task(self):
+            self._cancelled = self._task.cancel()
+
 class rate_limiter:
     """Unblocks a calling coroutine RATE times per second:
 
@@ -118,33 +172,56 @@ class rate_limiter:
     def __init__(self, rate, *, loop=None):
         self.rate     = rate
         self.interval = 1.0/rate
-        self.last     = 0
-        self.loop     = loop or asyncio.get_event_loop()
+        self._loop    = loop or asyncio.get_event_loop()
+        self._waiters = asyncio.Queue(loop=self._loop)
+        self._task    = None
 
-    def __iter__(self):
-        @asyncio.coroutine
-        def delay(to_wait):
-            nonlocal self
-            nonlocal now
+    def __enter__(self):
+        self._task = self._loop.create_task(self._rl_task())
+        return self
 
-            if to_wait >= 0:
-                yield from asyncio.sleep(to_wait, loop=self.loop)
-                now = self.loop.time()
-            self.last = now
+    def __exit__(self, *dontcare):
+        task = self._task
+        self._task = None
+        self._loop.run_until_complete(
+            asyncio.wait([
+                self._waiters.put(None), # termination sentinel
+                task
+            ]))
+        return False
 
-        now = self.loop.time()
-        elapsed = now - self.last
-        return delay(self.interval - elapsed)
+    @asyncio.coroutine
+    def _rl_task(self):
+        before = self._loop.time()
+        while True:
+            waiter = yield from self._waiters.get()
 
-    # it happens to be convenient to use these as context managers,
-    # even though they are stateless
-    def __enter__(self): return self
-    def __exit__(self, *dontcare): return False
+            # None is posted to the queue as a sentinel when __exit__
+            # wants us to quit.
+            if waiter is None:
+                break
+
+            after = self._loop.time()
+            delay = self.interval - (after - before)
+            if delay > 0:
+                yield from asyncio.sleep(delay, loop=self._loop)
+                after = self._loop.time()
+
+            waiter.set_result(None) # unblock
+
+            before = after
+
+    @asyncio.coroutine
+    def __call__(self):
+        if self._task is None:
+            raise RuntimeError("rate limiter invoked when not running")
+        fut = asyncio.Future(loop=self._loop)
+        yield from self._waiters.put(fut)
+        yield from fut
 
 class work_buffer:
     """Buffer up work until there is enough of it, or till a timeout
-       expires (default 30 seconds with no new work added), then
-       process it all at once.
+       expires (default 5 seconds), then process it all at once.
 
        The worker procedure, WORKER, is called with one positional
        argument, which is a list of pairs (item, future) where ITEM is
@@ -152,6 +229,7 @@ class work_buffer:
        that item.  It is responsible for satisfying all the futures.
        Additional keyword arguments can be given to the worker
        by passing keyword arguments to the constructor.
+
     """
 
     def __init__(self, worker, jobsize, *,
@@ -184,9 +262,8 @@ class work_buffer:
         if len(self.batch) >= self.jobsize:
             self.flush()
         else:
-            if self.ftimer is not None:
-                self.ftimer.cancel()
-            self.ftimer = self.loop.call_later(self.ftimeout, self.flush)
+            if self.ftimer is None:
+                self.ftimer = self.loop.call_later(self.ftimeout, self.flush)
 
         return fut
 
@@ -194,13 +271,20 @@ class work_buffer:
         """Queue the current batch for processing and start a new one.
            Does not wait for completion.
         """
+        batch = self.batch
+        self.batch = []
 
         if self.ftimer is not None:
             self.ftimer.cancel()
             self.ftimer = None
 
-        batch = self.batch
-        self.batch = []
+        # Adjust the flush timeout downward if there are only a few
+        # things in the batch; toward the end of a job, we shouldn't
+        # be wasting a lot of time waiting for more to come in.  There
+        # is a hard floor of 100ms.
+        if len(batch) < self.jobsize/2:
+            self.ftimeout = max(self.ftimeout/2, 0.1)
+
         if batch:
             fut = self.loop.create_task(self._run_batch(batch))
             fut.add_done_callback(self.running.discard)
@@ -374,6 +458,7 @@ http_statuses_by_code = {
     403: "forbidden (403)",
     404: "page not found (404/410)",
     410: "page not found (404/410)",
+    451: "unavailable for legal reasons (451)",
 
     500: "server error (500)",
     503: "service unavailable (503)",
@@ -550,18 +635,11 @@ class Database:
         with (yield from self.dblock):
             cur = self.cur
 
-            # Note: assumes the table and column names are
-            # ASCII and need no quoting.  It's unfortunate
-            # psycopg2 provides no high-level way to do this.
-            query = "INSERT INTO {} ({}) VALUES".format(
-                table, ",".join(columns)).encode("ascii")
-            template = ("(" +
-                        ",".join("%s" for _ in range(len(columns))) +
-                        ")")
-
+            query = b"INSERT INTO translations (lang, word, engl) VALUES"
             values = b",".join(
-                (yield from cur.mogrify(template, (lang, word, engl)))
-                for word, engl in translations)
+                (yield from cur.mogrify("(%s,%s,%s)", (lang, word, engl)))
+                for word, engl in translations
+                if len(word) < WORD_LENGTH_LIMIT)
 
             yield from cur.execute(query + values)
 
@@ -593,15 +671,42 @@ class Database:
 
             row = yield from cur.fetchone()
             if row and row[0]: return row[0]
-            return []
+            return None
 
     @asyncio.coroutine
     def record_page_availability(self, archive, urlid, snapshots):
         with (yield from self.dblock):
             cur = self.cur
+            yield from cur.execute("""
+                SELECT MIN(COALESCE(
+                             SUBSTRING(u.meta->>'timestamp' FOR 10)::DATE,
+                             (u.meta->>'date')::DATE,
+                             t.last_updated)
+                       )::TIMESTAMP,
+                       MAX(cp.access_time)
+                  FROM collection.urls u,
+                       collection.url_sources t,
+                       collection.captured_pages cp
+                 WHERE u.src = t.id AND u.url = cp.url
+                   AND u.url = %s
+            """, (urlid,))
+            earliest, latest = yield from cur.fetchone()
             yield from cur.execute(
                 "INSERT INTO collection.historical_page_availability"
-                " VALUES (%s, %s, %s)", (archive, urlid, snapshots))
+                " (archive, url, snapshots, earliest_date, latest_date)"
+                " VALUES (%s, %s, %s, %s, %s)",
+                (archive, urlid, snapshots, earliest, latest))
+
+    @asyncio.coroutine
+    def note_page_processed(self, archive, urlid):
+        with (yield from self.dblock):
+            cur = self.cur
+            yield from cur.execute("""
+                UPDATE collection.historical_page_availability
+                   SET processed = true
+                 WHERE archive = %s AND url = %s
+            """, (archive, urlid))
+
 
     @asyncio.coroutine
     def load_page_topics(self, archive, urlid):
@@ -644,7 +749,7 @@ class Database:
         # may call back into the database
         translated = {}
         for atime, seg in texts:
-            translated[atime] = yield from trans.translate_segmented(seg)
+            translated[atime] = yield from trans.translate_segmented(None, seg)
 
         return translated
 
@@ -668,7 +773,7 @@ class Database:
 
         # release the database lock at this point, because translate_segmented
         # may call back into the database
-        return (yield from trans.translate_segmented(segmented))
+        return (yield from trans.translate_segmented(None, segmented))
 
     @asyncio.coroutine
     def record_historical_page(self, archive, date, ec):
@@ -767,34 +872,47 @@ class Database:
         with (yield from self.dblock):
             cur = self.cur
 
+            # status("recording date ranges of interest...")
+            # yield from cur.execute("""
+            #     WITH q(url, lodate, hidate) AS (
+            #         SELECT u.url AS url,
+            #                MIN(COALESCE(
+            #                    SUBSTRING(u.meta->>'timestamp' FOR 10)::DATE,
+            #                   (u.meta->>'date')::DATE,
+            #                    t.last_updated))::TIMESTAMP AS lodate,
+            #                MAX(cp.access_time) AS hidate
+            #           FROM collection.urls u,
+            #                collection.url_sources t,
+            #                collection.captured_pages cp
+            #          WHERE u.src = t.id AND u.url = cp.url
+            #            AND u.url IN (
+            #             SELECT url FROM collection.historical_page_availability
+            #              WHERE archive = %s
+            #                AND (earliest_date IS NULL OR latest_date IS NULL))
+            #          GROUP BY u.url
+            #     )
+            #     UPDATE collection.historical_page_availability h
+            #        SET earliest_date = q.lodate, latest_date = q.hidate
+            #       FROM q
+            #      WHERE h.url = q.url
+            #     """,
+            #     (session.archive,))
+
             status("counting partially processed pages...")
             yield from cur.execute("""
-                SELECT _.urlid, s.url, _.lodate, _.hidate, _.snapshots
-                 FROM (
-                  SELECT u.url AS urlid,
-                         MIN(COALESCE(
-                             SUBSTRING(u.meta->>'timestamp' FOR 10)::DATE,
-                             (u.meta->>'date')::DATE,
-                             t.last_updated))::TIMESTAMP AS lodate,
-                         MAX(cp.access_time) AS hidate,
-                         h.snapshots
-                   FROM collection.urls u,
-                        collection.url_sources t,
-                        collection.captured_pages cp,
-                        collection.historical_page_availability h
-                  WHERE u.src = t.id AND u.url = cp.url AND u.url = h.url
-                        AND h.archive = %s
-                  GROUP BY u.url, h.snapshots
-                  ) _,
-                  collection.url_strings s
-                 WHERE _.urlid = s.id;
+                SELECT h.url, s.url,
+                       h.earliest_date, h.latest_date, h.snapshots
+                  FROM collection.historical_page_availability h,
+                       collection.url_strings s
+                 WHERE h.url = s.id AND h.archive = %s
+                   AND h.processed = false;
                 """,
                 (session.archive,))
 
             all_documents = []
             while True:
                 block = yield from cur.fetchmany()
-                status("counting partially unprocessed pages... {}"
+                status("counting partially processed pages... {}"
                        .format(len(all_documents)),
                        done=(not block))
                 if not block:
@@ -803,56 +921,57 @@ class Database:
                     snapshots.sort()
                     all_documents.append(Document(session, urlid, url,
                                                   snapshots, lodate, hidate))
+            return all_documents
 
-            n = 0
-            incomplete_documents = []
-            for doc in all_documents:
-                not_captured = set(doc.snapshots)
+            # n = 0
+            # incomplete_documents = []
+            # for doc in all_documents:
+            #     not_captured = set(doc.snapshots)
 
-                yield from cur.execute(
-                    "SELECT archive_time, topic_tag"
-                    "  FROM historical_pages"
-                    " WHERE url = %s AND archive = %s"
-                    " ORDER BY archive_time",
-                    (doc.urlid, session.archive))
+            #     yield from cur.execute(
+            #         "SELECT archive_time, topic_tag"
+            #         "  FROM historical_pages"
+            #         " WHERE url = %s AND archive = %s"
+            #         " ORDER BY archive_time",
+            #         (doc.urlid, session.archive))
 
-                captured_dates = []
-                for cdate, topic_tag in (yield from cur.fetchall()):
-                    if topic_tag is not None:
-                        captured_dates.append(cdate)
-                        doc.topics[cdate] = topic_tag
-                        not_captured.discard(cdate)
+            #     captured_dates = []
+            #     for cdate, topic_tag in (yield from cur.fetchall()):
+            #         if topic_tag is not None:
+            #             captured_dates.append(cdate)
+            #             doc.topics[cdate] = topic_tag
+            #             not_captured.discard(cdate)
 
-                if not_captured:
-                    lo = fuzzy_year_range_lo(doc.lodate)
-                    hi = fuzzy_year_range_hi(doc.hidate)
-                    for cdate in sorted(not_captured):
-                        # We do not need to retrieve snapshots outside the range
-                        # we care about.
-                        if not (lo <= cdate <= hi):
-                            not_captured.remove(cdate)
-                            continue
+            #     if not_captured:
+            #         lo = fuzzy_year_range_lo(doc.lodate)
+            #         hi = fuzzy_year_range_hi(doc.hidate)
+            #         for cdate in sorted(not_captured):
+            #             # We do not need to retrieve snapshots outside the range
+            #             # we care about.
+            #             if not (lo <= cdate <= hi):
+            #                 not_captured.remove(cdate)
+            #                 continue
 
-                        # We do not need to retrieve a snapshot if the
-                        # topic_tag from the snapshots we do have on
-                        # either side of it are the same.
-                        p = bisect.bisect_left(captured_dates, cdate)
-                        if p > 0 and p < len(captured_dates) and \
-                           (doc.topics[captured_dates[p-1]] ==
-                            doc.topics[captured_dates[p]]):
-                            not_captured.remove(cdate)
+            #             # We do not need to retrieve a snapshot if the
+            #             # topic_tag from the snapshots we do have on
+            #             # either side of it are the same.
+            #             p = bisect.bisect_left(captured_dates, cdate)
+            #             if p > 0 and p < len(captured_dates) and \
+            #                (doc.topics[captured_dates[p-1]] ==
+            #                 doc.topics[captured_dates[p]]):
+            #                 not_captured.remove(cdate)
 
-                if not_captured:
-                    incomplete_documents.append(doc)
+            #     if not_captured:
+            #         incomplete_documents.append(doc)
 
-                n += 1
-                if n % 1000 == 0:
-                    status("weeding partially unprocessed pages... {}/{}"
-                           .format(n, len(incomplete_documents)))
+            #     n += 1
+            #     if n % 1000 == 0:
+            #         status("weeding partially unprocessed pages... {}/{}"
+            #                .format(len(incomplete_documents), n))
 
-            status("weeding partially unprocessed pages... {}/{}"
-                   .format(n, len(incomplete_documents)), done=True)
-            return incomplete_documents
+            # status("weeding partially unprocessed pages... {}/{}"
+            #        .format(len(incomplete_documents), n), done=True)
+            # return incomplete_documents
 
 #
 # Interacting with the Wayback Machine
@@ -880,11 +999,10 @@ def extract_page_context_init():
     import cld2
     import domainparking
     import html_extractor
-    import word_seg
 
     global extract_page_context
     extract_page_context = (
-        cld2, html_extractor, word_seg, domainparking.ParkingClassifier())
+        cld2, html_extractor, domainparking.ParkingClassifier())
 
 def extract_page(url, redir_url, status, reason, ctype, data):
     """Worker-process procedure: extract content from a page retrieved
@@ -894,8 +1012,9 @@ def extract_page(url, redir_url, status, reason, ctype, data):
     if extract_page_context is None:
         extract_page_context_init()
 
-    cld2, html_extractor, word_seg, parking_cfr = extract_page_context
+    cld2, html_extractor, parking_cfr = extract_page_context
 
+    if not ctype: ctype = ""
     ctype, options = parse_options_header(ctype)
     charset = options.get("charset", "")
 
@@ -944,6 +1063,7 @@ class WaybackMachine:
         self.n_errors    = 0
         self.n_requests  = 0
         self.session     = None
+        self.serializer  = asyncio.Lock(loop=self.loop)
 
     def __enter__(self):
         return self
@@ -956,7 +1076,7 @@ class WaybackMachine:
         """Retrieve a list of all available snapshots of URL."""
         backoff = 1
         while True:
-            yield from self.rate
+            yield from self.rate()
             resp = None
             try:
                 self.n_requests += 1
@@ -1018,14 +1138,56 @@ class WaybackMachine:
 
         return snapshots
 
+    def error_from_wayback_machine(self, status, data):
+        # These codes may or may not involve a synthetic page,
+        # but are always treated as reflecting the true status
+        # of the page.
+        if status in (200, 401, 403, 404, 410, 451):
+            return False
+
+        # To distinguish between errors generated by the Wayback
+        # Machine itself, and errors it saw when it crawled the site
+        # (and is faithfully replaying) we need to look at the
+        # response body.  The Wayback Machine's errors always contain
+        # the full URL of the request, including the 'web.archive.org'
+        # part, whereas replayed errors will never have this.
+        # Moreover, the Wayback Machine's errors are consistently
+        # ASCII-only.
+        try:
+            decoded = data.decode("ascii")
+        except:
+            return False
+
+        return ('//web.archive.org/' in decoded or
+                '//archive.org/' in decoded)
+
+    def maybe_log_http_exception(self, e, query):
+        # Don't bother logging connection timeouts, disconnects, and
+        # 5xx errors.
+        if isinstance(e, (asyncio.TimeoutError,
+                          aiohttp.errors.ClientTimeoutError,
+                          aiohttp.errors.ClientResponseError)):
+            return
+        if isinstance(e, aiohttp.errors.HttpProcessingError) and \
+           500 <= e.code < 600:
+            return
+
+        self.errlog.write("In query: {}\n".format(query))
+        traceback.print_exc(file=self.errlog)
+        self.errlog.write("\n")
+        self.errlog.flush()
+
     @asyncio.coroutine
-    def get_page_http_request(self, query):
-        backoff = 1
-        while True:
-            resp = None
-            try:
-                yield from self.rate
-                self.n_requests += 1
+    def get_page_do_http_request(self, query):
+        resp = None
+        resp_released = False
+        try:
+            with aio_timeout(5, loop=self.loop):
+                # The Wayback Machine replays Set-Cookie headers, and
+                # since all requests are going to the same origin, they
+                # accumulate until we hit the request size limit.
+                # It doesn't ever _need_ us to send cookies, AFAICT.
+                self.http_client.cookies.clear()
                 resp = yield from \
                     self.http_client.get(query, allow_redirects=False)
                 if 300 <= resp.status <= 399:
@@ -1047,10 +1209,8 @@ class WaybackMachine:
                             aiohttp.errors.ServerDisconnectedError):
                         # The Wayback Machine faithfully records and
                         # plays back malformed HTTP responses!  Treat
-                        # this as an empty document, and close the
-                        # connection to avoid further problems.
+                        # this as an empty document.
                         data = b""
-                        resp.close()
 
                 try:
                     # This can barf on a malformed HTTP response
@@ -1062,25 +1222,78 @@ class WaybackMachine:
                         aiohttp.errors.ServerDisconnectedError):
                     resp.close()
 
-                self.session.progress()
+                resp_released = True
+
+                # It may or may not be appropriate to retry requests
+                # that provoke HTTP errors directly from the wayback
+                # machine, but in no case do we want to _record_ such
+                # responses.  The exception-handling logic below
+                # makes the final decision.
+                if self.error_from_wayback_machine(resp.status, data):
+                    raise aiohttp.errors.HttpProcessingError(
+                        code=resp.status,
+                        message=resp.reason,
+                        headers=resp.headers)
+
                 return (resp.status, resp.reason, location, ctype, data)
 
-            except Exception as e:
-                self.errlog.write("In query: {}\n".format(query))
-                traceback.print_exc(file=self.errlog)
-                self.errlog.write("\n")
-                self.errlog.flush()
+        except Exception as e:
+            self.maybe_log_http_exception(e, query)
 
-                if resp is not None:
-                    try:
-                        yield from resp.release()
-                    except Exception:
-                        resp.close()
+            if resp is not None and not resp_released:
+                resp.close()
 
-                self.n_errors += 1
-                self.session.progress()
-                yield from asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
+            if isinstance(e, aiohttp.errors.HttpProcessingError) and \
+               400 <= e.code < 499:
+                # Do not retry 4xx-series errors, even if they came
+                # from the WBM.  If we hit this case it indicates
+                # some sort of bug in this program.
+                raise
+
+            return None
+
+    @asyncio.coroutine
+    def get_page_http_request(self, query):
+        backoff = 1
+        while True:
+            yield from self.rate()
+            self.n_requests += 1
+            self.session.progress()
+
+            data = yield from self.get_page_do_http_request(query)
+            if data is not None:
+                return data
+
+            self.n_errors += 1
+            self.session.progress()
+            yield from asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+    def redirect_url(self, snap, redir_url, loc):
+        # Redirections can happen either because the original
+        # page gave the Wayback Machine a redirection, or
+        # because the snapshot date is off by a few (this only
+        # happens after the first case happens).  In the
+        # former case we will be redirected _to the site
+        # itself_, and we need to update redir_url; in the
+        # latter case the redirection stays inside the WBM,
+        # and we _don't_ want to update redir_url.
+        if loc.startswith('/web/'):
+            query = "https://web.archive.org" + loc
+        elif loc.startswith('https://web.archive.org/'):
+            query = loc
+        else:
+            if (loc.startswith('http://') or
+                loc.startswith('https://')):
+                redir_url = canon_url_syntax(loc)
+            else:
+                redir_url = canon_url_syntax(
+                    urllib.parse.urljoin(redir_url, loc))
+
+            query = ("https://web.archive.org/web/{}id_/{}"
+                     .format(snap, redir_url))
+
+        return (query, redir_url)
 
     @asyncio.coroutine
     def get_page_at_time(self, url, snap):
@@ -1098,36 +1311,24 @@ class WaybackMachine:
         # We have to do manual redirection handling.
         redir_url = url
         redirections = 0
-        while redirections < 20:
-            (status, reason, loc, ctype, data) = \
-                yield from self.get_page_http_request(query)
+        # Since we can use only one concurrent connection, we must also
+        # have only one task issuing queries at a time, or N-1 of the
+        # tasks are likely to time out before they even get a chance to
+        # submit their query.
+        with (yield from self.serializer):
+            while redirections < 20:
+                (status, reason, loc, ctype, data) = \
+                    yield from self.get_page_http_request(query)
 
-            if data is not None: break
+                if data is not None: break
 
-            redirections += 1
+                redirections += 1
+                try:
+                    (query, redir_url) = self.redirect_url(snap, redir_url, loc)
 
-            # Redirections can happen either because the original
-            # page gave the Wayback Machine a redirection, or
-            # because the snapshot date is off by a few (this only
-            # happens after the first case happens).  In the
-            # former case we will be redirected _to the site
-            # itself_, and we need to update redir_url; in the
-            # latter case the redirection stays inside the WBM,
-            # and we _don't_ want to update redir_url.
-            if loc.startswith('/web/'):
-                query = "https://web.archive.org" + loc
-            elif loc.startswith('https://web.archive.org/'):
-                query = loc
-            elif (loc.startswith('http://') or
-                  loc.startswith('https://')):
-                redir_url = canon_url_syntax(loc)
-                query = ("https://web.archive.org/web/{}id_/{}"
-                         .format(snap, redir_url))
-            else:
-                redir_url = canon_url_syntax(
-                    urllib.parse.urljoin(redir_url, loc))
-                query = ("https://web.archive.org/web/{}id_/{}"
-                         .format(snap, redir_url))
+                except (ValueError, UnicodeError):
+                    # 'loc' is invalid; treat as a redirection loop.
+                    break
 
         # We can get here with data=None if there is a redirection loop.
         if data is None:
@@ -1167,6 +1368,12 @@ CHARS_PER_POST = 5000
 # translation request.
 WORDS_PER_POST = 128
 
+# Words longer than this are liable to (a) actually be some sort of
+# HTML spew, and (b) cause Postgres to complain about not being able
+# to index things larger than "1/3 of a buffer page".  Because of (a),
+# we set the limit well below the threshold that triggers (b).
+WORD_LENGTH_LIMIT = 750
+
 TRANSLATE_URL = \
     "https://www.googleapis.com/language/translate/v2"
 GET_LANGUAGES_URL = \
@@ -1184,6 +1391,7 @@ class GoogleTranslate:
         self.langs        = None
         self.translations = None
         self.prepare_lock = asyncio.Lock(loop=self.loop)
+        self.serializer   = asyncio.Lock(loop=self.loop)
         self.tbufs        = {}
         self.session      = None
 
@@ -1209,7 +1417,7 @@ class GoogleTranslate:
             # done.
             self.translations = (yield from self.db.get_translations())
 
-            yield from self.rate
+            yield from self.rate()
             self.n_requests += 1
             resp = yield from self.http_client.get(
                 GET_LANGUAGES_URL,
@@ -1222,16 +1430,36 @@ class GoogleTranslate:
                           for x in blob["data"]["languages"]
                           if x["language"] != "en")
 
+    @asyncio.coroutine
+    def maybe_log_http_error(self, lang, words, resp):
+        # 503 and 403 seem to be used interchangeably by
+        # google translate with the meaning "slow down a little".
+        # 500 happens on rare occasions (with meaningless details,
+        # "Backend Error") and can also safely be silently retried.
+        if resp.status in (403, 503, 500):
+            return
+
+        self.errlog.write(
+            "POST /language/translate/v2 = {} {}\n"
+            .format(resp.status, resp.reason))
+        self.errlog.write("  source: {}\n"
+                          "  target: en\n"
+                          "  q:      {!r}\n\n"
+                          .format(CLD2_TO_GOOGLE[lang], words))
+        self.errlog.flush()
+        text = yield from resp.text()
+        self.errlog.write(text)
+        self.errlog.write("\n\n")
+        self.errlog.flush()
+
+    def maybe_log_http_exception(self, lang, words, resp, exc):
+            return
 
     @asyncio.coroutine
-    def get_translations_internal(self, lang, words):
-        backoff = 5
-        while True:
-            resp = None
-            try:
-                blob = None
-                yield from self.rate
-                self.n_requests += 1
+    def get_translations_http_request(self, lang, words):
+        resp = None
+        try:
+            with aio_timeout(5, loop=self.loop):
                 resp = yield from self.http_client.post(
                     TRANSLATE_URL,
                     data = {
@@ -1245,66 +1473,48 @@ class GoogleTranslate:
                             "application/x-www-form-urlencoded;charset=utf-8",
                         "X-HTTP-Method-Override": "GET",
                     })
-                if resp.status != 200:
-                    # 503 and 403 seem to be used interchangeably by
-                    # google translate with the meaning "slow down a little"
-                    if resp.status != 503 and resp.status != 403:
-                        self.errlog.write(
-                            "POST /language/translate/v2 = {} {}\n"
-                            .format(resp.status, resp.reason))
-                        self.errlog.write("  source: {}\n"
-                                          "  target: en\n"
-                                          "  q:      {!r}\n\n"
-                                          .format(CLD2_TO_GOOGLE[lang], words))
-                        self.errlog.flush()
-                        text = yield from resp.text()
-                        self.errlog.write(text)
-                        self.errlog.write("\n\n")
+                if resp.status == 200:
+                    blob = yield from resp.json()
+                    yield from resp.release()
+                    return blob
+                else:
+                    yield from self.maybe_log_http_error(lang, words, resp)
+                    yield from resp.release()
+                    return None
 
-                    self.errlog.flush()
-                    try:
-                        yield from resp.release()
-                    except Exception:
-                        resp.close()
-
-                    self.n_errors += 1
-                    self.session.progress()
-                    yield from asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 60)
-                    continue
-
-                blob = yield from resp.json()
-                yield from resp.release()
-                self.session.progress()
-                return list(zip(words,
-                                (unicodedata.normalize(
-                                    "NFKC", x["translatedText"]).casefold()
-                                 for x in blob["data"]["translations"])))
-
-            except Exception:
+        except Exception as e:
+            if not isinstance(e, (asyncio.TimeoutError,
+                                  aiohttp.errors.ClientTimeoutError,
+                                  aiohttp.errors.ClientResponseError)):
                 traceback.print_exc(file=self.errlog)
-                try:
-                    self.errlog.write("\n")
-                    if blob is not None:
-                        json.dump(blob, self.errlog)
-                    elif resp is not None:
-                        text = yield from resp.text()
-                        self.errlog.write(text)
-                except Exception:
-                    self.errlog.write("\nWhile dumping response:\n")
-                    traceback.print_exc(file=self.errlog)
 
-                if resp is not None:
-                    try:
-                        yield from resp.release()
-                    except Exception:
-                        resp.close()
+            if resp is not None:
+                resp.close()
 
-                self.n_errors += 1
+            return None
+
+    @asyncio.coroutine
+    def get_translations_internal(self, lang, words):
+        backoff = 5
+        with (yield from self.serializer):
+            while True:
+                yield from self.rate()
+                self.n_requests += 1
                 self.session.progress()
-                yield from asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
-                continue
+
+                blob = yield from self.get_translations_http_request(
+                    lang, words)
+                if blob:
+                    return list(zip(
+                        words,
+                        (unicodedata.normalize(
+                            "NFKC", x["translatedText"]).casefold()
+                         for x in blob["data"]["translations"])))
+
+            self.n_errors += 1
+            self.session.progress()
+            yield from asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
     @asyncio.coroutine
     def get_translations_worker(self, batch, *, lang):
@@ -1322,20 +1532,52 @@ class GoogleTranslate:
                 fut.set_result(engl)
             else:
                 sleepers[word].append(fut)
-        to_translate = sorted(sleepers.keys())
 
-        translations = yield from self.get_translations_internal(
-            lang, to_translate)
+        # Do not waste resources translating nonwords and URLs;
+        # enforce GTrans's request limits.
+        while sleepers:
+            translations = []
+            to_translate = []
+            nchars = 0
+            for word in sleepers.keys():
+                if len(to_translate) == WORDS_PER_POST: break
+                l = len(word)
 
-        for word, engl in translations:
-            self.translations[lang][word] = engl
-            for fut in sleepers[word]:
-                fut.set_result(engl)
+                if l > WORD_LENGTH_LIMIT:
+                    self.errlog.write(
+                        "{}: word too long, skipping: {}\n"
+                        .format(lang, word))
+                    translations.append((word, word))
+                    continue
 
-        yield from self.db.record_translations(lang, translations)
+                elif word_seg.is_nonword(word):
+                    translations.append((word, word))
+                    continue
+
+                u = word_seg.is_url(word)
+                if u:
+                    translations.append((word, u))
+                    continue
+
+                if nchars + l > CHARS_PER_POST: break
+                to_translate.append(word)
+                nchars += l
+
+            if to_translate:
+                tbatch = yield from self.get_translations_internal(
+                    lang, to_translate)
+                translations.extend(tbatch)
+
+            for word, engl in translations:
+                self.translations[lang][word] = engl
+                for fut in sleepers[word]:
+                    fut.set_result(engl)
+                del sleepers[word]
+
+            yield from self.db.record_translations(lang, translations)
 
     @asyncio.coroutine
-    def translate_segmented(self, segmented):
+    def translate_segmented(self, url, segmented):
         if self.langs is None:
             yield from self.prepare()
 
@@ -1383,6 +1625,10 @@ class GoogleTranslate:
                     translation.append(fut)
 
         if sleepers:
+            self.session.tatrace.write(
+                "{}: TS: waiting for {} translations\n"
+                .format((url if url else '<unknown>'),
+                        len(sleepers)))
             yield from asyncio.wait(sleepers, loop=self.loop)
             for i in range(len(translation)):
                 f = translation[i]
@@ -1415,10 +1661,10 @@ class TopicAnalyzer:
         self.analyzer   = analyzer
         self.loop       = loop or asyncio.get_event_loop()
         self.wbuffer    = work_buffer(self._process_topic_batch, 100,
-                                      label="topic", 
-                                      loop=self.loop)
+                                      label="topic", loop=self.loop)
         self.exit_evt   = asyncio.Event(loop=self.loop)
         self.ready_evt  = asyncio.Event(loop=self.loop)
+        self.batch_lock = asyncio.Lock(loop=self.loop)
         self.proc_t     = None
         self.proc_p     = None
         self.n_pending  = 0
@@ -1471,8 +1717,8 @@ class TopicAnalyzer:
             assert isinstance(b, str)
             assert a != ''
             assert b != ''
-            assert a == ',' or (a[0] != ',' and a[-1] != ',')
-            assert b == ',' or (b[0] != ',' and b[-1] != ',')
+            assert a == ',' or a[0] != ','
+            assert b == ',' or b[0] != ','
         except AssertionError:
             self.session.errlog.write(
                 "bad arguments to is_same_topic:\na={!r}\nb={!r}\n\n"
@@ -1480,21 +1726,28 @@ class TopicAnalyzer:
             self.session.errlog.flush()
             self.session.n_errors += 1
             self.session.progress()
-            return False
+            return a == b
 
         self.n_requests += 1
 
-        # An empty document appears here as ','.  It should be
-        # considered the "same topic" as another empty document,
-        # but not the same topic as any nonempty document.
-        if a == ',':
-            return b == ','
-        if b == ',':
+        # Shortcut: identical documents are the same topic.
+        if a == b: return True
+
+        # An empty document appears here as ',' or 'xx,'.  It should
+        # be considered the "same topic" as another empty document,
+        # but not the same topic as any nonempty document, or an empty
+        # document in a different language (yes, this happens).
+        # The case of both documents being identically empty was disposed
+        # of above.
+        if a[-1] == ',' or b[-1] == ',':
             return False
 
         self.n_pending += 1
         self.session.progress()
-        return (yield from self.wbuffer.put((a, b)))
+        rv = yield from self.wbuffer.put((a, b))
+        self.n_pending -= 1
+        self.session.progress()
+        return rv
 
     def flush(self):
         self.wbuffer.flush()
@@ -1503,42 +1756,54 @@ class TopicAnalyzer:
     def _process_topic_batch(self, batch):
         yield from self.ready_evt.wait()
 
-        with tempfile.NamedTemporaryFile(
-                mode="w+t", encoding="utf-8",
-                suffix=".txt", prefix="topics.") as ifp:
-            iname = ifp.name
-            rname = iname + ".result"
-
-            for (a, b), _ in batch:
-                ifp.write(a)
-                ifp.write("\n")
-                ifp.write(b)
-                ifp.write("\n")
-
-            ifp.flush()
+        while True:
             try:
-                fut = asyncio.Future(loop=self.loop)
-                self.proc_p.post_batch(iname, fut)
-                yield from fut
+                with (yield from self.batch_lock), \
+                     tempfile.NamedTemporaryFile(
+                        mode="w+t", encoding="utf-8",
+                        suffix=".txt", prefix="topics.") as ifp:
 
-                try:
-                    with open(rname, "rt") as rfp:
-                        for (_, fut), val in zip(batch, rfp):
-                            self.n_pending -= 1
-                            fut.set_result(int(val) != 0)
+                    iname = ifp.name
+                    rname = iname + ".result"
 
-                except OSError:
-                    # Sometimes we go look for the result file and it isn't
-                    # there.  If this happens, retry.
-                    yield from self._process_topic_batch(batch)
+                    for (a, b), _ in batch:
+                        ifp.write(a)
+                        ifp.write("\n")
+                        ifp.write(b)
+                        ifp.write("\n")
 
-            finally:
-                try:
-                    os.remove(rname)
-                except FileNotFoundError:
-                    pass
+                    ifp.flush()
+                    fut = asyncio.Future(loop=self.loop)
+                    try:
+                        self.proc_p.post_batch(iname, fut)
+                        yield from fut
 
-        self.session.progress()
+                        with open(rname, "rt") as rfp:
+                            for (_, fut), val in zip(batch, rfp):
+                                fut.set_result(int(val) != 0)
+                        return
+                    finally:
+                        junk = [rname]
+                        # The topic analyzer doesn't clean up after itself;
+                        # if we don't do this we will fill up /tmp.
+                        junk.extend(glob.glob("/tmp/instance[0-9]*[0-9]csv"))
+                        for j in junk:
+                            try:
+                                os.remove(j)
+                            except FileNotFoundError:
+                                pass
+
+            except OSError as e:
+                # Sometimes we go look for the result file and it isn't
+                # there.  If this happens, retry.  (This *might* have been
+                # solved by not filling up /tmp anymore.)
+                self.session.errlog.write(
+                    "reading topic analysis results: {}: {}\n"
+                    .format(e.filename, e.strerror))
+                self.session.errlog.flush()
+                self.session.n_errors += 1
+                self.session.progress()
+                continue
 
     class TAProtocol(asyncio.SubprocessProtocol):
         def __init__(self, exit_evt, ready_evt):
@@ -1605,6 +1870,11 @@ class Document:
         self.texts     = {}        # map snapshot_date : text
         self.ntopics   = None
 
+    def TRACE(self, msg):
+        self.session.tatrace.write(
+            self.url + ": " + msg + "\n")
+        self.session.tatrace.flush()
+
     def topic_symbol(self):
         K = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
         C = "123456"
@@ -1627,7 +1897,7 @@ class Document:
             self.lodate, self.hidate = yield from \
                 self.session.db.load_date_range_for_url(self.urlid)
 
-        if not self.snapshots:
+        if self.snapshots is None:
             self.snapshots = yield from \
                 self.session.db.load_page_availability(
                     self.session.archive, self.urlid)
@@ -1649,11 +1919,17 @@ class Document:
 
         self.ntopics = max(self.topics.values()) + 1
 
+        self.TRACE("from db: {}s {}t {}T"
+                   .format(len(self.snapshots),
+                           len(self.texts),
+                           len(self.topics)))
+
     @asyncio.coroutine
     def retrieve_history(self):
         yield from self.load_history()
 
-        if not self.snapshots:
+        if self.snapshots is None:
+            self.TRACE("retrieving snapshot availability")
             self.snapshots = yield from \
                 self.session.wayback.get_unique_snapshots_of_url(self.url)
             yield from self.session.db.record_page_availability(
@@ -1679,6 +1955,8 @@ class Document:
                     if isinstance(v, asyncio.Future)]
 
         if sleepers:
+            self.TRACE("phase 1: waiting for {}"
+                       .format(len(sleepers)))
             yield from asyncio.wait(sleepers)
 
         # Phase 2: determine the ranges of time over which the page
@@ -1700,6 +1978,8 @@ class Document:
                 changes.append((cur, prev))
 
         while changes:
+            self.TRACE("phase 2: {} changes to investigate"
+                       .format(len(changes)))
             cur, prev = changes.pop()
             # The topic changed somewhere between CUR and PREV.
             # Narrow down the date by bisection.
@@ -1717,6 +1997,8 @@ class Document:
                     changes.append((cur, date))
 
         status("{}:  {}".format(self.url, self.topic_symbol()), done=True)
+        yield from self.session.db.note_page_processed(
+            self.session.archive, self.urlid)
 
     def check_topic(self, target, *others):
         if target in self.topics:
@@ -1735,6 +2017,8 @@ class Document:
             if isinstance(txt, asyncio.Future):
                 sleepers.append(txt)
         if sleepers:
+            self.TRACE("CTI[{}]: waiting for {} snapshots"
+                       .format(dates[0], len(sleepers)))
             yield from asyncio.wait(sleepers)
 
         target = dates[0]
@@ -1742,11 +2026,15 @@ class Document:
         for i in range(1, len(dates)):
             comparisons.append(self.session.topic_analyzer.is_same_topic(
                 self.texts[target], self.texts[dates[i]]))
+        self.TRACE("CTI[{}]: waiting for {} comparisons"
+                   .format(dates[0], len(comparisons)))
         results = yield from asyncio.gather(*comparisons)
 
         for i in range(1, len(dates)):
             if results[i-1]:
                 if isinstance(self.topics[dates[i]], asyncio.Future):
+                    self.TRACE("CTI[{}]: waiting for topics[{}]"
+                               .format(dates[0], dates[i]))
                     yield from self.topics[dates[i]]
                     assert not isinstance(self.topics[dates[i]], asyncio.Future)
 
@@ -1756,6 +2044,7 @@ class Document:
             self.topics[target] = self.ntopics
             self.ntopics += 1
 
+        self.TRACE("CTI: topic={}".format(self.topics[target]))
         yield from self.session.db.record_historical_page_topic(
             self.session.archive, target, self.urlid, self.topics[target])
 
@@ -1773,10 +2062,15 @@ class Document:
     def retrieve_snapshot_internal(self, date):
         try:
             S = self.session
+            self.TRACE("RSI[{}]: waiting for page".format(date))
             ec = yield from S.wayback.get_page_at_time(self.url, date)
+            self.TRACE("RSI[{}]: waiting for database".format(date))
             yield from S.db.record_historical_page(S.archive, date, ec)
+            self.TRACE("RSI[{}]: waiting for translation".format(date))
             self.texts[date] = yield from S.gtrans.translate_segmented(
+                self.url,
                 json.loads(ec.segmtd.decode("utf-8")))
+            self.TRACE("RSI[{}]: complete".format(date))
             return self.texts[date]
         except Exception:
             traceback.print_exc(file=self.session.errlog)
@@ -1811,10 +2105,12 @@ class HistoryRetrievalSession:
 
     def __enter__(self):
         self.errlog         = open("history-retrieval-errors.log", "at")
+        self.tatrace        = open("history-retrieval-trace.log", "at")
         return self
 
     def __exit__(self, *dontcare):
         self.errlog.close()
+        self.tatrace.close()
 
     @asyncio.coroutine
     def get_documents_to_process(self):
@@ -1897,22 +2193,32 @@ def main(loop, argv):
     # everything that might spin the event loop on teardown must be a context
     # manager so it'll be torn down before the loop itself is (__del__ might
     # not run early enough, even for locals)
+    # aiohttp has serious bugs if you allow it any concurrent connections
+    # (mixing up which data is supposed to be transmitted on which channel)
     with asyncio.get_child_watcher() as watcher,                          \
          aiohttp.ClientSession(
              connector=aiohttp.TCPConnector(
                  loop=loop,
-                 conn_timeout=5, limit=3, use_dns_cache=True
+                 conn_timeout=5, limit=1, use_dns_cache=True
              ),
              headers={
                  'User-Agent': 'tbbscraper/get_page_histories; zackw@cmu.edu'
-             }) as http_client,                                           \
+             }) as http_client_wb,                                         \
+         aiohttp.ClientSession(
+             connector=aiohttp.TCPConnector(
+                 loop=loop,
+                 conn_timeout=5, limit=1, use_dns_cache=True
+             ),
+             headers={
+                 'User-Agent': 'tbbscraper/get_page_histories; zackw@cmu.edu'
+             }) as http_client_gt,                                        \
          TopicAnalyzer(analyzer, loop=loop) as topic_analyzer,            \
          concurrent.futures.ProcessPoolExecutor() as executor,            \
          rate_limiter(10, loop=loop) as wb_rate,                          \
          rate_limiter(4096, loop=loop) as gt_rate,                        \
-         Database(dbname, loop, timeout=3600) as db,                      \
-         WaybackMachine(executor, http_client, wb_rate, loop) as wayback, \
-         GoogleTranslate(db, http_client, gt_rate, loop) as gtrans,       \
+         Database(dbname, loop, timeout = 3600 * 24) as db,               \
+         WaybackMachine(executor, http_client_wb, wb_rate, loop) as wayback, \
+         GoogleTranslate(db, http_client_gt, gt_rate, loop) as gtrans,       \
          HistoryRetrievalSession(
              "wayback", db, wayback,
              gtrans, topic_analyzer, loop) as session:

@@ -139,7 +139,7 @@ class Segmenter:
 
 class ArabicSegmenter(Segmenter):
     SEGMENTER_INVOCATION = [
-        "java", "-Xmx1g", "-classpath", SEGMENTER_JAR,
+        "java", "-Xmx1g", "-XX:-UsePerfData", "-classpath", SEGMENTER_JAR,
         "edu.stanford.nlp.international.arabic.process.ArabicSegmenter",
         "-loadClassifier", ARABIC_DATA
     ]
