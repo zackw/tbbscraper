@@ -463,8 +463,8 @@ cdef class ExtractedContent:
         self.url = url
         self.dom_stats = DomStatistics()
 
-        mimetype = external_ctype.casefold().encode("ascii")
-        charset  = external_charset.casefold().encode("ascii")
+        mimetype = (external_ctype or "").casefold().encode("ascii")
+        charset  = (external_charset or "").casefold().encode("ascii")
 
         if isinstance(page, str):
             # Without the cast, Cython doesn't realize it can use

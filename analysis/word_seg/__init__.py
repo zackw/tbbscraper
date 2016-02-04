@@ -283,8 +283,8 @@ class Segmenter:
                     w = self.left_trim.sub("", w)
                     if w:
                         w = self.right_trim.sub("", w)
-                        yield from language_seg(
-                            unicodedata.normalize('NFKC', w).casefold())
+                        for lw in language_seg(w):
+                            yield unicodedata.normalize('NFKC', lw).casefold()
 
     def _lang_segment_default(self, text):
         """The default behavior is just to do presegmentation."""
