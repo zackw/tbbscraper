@@ -55,6 +55,17 @@ ALTER TABLE capture_logs_old
   ALTER COLUMN hash SET STORAGE PLAIN,    -- incompressible (SHA256)
   ALTER COLUMN log  SET STORAGE EXTERNAL; -- compressed by application
 
+
+-- New, HAR-format capture logs
+CREATE TABLE capture_logs (
+      id      SERIAL   NOT NULL PRIMARY KEY,
+      hash    BYTEA    NOT NULL UNIQUE,
+      log     BYTEA    NOT NULL
+);
+ALTER TABLE capture_logs
+  ALTER COLUMN hash SET STORAGE PLAIN,    -- incompressible (SHA256)
+  ALTER COLUMN log  SET STORAGE EXTERNAL; -- compressed by application
+
 -- Main capture table.
 -- The "id" column is meaningless, and exists almost entirely
 -- to facilitate shuffling data over from the collection host to the
