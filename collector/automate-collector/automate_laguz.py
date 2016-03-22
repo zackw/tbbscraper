@@ -1,10 +1,11 @@
 #! /usr/bin/python3
 
 import shutil
+import sys
 import traceback
 from subprocess import check_call
 
-def runCollector() :
+def runCollector(location, url, dbname) :
 
 
     runCount = 0
@@ -12,7 +13,7 @@ def runCollector() :
         try:
             # TODO: make location and urls args
             # run the capture
-            cmd = ["../url-source", "capture", location, urls, "CaptureResults"]
+            cmd = ["../url-source", "capture", location, url, "CaptureResults"]
             check_call (cmd)
 
             # Rsync it back to kenaz
@@ -22,14 +23,27 @@ def runCollector() :
             # Run import_batch on kenaz
             # TODO: Runs it in the background so running delete immediately after
             # should not be a problem?
-            runKenaz = ["ssh", "dbreceiver@kenaz.ece.cmu.edu", "nohup", "python", "runImportBatch.py", "&"]
+            runKenaz = ["ssh", "dbreceiver@kenaz.ece.cmu.edu", "nohup", "python",
+                    "runImportBatch.py", dbname, "~/CaptureResults", "&"]
             check_call (runKenaz)
 
             # Delete files
             shutil.rmtree ("CaptureResults");
         except Exception:
-            print traceback.print_exc()
-        runCount++
+            traceback.print_exc()
+            #print traceback.print_exc()
+        runCount += 1
 
-runCollector()
+def main ():
+    if (len(sys.argv) < 4):
+        print ("usage: python automate_laguz <location_file> <url_file> <dbname>")
+        return
+    location_file = sys.argv[1]
+    url_file = sys.argv[2]
+    dbname = sys.argv[3]
+    #dirs = sys.argv[4:]
+    print (location_file)
+    print (url_file)
+    runCollector (location_file, url_file, dbname)
 
+main()
