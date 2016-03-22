@@ -5,6 +5,15 @@ BEGIN;
 CREATE SCHEMA collection;
 SET search_path TO collection, public;
 
+CREATE TABLE country_codes (
+    name      TEXT NOT NULL UNIQUE CHECK (name <> ''),
+    cc3       TEXT NOT NULL UNIQUE CHECK (cc3  <> ''),
+    cc2       TEXT NOT NULL UNIQUE CHECK (cc2  <> ''),
+    rwb_score REAL,
+    rwb_rank  INTEGER,
+    fh_score  INTEGER
+);
+
 -- The URLs, their sources, and the metadata for them.
 CREATE TABLE url_strings (
     id    SERIAL  NOT NULL PRIMARY KEY,
@@ -68,4 +77,4 @@ CREATE INDEX captured_pages_url_idx ON captured_pages(url);
 CREATE INDEX captured_pages_url_country_idx ON captured_pages(url, country);
 CREATE INDEX captured_pages_url_result_idx ON captured_pages(url, result);
 
-
+COMMIT;
