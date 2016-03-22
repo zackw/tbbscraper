@@ -2,8 +2,8 @@
 
 BEGIN;
 
-CREATE SCHEMA collection;
-SET search_path TO collection, public;
+CREATE SCHEMA automateCollection;
+SET search_path TO automateCollection, public;
 
 CREATE TABLE country_codes (
     name      TEXT NOT NULL UNIQUE CHECK (name <> ''),
