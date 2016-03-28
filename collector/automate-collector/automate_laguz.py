@@ -3,17 +3,17 @@
 import shutil
 import sys
 import traceback
+import os
 from subprocess import check_call
 
 def runCollector(location, url, dbname) :
 
 
     runCount = 0
-    while runCount < 3:
+    while runCount < 1:
         try:
-            # TODO: make location and urls args
-            # run the capture
-            cmd = ["../url-source", "capture", location, url, "CaptureResults"]
+            cmd = [os.path.dirname(__file__)+"../url-source", "capture", location, url, "CaptureResults"]
+            print "CMD: " , cmd
             check_call (cmd)
 
             # Rsync it back to kenaz
