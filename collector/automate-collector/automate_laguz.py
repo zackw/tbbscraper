@@ -29,7 +29,7 @@ def runCollector(location, url, dbname) :
             # should not be a problem?
             runKenaz = ["ssh", "dbreceiver@kenaz.ece.cmu.edu", "nohup", "python",
                     "tbbscraper/collector/automate-collector/runImportBatch.py",
-                    dbname, "~/CaptureResults", "&"]
+                    dbname, "CaptureResults", "&"]
             check_call (runKenaz)
 
             # Delete files

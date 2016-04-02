@@ -18,7 +18,9 @@ def runImportBatch (dbname, dirs)
 def main ():
     dbname = sys.argv[1]
     dirs = sys.argv[2:]
+    print ("main")
     runImportBatch(dbname, dirs)
+    print "runImportBatch Done"
 
 main()
 #runImportBatch()
