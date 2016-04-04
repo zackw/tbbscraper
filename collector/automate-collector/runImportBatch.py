@@ -13,7 +13,7 @@ def runImportBatch (dbname, dirs):
         cmd = ["python3", os.path.dirname(__file__)+"/../scripts/import-batch.py", dbname, dirs]
         check_call (cmd)
     except Exception:
-        print "Error running import_batch"
+        print ("Error running import_batch")
         traceback.print_exc()
 
 def main ():
@@ -21,7 +21,7 @@ def main ():
     dirs = sys.argv[2]
     print ("main")
     runImportBatch(dbname, dirs)
-    print "runImportBatch Done"
+    print ("runImportBatch Done")
 
 main()
 #runImportBatch()
