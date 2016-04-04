@@ -1,4 +1,4 @@
-ql-product: postgres -*-
+-- -*- sql-product: postgres -*-
 
 SET search_path TO collection, public;
 
