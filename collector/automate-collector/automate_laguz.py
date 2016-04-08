@@ -5,6 +5,7 @@ import sys
 import traceback
 import os
 import logging
+import time
 from subprocess import check_call
 
 def runCollector(location, url, dbname) :
@@ -60,7 +61,8 @@ def runCollector(location, url, dbname) :
             logging.exception ('Exception on remove tree')
             traceback.print_exc()
         runCount += 1
-        timeFile.write ("RUN " + runCount + ": Time: " + (time.time() - startTime) + '\n')
+        timeFile.write ("RUN " + str(runCount) + ": Time: %s"
+               % (time.time() - startTime) + '\n')
     timeFile.close()
 
 def main ():
