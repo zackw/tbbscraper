@@ -9,7 +9,7 @@ from subprocess import check_call
 
 def runCollector(location, url, dbname) :
 
-    LOG_FILE = os.path.dirname(__file__)+"/collectorErrors.log", level=logging.WARNING)
+    LOG_FILE = os.path.dirname(__file__)+"/collectorErrors.log"
     logging.basicConfig(filename=LOG_FILE, level = logging.WARNING)
 
     runCount = 0
