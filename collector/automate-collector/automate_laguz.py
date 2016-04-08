@@ -10,7 +10,7 @@ def runCollector(location, url, dbname) :
 
 
     runCount = 0
-    while runCount < 1:
+    while runCount < 3:
         try:
             cmd = [os.path.dirname(__file__)+"/../url-source", "capture",
                     location, url, "CaptureResults"]
@@ -23,15 +23,29 @@ def runCollector(location, url, dbname) :
             check_call (rsyncCmd)
 
             print ("Rysc Done")
+        except Exception:
+            traceback.print_exc()
 
-            # Run import_batch on kenaz
-            # TODO: Runs it in the background so running delete immediately after
-            # should not be a problem?
-            runKenaz = ["ssh", "dbreceiver@kenaz.ece.cmu.edu", "nohup", "python",
-                    "tbbscraper/collector/automate-collector/runImportBatch.py",
-                    dbname, "CaptureResults", "&"]
-            check_call (runKenaz)
 
+        tries = 0;
+        while (tries < 3):
+            try:
+                runKenaz = ["ssh", "dbreceiver@kenaz.ece.cmu.edu", "nohup", "python",
+                        "tbbscraper/collector/automate-collector/runImportBatch.py",
+                        dbname, "CaptureResults", "&"]
+                check_call (runKenaz)
+                break
+            except Exception as e:
+                print e
+                print ("SSH failed. Trying again in 5 mins...")
+                time.sleep (300)
+                tries+=1
+                if (tries == 3):
+                    check_call ('/usr/sbin/sendmail speddada@andrew.cmu.edu < toEmail.txt',
+                            shell = True)
+
+
+        try:
             # Delete files
             shutil.rmtree ("CaptureResults");
         except Exception:
