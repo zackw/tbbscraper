@@ -4,13 +4,19 @@ import shutil
 import sys
 import traceback
 import os
+import logging
 from subprocess import check_call
 
 def runCollector(location, url, dbname) :
 
+    LOG_FILE = os.path.dirname(__file__)+"/collectorErrors.log", level=logging.WARNING)
+    logging.basicConfig(filename=LOG_FILE, level = logging.WARNING)
 
     runCount = 0
+    timeFile = open ("timingLog.txt", 'w')
+
     while runCount < 3:
+        startTime = time.time()
         try:
             cmd = [os.path.dirname(__file__)+"/../url-source", "capture",
                     location, url, "CaptureResults"]
@@ -24,6 +30,7 @@ def runCollector(location, url, dbname) :
 
             print ("Rysc Done")
         except Exception:
+            logging.exception ('Exception running capture')
             traceback.print_exc()
 
 
@@ -36,6 +43,7 @@ def runCollector(location, url, dbname) :
                 check_call (runKenaz)
                 break
             except Exception as e:
+                logging.exception ('Failed to SSH to kenaz')
                 print e
                 print ("SSH failed. Trying again in 5 mins...")
                 time.sleep (300)
@@ -49,8 +57,11 @@ def runCollector(location, url, dbname) :
             # Delete files
             shutil.rmtree ("CaptureResults");
         except Exception:
+            logging.exception ('Exception on remove tree')
             traceback.print_exc()
         runCount += 1
+        timeFile.write ("RUN " + runCount + ": Time: " + (time.time() - startTime) + '\n')
+    timeFile.close()
 
 def main ():
     if (len(sys.argv) < 4):
