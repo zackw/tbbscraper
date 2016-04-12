@@ -566,6 +566,7 @@ prepare_fds(void)
       if (fd >= 3 && fd != dfd)
         close((int)fd);
     }
+    closedir(fdir);
 
   } else {
     /* Double blech. */
