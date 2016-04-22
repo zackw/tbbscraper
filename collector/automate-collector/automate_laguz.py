@@ -8,70 +8,79 @@ import logging
 import time
 from subprocess import check_call
 
-def runCollector(location, url, dbname) :
+def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
+        log_level) :
 
-    LOG_FILE = os.path.dirname(__file__)+"/collectorErrors.log"
-    logging.basicConfig(filename=LOG_FILE, level = logging.WARNING)
+    LOG_FILE = log_dest + ".log"
+    logging.basicConfig(filename=LOG_FILE, level = log_level)
 
-    runCount = 0
-    timeFile = open ("timingLog.txt", 'w')
+    startTime = time.time()
+    try:
+        cmd = [os.path.dirname(__file__)+"/../url-source", "capture",
+            location, url, results_dir]
+        check_call (cmd)
+        logging.debug ("Capture results done")
 
-    while runCount < 3:
-        startTime = time.time()
+        # Rsync it back to kenaz
+        rsyncCmd = ["rsync", "-r", results_dir,
+                ssh_dest  + ":" + results_dir]
+        check_call (rsyncCmd)
+        logging.debug ("Rysc Done")
+
+    except Exception:
+        logging.exception ('Exception running capture')
+
+
+    # SSH to kenaz. Retry at most 3 times. Email if it fails 3 times
+    tries = 0;
+    while (tries < 3):
         try:
-            cmd = [os.path.dirname(__file__)+"/../url-source", "capture",
-                    location, url, "CaptureResults"]
-            check_call (cmd)
-            print ("Capture results done")
+            runKenaz = ["ssh", ssh_dest, "nohup", "python", "runImportBatch.py",
+                    dbname, results_dir, log_dest, log_level, "&"]
+            check_call (runKenaz)
+            break
+        except Exception as e:
+            logging.exception ('Failed to SSH to kenaz')
+            logging.debug ("SSH failed. Trying again in 5 mins...")
+            time.sleep (300)
+            tries+=1
+            if (tries == 3):
+                check_call ('/usr/sbin/sendmail speddada@andrew.cmu.edu < toEmail.txt',
+                        shell = True)
 
-            # Rsync it back to kenaz
-            rsyncCmd = ["rsync", "-r", "CaptureResults",
-                    "dbreceiver@kenaz.ece.cmu.edu:CaptureResults"]
-            check_call (rsyncCmd)
+    try:
+        # Delete files
+        shutil.rmtree (results_dir);
+    except Exception:
+        logging.exception ('Exception on remove tree')
 
-            print ("Rysc Done")
-        except Exception:
-            logging.exception ('Exception running capture')
-            traceback.print_exc()
+    logging.info ("Time to completion: %s\n" % (time.time() - startTime))
 
+def get_log_level (level):
+    return {
+            "CRITICAL" : logging.CRITICAL,
+            "ERROR"    : logging.ERROR,
+            "WARNING"  : logging.WARNING,
+            "INFO"     : logging.INFO,
+            "DEBUG"    : logging.DEBUG,
+            }[level]
 
-        tries = 0;
-        while (tries < 3):
-            try:
-                runKenaz = ["ssh", "dbreceiver@kenaz.ece.cmu.edu", "nohup", "python",
-                        "tbbscraper/collector/automate-collector/runImportBatch.py",
-                        dbname, "CaptureResults", "&"]
-                check_call (runKenaz)
-                break
-            except Exception as e:
-                logging.exception ('Failed to SSH to kenaz')
-                print e
-                print ("SSH failed. Trying again in 5 mins...")
-                time.sleep (300)
-                tries+=1
-                if (tries == 3):
-                    check_call ('/usr/sbin/sendmail speddada@andrew.cmu.edu < toEmail.txt',
-                            shell = True)
-
-
-        try:
-            # Delete files
-            shutil.rmtree ("CaptureResults");
-        except Exception:
-            logging.exception ('Exception on remove tree')
-            traceback.print_exc()
-        runCount += 1
-        timeFile.write ("RUN " + str(runCount) + ": Time: %s"
-               % (time.time() - startTime) + '\n')
-    timeFile.close()
 
 def main ():
-    if (len(sys.argv) < 4):
-        print ("usage: python automate_laguz <location_file> <url_file> <dbname>")
+    if (len(sys.argv) < 8):
+        # log levels CRITICAL, ERROR, WARNING, INFO, DEBUG
+        print ("usage: python automate_laguz <location_file> <url_file> <dbname>" +
+        "<results_dir> <ssh_dest> <log_dest> <log_level> ")
         return
     location_file = sys.argv[1]
     url_file = sys.argv[2]
     dbname = sys.argv[3]
-    runCollector (location_file, url_file, dbname)
+    results_dir = sys.argv[4]
+    ssh_dest = sys.argv[5]
+    log_dest = sys.argv[6]
+    log_level = get_log_level(sys.argv[7].upper())
+
+    runCollector (location_file, url_file, dbname, results_dir, ssh_dest,
+            log_dest, log_level)
 
 main()
