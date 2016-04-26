@@ -9,7 +9,7 @@ import time
 from subprocess import check_call
 
 def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
-        log_level) :
+        log_level, emailId) :
 
     LOG_FILE = log_dest + ".log"
     logging.basicConfig(filename=LOG_FILE, level = log_level)
@@ -45,7 +45,7 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
             time.sleep (300)
             tries+=1
             if (tries == 3):
-                check_call ('/usr/sbin/sendmail speddada@andrew.cmu.edu < toEmail.txt',
+                check_call (('/usr/sbin/sendmail ' + emailId + ' < toEmail.txt'),
                         shell = True)
 
     try:
@@ -67,10 +67,10 @@ def get_log_level (level):
 
 
 def main ():
-    if (len(sys.argv) < 8):
+    if (len(sys.argv) < 9):
         # log levels CRITICAL, ERROR, WARNING, INFO, DEBUG
         print ("usage: python automate_laguz <location_file> <url_file> <dbname>" +
-        "<results_dir> <ssh_dest> <log_dest> <log_level> ")
+        "<results_dir> <ssh_dest> <log_dest> <log_level> <email>")
         return
     location_file = sys.argv[1]
     url_file = sys.argv[2]
@@ -78,9 +78,10 @@ def main ():
     results_dir = sys.argv[4]
     ssh_dest = sys.argv[5]
     log_dest = sys.argv[6]
-    log_level = get_log_level(sys.argv[7].upper())
+    log_level = get_log_level(sys.argv[7].upper())o
+    emailId = sys.argv[8]
 
     runCollector (location_file, url_file, dbname, results_dir, ssh_dest,
-            log_dest, log_level)
+            log_dest, log_level, emailId)
 
 main()
