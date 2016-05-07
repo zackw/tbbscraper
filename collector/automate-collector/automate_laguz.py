@@ -78,7 +78,7 @@ def main ():
     results_dir = sys.argv[4]
     ssh_dest = sys.argv[5]
     log_dest = sys.argv[6]
-    log_level = get_log_level(sys.argv[7].upper())o
+    log_level = get_log_level(sys.argv[7].upper())
     emailId = sys.argv[8]
 
     runCollector (location_file, url_file, dbname, results_dir, ssh_dest,
