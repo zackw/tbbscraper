@@ -45,7 +45,7 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
             time.sleep (300)
             tries+=1
             if (tries == 3):
-                check_call (('/usr/sbin/sendmail ' + emailId + ' < toEmail.txt'),
+                check_call (('/usr/sbin/sendmail ' + emailId + ' < ' + os.path.dirname(__file__) +'/toEmail.txt'),
                         shell = True)
 
     try:
