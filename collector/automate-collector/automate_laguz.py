@@ -36,7 +36,7 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
     while (tries < 3):
         try:
             runKenaz = ["ssh", ssh_dest, "nohup", "python", "runImportBatch.py",
-                    dbname, results_dir, log_dest, log_level, "&"]
+                    dbname, results_dir, log_dest, logging.getLevelName(log_level), "&"]
             check_call (runKenaz)
             break
         except Exception as e:
@@ -45,8 +45,8 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
             time.sleep (300)
             tries+=1
             if (tries == 3):
-                check_call (('/usr/sbin/sendmail ' + emailId + ' < ' + os.path.dirname(__file__) +'/toEmail.txt'),
-                        shell = True)
+                check_call (('/usr/sbin/sendmail ' + emailId + ' < ' +
+                    os.path.dirname(__file__) +'/toEmail.txt'),shell = True)
 
     try:
         # Delete files
