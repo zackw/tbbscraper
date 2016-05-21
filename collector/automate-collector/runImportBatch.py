@@ -13,7 +13,7 @@ def runImportBatch (dbname, dirs, log_dest, log_level):
     logging.basicConfig (filename=LOG_FILE, level = log_level)
 
     try:
-        cmd = ["python3", "import-batch.py", dbname, dirs]
+        cmd = ["python3", os.path.dirname(__file__)+"/../scripts/import-batch.py", dbname, dirs]
         check_call (cmd)
     except Exception:
         logging.exception ('Error running import_batch')

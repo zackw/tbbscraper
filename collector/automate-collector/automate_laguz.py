@@ -35,7 +35,8 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
     tries = 0;
     while (tries < 3):
         try:
-            runKenaz = ["ssh", ssh_dest, "nohup", "python", "runImportBatch.py",
+            runKenaz = ["ssh", ssh_dest, "nohup", "python",
+                     "tbbscraper/collector/automate-collector/runImportBatch.py",
                     dbname, results_dir, log_dest, logging.getLevelName(log_level), "&"]
             check_call (runKenaz)
             break
