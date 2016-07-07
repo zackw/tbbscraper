@@ -67,6 +67,8 @@ def setup_argp(ap):
     ap.add_argument("-p", "--max-simultaneous-proxies",
                     action="store", type=int, default=10,
                     help="Maximum number of proxies to use simultaneously.")
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="Don't print progress messages.")
 
 def run(args):
     if os.environ.get("PYTHONASYNCIODEBUG"):
@@ -383,7 +385,8 @@ class CaptureWorker:
     """Control the process of crunching through all the URLs for a given
        locale."""
     def __init__(self, output_dir, locale, urls,
-                 loop, max_workers, global_bound, output_queue):
+                 loop, max_workers, global_bound,
+                 output_queue, quiet):
         self.output_dir   = output_dir
         self.locale       = locale
         self.urls         = urls
@@ -391,12 +394,20 @@ class CaptureWorker:
         self.max_workers  = max_workers
         self.global_bound = global_bound
         self.output_queue = output_queue
+        self.quiet        = quiet
 
     def output_fname(self, serial):
         return "{}/{:02d}/{:03d}/{:03d}.{}".format(
             self.output_dir,
             serial // 1000000, (serial % 1000000) // 1000, serial % 1000,
             self.locale)
+
+    def progress(self, label, url, message):
+        if self.quiet: return
+        if message == "...":
+            sys.stderr.write(label + url + "...\n")
+        else:
+            sys.stderr.write(label + url + ": " + message + "\n")
 
     @asyncio.coroutine
     def run_worker(self, proxy, i):
@@ -409,12 +420,12 @@ class CaptureWorker:
                 if task is None: break
                 (serial, url) = task
 
-                sys.stderr.write(label + url + "...\n")
+                progress(label, url, "...")
                 try:
                     result = yield from do_capture(url, proxy, self.loop)
-                    sys.stderr.write(label + url + ": " + result.status + "\n")
+                    progress(label, url, result.status)
                 except:
-                    sys.stderr.write(label + url + ": fail\n")
+                    progress(label, url, "fail")
                     raise
 
             # The result is written out in an executor because neither
@@ -490,7 +501,8 @@ class CaptureDispatcher:
         self.workers = {
             loc: CaptureWorker(self.output_dir, loc, urls[:],
                                self.loop, self.args.workers_per_loc,
-                               self.global_bound, self.output_queue)
+                               self.global_bound, self.output_queue,
+                               self.args.quiet)
 
             for loc in self.proxies.locations.keys()
         }
