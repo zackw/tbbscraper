@@ -9,7 +9,7 @@ import time
 from subprocess import check_call
 
 def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
-        log_level, emailId) :
+        log_level, emailId, quiet) :
 
     LOG_FILE = log_dest + ".log"
     logging.basicConfig(filename=LOG_FILE, level = log_level)
@@ -18,6 +18,8 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
     try:
         cmd = [os.path.dirname(__file__)+"/../url-source", "capture",
             location, url, results_dir]
+        if (quiet):
+            cmd += ["-q"]
         check_call (cmd)
         logging.debug ("Capture results done")
 
@@ -70,9 +72,14 @@ def get_log_level (level):
 def main ():
     if (len(sys.argv) < 9):
         # log levels CRITICAL, ERROR, WARNING, INFO, DEBUG
-        print ("usage: python automate_laguz <location_file> <url_file> <dbname>" +
+        print ("usage: python automate_laguz.py <location_file> <url_file> <dbname>" +
         "<results_dir> <ssh_dest> <log_dest> <log_level> <email>")
         return
+    if ((len(sys.argv) == 10) and (sys.argv[9] == "-q")):
+        quiet = True
+    else:
+        quiet = False
+
     location_file = sys.argv[1]
     url_file = sys.argv[2]
     dbname = sys.argv[3]
@@ -83,6 +90,6 @@ def main ():
     emailId = sys.argv[8]
 
     runCollector (location_file, url_file, dbname, results_dir, ssh_dest,
-            log_dest, log_level, emailId)
+            log_dest, log_level, emailId, quiet)
 
 main()
