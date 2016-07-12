@@ -260,8 +260,16 @@ static const char *
 must_getenv(const char *var)
 {
   const char *val = getenv(var);
-  if (!val || !*val)
-    fatal_printf("%s: required variable not set in environment", var);
+  if (!val || !*val) {
+    fprintf(stderr, "%s: %s: required variable not set in environment\n",
+            progname, var);
+    fprintf(stderr, "%s: --- begin environment dump ---\n", progname);
+    for (const char *const *ep = (const char *const *)environ;
+         *ep;
+         ep++)
+      fprintf(stderr, "%s\n", *ep);
+    fatal("--- end environment dump ---");
+  }
   return val;
 }
 
@@ -583,6 +591,44 @@ maybe_config_dns(const char *namespace, char **envp)
 }
 
 static void
+config_ipv4_routes(const char *tun_dev)
+{
+  /* Arbitrary limit of 1000 non-default routes. */
+  for (unsigned int i = 0; i < 1000; i++) {
+    const char *rgw_i = xasprintf("route_gateway_%d", i);
+    const char *rnm_i = xasprintf("route_netmask_%d", i);
+    const char *rnw_i = xasprintf("route_network_%d", i);
+    const char *gateway = getenv(rgw_i);
+    const char *netmask = getenv(rnm_i);
+    const char *network = getenv(rnw_i);
+    if (!gateway || !netmask || !network ||
+        !*gateway || !*netmask || !*network)
+      break;
+    network = xasprintf("%s/%u", network, mask2cidr(netmask));
+    run("ip", "route", "add", network, "via", gateway, "dev", tun_dev);
+  }
+  const char *dgateway = getenv("route_vpn_gateway");
+  if (dgateway) {
+    run("ip", "route", "add", "default", "via", dgateway, "dev", tun_dev);
+  }
+}
+
+static void
+config_ipv6_routes(const char *tun_dev)
+{
+  /* Arbitrary limit of 1000 non-default routes. */
+  for (unsigned int i = 0; i < 1000; i++) {
+    const char *rgw_i = xasprintf("route_ipv6_gateway_%d", i);
+    const char *rnw_i = xasprintf("route_ipv6_network_%d", i);
+    const char *gateway = getenv(rgw_i);
+    const char *network = getenv(rnw_i);
+    if (!gateway || !network || !*gateway || !*network)
+      break;
+    run("ip", "route", "add", network, "via", gateway, "dev", tun_dev);
+  }
+}
+
+static void
 do_up_script(int argc, char **argv, char **envp)
 {
   if (argc < 4) {
@@ -608,8 +654,6 @@ do_up_script(int argc, char **argv, char **envp)
   must_getenv("tun_mtu");
   must_getenv("route_vpn_gateway");
   must_getenv("ifconfig_local");
-  must_getenv("ifconfig_broadcast");
-  mask2cidr(must_getenv("ifconfig_netmask"));
 
   /* Make sure we create everything with the correct permissions.
      This system call cannot fail.  */
@@ -641,10 +685,9 @@ do_up_inside_ns(int argc, char **argv, char **envp)
   /* Arguments passed down in environment variables from openvpn. */
   const char *tun_dev  = must_getenv("dev");
   const char *tun_mtu  = must_getenv("tun_mtu");
-  const char *tun_gw   = must_getenv("route_vpn_gateway");
   const char *if_local = must_getenv("ifconfig_local");
-  const char *if_nmask = must_getenv("ifconfig_netmask");
-  const char *if_bcast = must_getenv("ifconfig_broadcast");
+  const char *if_nmask = getenv("ifconfig_netmask");
+  const char *if_bcast = getenv("ifconfig_broadcast");
 
   /* Sanity check. */
   const char *actual_namespace =
@@ -653,27 +696,36 @@ do_up_inside_ns(int argc, char **argv, char **envp)
     fatal_printf("not running inside expected namespace - got '%s', want '%s'",
                  actual_namespace, namespace);
 
-  /* 'ip addr add' wants a CIDR-format netmask. */
-  if_local = xasprintf("%s/%u", if_local, mask2cidr(if_nmask));
-
-  run("ip", "addr", "add",
-            "dev", tun_dev,
-            "local", if_local,
-            "broadcast", if_bcast);
+  if (if_nmask) {
+    /* 'ip addr add' wants a CIDR-format netmask. */
+    if_local = xasprintf("%s/%u", if_local, mask2cidr(if_nmask));
+    if (if_bcast) {
+      run("ip", "addr", "add", "dev", tun_dev, "local", if_local,
+          "broadcast", if_bcast);
+    } else {
+      run("ip", "addr", "add", "dev", tun_dev, "local", if_local);
+    }
+  } else {
+    /* If we don't have a netmask, this is a point-to-point hop and we
+       had better have a remote.   Broadcast, if any, doesn't make sense
+       and is ignored. */
+    const char *if_remote = must_getenv("ifconfig_remote");
+    run("ip", "addr", "add", "dev", tun_dev, "local", if_local,
+        "peer", if_remote);
+  }
   run("ip", "link", "set", "dev", tun_dev, "mtu", tun_mtu, "up");
-  run("ip", "route", "add", "default", "via", tun_gw, "dev", tun_dev);
 
   /* If we got an IPv6 address, configure that too. */
   const char *if6_local = getenv("ifconfig_ipv6_local");
   const char *if6_cidr  = getenv("ifconfig_ipv6_netbits");
-  const char *if6_rnet  = getenv("route_ipv6_network_1");
-  const char *if6_rgw   = getenv("route_ipv6_gateway_1");
-  if (if6_local && if6_cidr && if6_rnet && if6_rgw) {
-
+  if (if6_local && if6_cidr) {
     if6_local = xasprintf("%s/%s", if6_local, if6_cidr);
     run("ip", "addr", "add", "dev", tun_dev, "local", if6_local);
-    run("ip", "route", "add", if6_rnet, "via", if6_rgw, "dev", tun_dev);
+    config_ipv6_routes(tun_dev);
   }
+
+  /* This sets the default route, so do it last. */
+  config_ipv4_routes(tun_dev);
 }
 
 static void
