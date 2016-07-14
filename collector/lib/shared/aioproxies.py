@@ -425,7 +425,7 @@ class OpenVPNProxyManager(BaseProxyManager):
     def _start_timeout(self):
         if self.starting and self._sp_t is not None:
             sys.stderr.write("{}: timeout during startup\n"
-                             .format(self._label))
+                             .format(self.label()))
             self._sp_t.terminate()
         self._start_to_h = None
 
