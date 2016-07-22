@@ -6,7 +6,9 @@ import traceback
 import os
 import logging
 import time
+import datetime
 from subprocess import check_call
+
 
 def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
         log_level, emailId, quiet) :
@@ -20,6 +22,8 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
             location, url, results_dir]
         if (quiet):
             cmd += ["-q"]
+	logging.info (str(datetime.datetime.now()))
+	logging.info ("Running collector")
         check_call (cmd)
         logging.debug ("Capture results done")
 
