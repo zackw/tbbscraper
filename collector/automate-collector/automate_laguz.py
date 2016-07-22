@@ -6,6 +6,7 @@ import traceback
 import os
 import logging
 import time
+import datetime
 from subprocess import check_call
 
 def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
@@ -20,6 +21,8 @@ def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
             location, url, results_dir]
         if (quiet):
             cmd += ["-q"]
+        logging.info (str(datetime.datetime.now()))
+        logging.info ("Running collector")
         check_call (cmd)
         logging.debug ("Capture results done")
 
@@ -75,10 +78,7 @@ def main ():
         print ("usage: python automate_laguz.py <location_file> <url_file> <dbname>" +
         "<results_dir> <ssh_dest> <log_dest> <log_level> <email>")
         return
-    if ((len(sys.argv) == 10) and (sys.argv[9] == "-q")):
-        quiet = True
-    else:
-        quiet = False
+    quiet = ((len(sys.argv) == 10) and (sys.argv[9] == "-q"))
 
     location_file = sys.argv[1]
     url_file = sys.argv[2]
