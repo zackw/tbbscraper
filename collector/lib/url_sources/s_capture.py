@@ -420,12 +420,12 @@ class CaptureWorker:
                 if task is None: break
                 (serial, url) = task
 
-                progress(label, url, "...")
+                self.progress(label, url, "...")
                 try:
                     result = yield from do_capture(url, proxy, self.loop)
-                    progress(label, url, result.status)
+                    self.progress(label, url, result.status)
                 except:
-                    progress(label, url, "fail")
+                    self.progress(label, url, "fail")
                     raise
 
             # The result is written out in an executor because neither
