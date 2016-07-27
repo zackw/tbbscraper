@@ -9,6 +9,7 @@ import time
 import datetime
 from subprocess import check_call
 
+
 def runCollector(location, url, dbname, results_dir, ssh_dest, log_dest,
         log_level, emailId, quiet) :
 
