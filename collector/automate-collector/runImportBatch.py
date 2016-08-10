@@ -4,6 +4,7 @@ import traceback
 import os
 import sys
 import logging
+import datetime
 from subprocess import check_call
 
 
@@ -16,6 +17,7 @@ def runImportBatch (dbname, dirs, log_dest, log_level):
         cmd = ["python3", os.path.dirname(__file__)+"/../scripts/import-batch.py", dbname, dirs]
         check_call (cmd)
     except Exception:
+        logging.info (str(datetime.datetime.now()))
         logging.exception ('Error running import_batch')
 
 def get_log_level (level):

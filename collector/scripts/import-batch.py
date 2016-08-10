@@ -283,19 +283,30 @@ def record_result(cur, result):
     cid       = add_capture_html_content(cur, result.html_content)
     lid       = add_capture_log_old(cur, result.capture_log_old)
 
-    cur.execute("INSERT INTO captured_pages"
-                "  (id, url, country, vantage, access_time, elapsed_time,"
-                "   result, redir_url, capture_log, capture_log_old,"
-                "   html_content)"
-                " VALUES"
-                "   (DEFAULT, %s, %s, %s, "
-                "    TIMESTAMP WITHOUT TIME ZONE 'epoch' + "
-                "        %s * INTERVAL '1 second',"
-                "    %s, %s, %s, NULL, %s, %s)",
-                (ouid, result.country, result.vantage,
-                 result.access_time,
-                 result.elapsed,
-                 fid, ruid, lid, cid))
+
+
+    with savepoint (cur, "captured_pages_insertion"):
+
+        cur.execute ("SELECT id, access_time FROM captured_pages WHERE url = %s AND"
+                     " country = %s AND vantage = %s AND"
+                     " access_time = TIMESTAMP WITHOUT TIME ZONE 'epoch' + %s * INTERVAL '1 second'",
+                    (ouid, result.country, result.vantage, result.access_time))
+
+        row = cur.fetchone()
+        if row is None:
+            cur.execute("INSERT INTO captured_pages"
+                    "  (id, url, country, vantage, access_time, elapsed_time,"
+                    "   result, redir_url, capture_log, capture_log_old,"
+                    "   html_content)"
+                    " VALUES"
+                    "   (DEFAULT, %s, %s, %s, "
+                    "    TIMESTAMP WITHOUT TIME ZONE 'epoch' + "
+                    "        %s * INTERVAL '1 second',"
+                    "    %s, %s, %s, NULL, %s, %s)",
+                    (ouid, result.country, result.vantage,
+                    result.access_time,
+                    result.elapsed,
+                    fid, ruid, lid, cid))
 
 
 class Cruncher:
