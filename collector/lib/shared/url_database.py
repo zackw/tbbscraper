@@ -398,3 +398,8 @@ def categorize_result_nr(status, detail):
             return "crawler failure"
 
     return http_statuses_by_code.get(status, "other HTTP response")
+
+def categorize_result_ff(detail):
+    """Categorize a result produced by Firefox.  The mapping is different
+       but the classification scheme remains the same."""
+    raise NotImplemented

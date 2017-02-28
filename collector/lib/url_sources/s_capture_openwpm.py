@@ -1,4 +1,4 @@
-# Copyright © 2014 Zack Weinberg
+# Copyright © 2014-2017 Zack Weinberg
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -6,7 +6,8 @@
 # There is NO WARRANTY.
 
 """Capture the HTML content and a screenshot of each URL in a list,
-using PhantomJS, from many locations simultaneously.
+using Firefox (with OpenWPM automation), from many locations
+simultaneously.
 
 Locations are defined by the config file passed as an argument, which
 is line- oriented, each line having the general form
@@ -61,11 +62,9 @@ def setup_argp(ap):
                     action="store",
                     help="Directory in which to store output.")
     ap.add_argument("-w", "--workers-per-location",
-                    action="store", dest="workers_per_loc", type=int, default=8,
-                    help="Maximum number of concurrent workers per location.")
-    ap.add_argument("-W", "--total-workers",
-                    action="store", dest="total_workers", type=int, default=40,
-                    help="Total number of concurrent workers to use.")
+                    action="store", dest="workers_per_loc", type=int, default=1,
+                    help="Maximum number of concurrent Firefox processes "
+                    "per active proxy.")
     ap.add_argument("-p", "--max-simultaneous-proxies",
                     action="store", type=int, default=10,
                     help="Maximum number of proxies to use simultaneously.")
@@ -95,13 +94,9 @@ import zlib
 
 # Note: the functions imported from url_database do not actually make
 # use of the database.
-from shared.url_database import canon_url_syntax, categorize_result_nr
+from shared.url_database import canon_url_syntax, categorize_result_ff
 from shared.aioproxies import ProxySet
-from shared.strsignal import strsignal
-
-pj_trace_redir = os.path.realpath(os.path.join(
-        os.path.dirname(__file__),
-        "../../scripts/pj-trace-redir.js"))
+from shared.openwpm_browsers import BrowserManager
 
 class CaptureResult:
     """The result of one capture job."""
@@ -113,8 +108,8 @@ class CaptureResult:
         self.content      = ""
         self.elapsed      = 0.
 
-        # Make sure the URL is not so mangled that phantomjs is just going
-        # to give up and report nothing at all.
+        # Make sure the URL is not so mangled that the browser is just
+        # going to give up and report nothing at all.
         try:
             self.original_url = canon_url_syntax(url, want_splitresult = False)
 
@@ -134,118 +129,12 @@ class CaptureResult:
         # failures; only cases where we got nothing useful back.
         return self.status == 'crawler failure' or not self.content
 
-    def set_result(self, exitcode, stdout, stderr, elapsed):
-        # We parse stdout regardless of exit status, because sometimes
-        # phantomjs prints a complete crawl result and _then_ crashes.
-        valid_result = self.parse_stdout(stdout)
-
-        # We only expect to get stuff on stderr with exit code 1.
-        stderr = stderr.decode('utf-8').strip().splitlines()
-        if exitcode == 1 and not valid_result:
-            self.parse_stderr(stderr)
-        else:
-            if stderr:
-                self.log["stderr"] = stderr
-
-            if not self.status:
-                self.status = "crawler failure"
-                if exitcode > 1:
-                    self.detail = "unexpected exit code {}".format(exitcode)
-                elif exitcode >= 0:
-                    self.detail = "exit {} with invalid output".format(exitcode)
-                else:
-                    self.detail = strsignal(-exitcode)
-
-        self.status = categorize_result_nr(self.status, self.detail)
-        self.elapsed = elapsed
-
-    def parse_stdout(self, stdout):
-        if not stdout:
-            # This may get overridden later, by analysis of stderr.
-            self.status = "crawler failure"
-            self.detail = "no output from tracer"
-            return False
-
-        # The output, taken as a whole, should be one complete JSON object.
-        try:
-            stdout = stdout.decode('utf-8')
-            results = json.loads(stdout)
-            self.canon_url     = results["canon"]
-            self.status        = results["status"]
-            self.detail        = results.get("detail")
-            if not self.detail:
-                if self.status == "timeout":
-                    self.detail = "timeout"
-                else:
-                    self.detail = self.status
-                    self.status = "crawler failure"
-
-            self.log['events'] = results.get("log",    [])
-            self.log['chain']  = results.get("chain",  [])
-            self.log['redirs'] = results.get("redirs", None)
-
-            if 'content' in results:
-                self.content = results['content']
-            return True
-
-        except:
-            # There is some sort of bug causing junk to be emitted along
-            # with the expected output.  We used to try to clean up after
-            # this but that caused its own problems.  Just fail.
-            if not isinstance(stdout, str):
-                stdout = stdout.decode('utf-8', 'backslashreplace')
-            self.log["stdout"] = stdout
-            self.status = "crawler failure"
-            self.detail = "garbage output from tracer"
-            return False
-
-    def parse_stderr(self, stderr):
-        status = ""
-        detail = ""
-        anomalous_stderr = []
-
-        for err in stderr:
-            if err.startswith("isolate: phantomjs: "):
-                # This is 'isolate' reporting the status of the child
-                # process.  Certain fatal signals have predictable causes.
-
-                rc = err[len("isolate: phantomjs: "):]
-                if rc in ("Alarm clock", "CPU time limit exceeded"):
-                    status = "timeout"
-                    detail = rc
-
-                else:
-                    status = "crawler failure"
-                    if rc in ("Segmentation fault", "Killed"):
-                        # This is most likely to be caused by hitting the
-                        # memory resource limit; webkit doesn't cope well.
-                        detail = "out of memory"
-
-                    elif rc == "Aborted":
-                        # This happens after "bad_alloc", usually.
-                        if not detail:
-                            detail = rc
-                    else:
-                        detail = rc
-
-            elif "bad_alloc" in err:
-                # PJS's somewhat clumsy way of reporting memory
-                # allocation failure.
-                status = "crawler failure"
-                detail = "out of memory"
-
-            else:
-                anomalous_stderr.append(err)
-
-        if not status:
-            status = "crawler failure"
-            detail = "unexplained unsuccessful exit"
-
-        self.status = status
+    def set_result(self, detail, final_url, content, capture_log):
         self.detail = detail
-
-        if anomalous_stderr:
-            self.log["stderr"] = anomalous_stderr
+        self.status = categorize_result_ff(detail)
+        self.canon_url = canon_url_syntax(final_url, want_splitresult = False)
+        self.content = content
+        self.log = capture_log
 
     def write_result(self, fname):
         """Write the results file for this URL, to FNAME.  Results files are
@@ -253,12 +142,12 @@ class CaptureResult:
 
            The initial eight bytes of a result file are a magic number:
 
-               7F 63 61 70 20 30 30 0A
-               ^? c  a  p  SP 0  0  LF
+               7F 63 61 70 20 30 31 0A
+               ^? c  a  p  SP 0  1  LF
 
            The zeroes constitute a two-digit version field.
 
-           In version 00, exactly six LF-terminated lines of
+           In versions 00 and 01, exactly six LF-terminated lines of
            UTF-8-encoded text follow the magic number.  The first and
            fifth of these lines will not be empty, but the other three
            may be empty.  They are:
@@ -275,9 +164,20 @@ class CaptureResult:
            that order.  The numbers on the fifth line are the lengths
            (in bytes) of these sequences.  The captured page is HTML
            and the capture log is a JSON blob; both are UTF-8 under
-           the compression.  (If either is *completely* empty, then it
-           will be written out as zero bytes, rather than as the
-           compression of zero bytes.)
+           the compression.
+
+           The only differences between version 00 and version 01 are:
+           In version 00 the capture log is a custom thingy defined by
+           pj-trace-redir.js, and in version 01 it is a HAR archive.
+           In version 00, if either the HTML or the capture log was
+           completely empty it was written out as zero bytes rather
+           than the zlib compression of zero bytes (which is eight
+           bytes long), but in version 01 this special case has been
+           removed.
+
+           Note that in both versions, the page contents are a
+           serialization of the DOM at snapshot time, *not* the
+           original HTML received on the wire.
 
            If any parent directory of FNAME does not exist it will be
            created.  It is an error if FNAME itself already exists.
@@ -287,17 +187,8 @@ class CaptureResult:
         os.makedirs(os.path.dirname(fname), exist_ok=True)
 
         with open(fname, "xb") as fp:
-            if self.content:
-                compressed_content = zlib.compress(
-                    self.content.encode("utf-8"))
-            else:
-                compressed_content = b""
-
-            if self.log:
-                compressed_log = zlib.compress(
-                    json.dumps(self.log).encode("utf-8"))
-            else:
-                compressed_log = b""
+            compressed_content = zlib.compress(self.content.encode("utf-8"), 9)
+            compressed_log = zlib.compress(self.log.encode("utf-8"), 9)
 
             fp.write("\u007Fcap 00\n"
                      "{ourl}\n"
@@ -319,34 +210,15 @@ class CaptureResult:
             fp.write(compressed_log)
 
 @asyncio.coroutine
-def do_capture(url, proxy, loop):
+def do_capture(url, browser, loop):
     result = CaptureResult(url)
     if result.status:
         return result
 
     start = time.monotonic()
-    proc = yield from asyncio.create_subprocess_exec(
-        *proxy.adjust_command([
-            "isolate",
-            "ISOL_RL_MEM=unlimited",
-            "ISOL_RL_STACK=8388608",
-            "PHANTOMJS_DISABLE_CRASH_DUMPS=1",
-            "MALLOC_CHECK_=0",
-            "phantomjs",
-            "--local-url-access=no",
-            "--load-images=false",
-            pj_trace_redir,
-            "--capture",
-            result.original_url
-        ]),
-        stdin  = subprocess.DEVNULL,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE,
-        loop   = loop)
+    result.set_result(*(yield from browser.visit_url(url)))
+    result.elapsed = time.monotonic() - start
 
-    stdout, stderr = yield from proc.communicate()
-    elapsed = time.monotonic() - start
-    result.set_result(proc.returncode, stdout, stderr, elapsed)
     return result
 
 class claim_one:
@@ -387,14 +259,12 @@ class CaptureWorker:
     """Control the process of crunching through all the URLs for a given
        locale."""
     def __init__(self, output_dir, locale, urls,
-                 loop, max_workers, global_bound,
-                 output_queue, quiet):
+                 loop, max_workers, output_queue, quiet):
         self.output_dir   = output_dir
         self.locale       = locale
         self.urls         = urls
         self.loop         = loop
         self.max_workers  = max_workers
-        self.global_bound = global_bound
         self.output_queue = output_queue
         self.quiet        = quiet
 
@@ -412,35 +282,36 @@ class CaptureWorker:
             sys.stderr.write(label + url + ": " + message + "\n")
 
     @asyncio.coroutine
-    def run_worker(self, proxy, i):
+    def run_worker(self, bmgr, proxy, i):
         """MAX_WORKERS instances of this coroutine are spawned by run()."""
         label = "{} {}: ".format(proxy.label(), i)
-        while True:
-            with (yield from self.global_bound), \
-                 claim_one(self.urls) as task:
 
-                if task is None: break
-                (serial, url) = task
+        with (yield from bmgr.start_browser(proxy)) as browser:
+            while True:
+                with claim_one(self.urls) as task:
 
-                self.progress(label, url, "...")
-                try:
-                    result = yield from do_capture(url, proxy, self.loop)
-                    self.progress(label, url, result.status)
-                except:
-                    self.progress(label, url, "fail")
-                    raise
+                    if task is None: break
+                    (serial, url) = task
 
-            # The result is written out in an executor because neither
-            # file I/O nor zlib are asynchronous, and we don't want
-            # this to hold up the event loop. (Both do drop the GIL.)
-            # The output_queue_drainer waits for the future, and we go on.
-            yield from self.output_queue.put(
-                self.loop.run_in_executor(None,
-                    result.write_result,
-                    self.output_fname(serial)))
+                    self.progress(label, url, "...")
+                    try:
+                        result = yield from do_capture(url, proxy, self.loop)
+                        self.progress(label, url, result.status)
+                    except:
+                        self.progress(label, url, "fail")
+                        raise
+
+                # The result is written out in an executor because neither
+                # file I/O nor zlib are asynchronous, and we don't want
+                # this to hold up the event loop. (Both do drop the GIL.)
+                # The output_queue_drainer waits for the future, and we go on.
+                yield from self.output_queue.put(
+                    self.loop.run_in_executor(None,
+                        result.write_result,
+                        self.output_fname(serial)))
 
     @asyncio.coroutine
-    def run(self, proxy):
+    def run(self, bmgr, proxy):
         # There is no point in running more workers than we have URLs
         # (left) to process.
         nworkers = min(self.max_workers, len(self.urls))
@@ -449,7 +320,7 @@ class CaptureWorker:
         # waiting for when it is itself cancelled.  Since that's what
         # we want, we have to do it by hand.
         try:
-            workers = [self.loop.create_task(self.run_worker(proxy, i))
+            workers = [self.loop.create_task(self.run_worker(bmgr, proxy, i))
                        for i in range(nworkers)]
             done, pending = yield from asyncio.wait(workers, loop=self.loop)
         except:
@@ -471,7 +342,6 @@ class CaptureDispatcher:
     def __init__(self, args):
         self.args         = args
         self.loop         = asyncio.get_event_loop()
-        self.global_bound = asyncio.Semaphore(args.total_workers)
         self.workers      = {}
         self.active       = {}
         self.output_queue = asyncio.Queue()
@@ -503,8 +373,7 @@ class CaptureDispatcher:
         self.workers = {
             loc: CaptureWorker(self.output_dir, loc, urls[:],
                                self.loop, self.args.workers_per_loc,
-                               self.global_bound, self.output_queue,
-                               self.args.quiet)
+                               self.output_queue, self.args.quiet)
 
             for loc in self.proxies.locations.keys()
         }
@@ -521,16 +390,18 @@ class CaptureDispatcher:
 
     @asyncio.coroutine
     def run(self):
-        yield from self.proxies.run(self)
-        if self.active:
-            yield from asyncio.wait(self.active, loop=self.loop)
-        yield from self.output_queue.put(None)
-        yield from asyncio.wait_for(self.drainer, None)
+        with BrowserManager(...) as bmgr:
+            self.bmgr = bmgr
+            yield from self.proxies.run(self)
+            if self.active:
+                yield from asyncio.wait(self.active, loop=self.loop)
+            yield from self.output_queue.put(None)
+            yield from asyncio.wait_for(self.drainer, None)
 
     @asyncio.coroutine
     def proxy_online(self, proxy):
-        self.active[proxy.loc] = \
-            self.loop.create_task(self.workers[proxy.loc].run(proxy))
+        self.active[proxy.loc] = self.loop.create_task(
+            self.workers[proxy.loc].run(self.bmgr, proxy))
 
     @asyncio.coroutine
     def proxy_offline(self, proxy):
