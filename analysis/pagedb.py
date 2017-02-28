@@ -361,7 +361,7 @@ class PageDB:
         gaps = set(x[0] for x in cur.fetchall())
 
         rng = random.Random(seed)
-        sample = set()
+       sample = set()
         while len(sample) < count:
             block = set(rng.sample(range(lo, hi+1),
                                    count - len(sample))) - gaps
@@ -490,7 +490,7 @@ class PageDB:
         return list(self.get_page_observations(
             where_clause       = "document_id = {}".format(eid),
             ordered            = None,
-            constructor_kwargs = { "document": text }))
+            constructor_kwargs = { "document": self }))
 
     def get_page_text(self, eid):
         return PageText(self, eid)
