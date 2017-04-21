@@ -145,7 +145,8 @@ class CaptureResult:
                7F 63 61 70 20 30 31 0A
                ^? c  a  p  SP 0  1  LF
 
-           The zeroes constitute a two-digit version field.
+           The two bytes between the SP and the LF are a decimal
+           version number.
 
            In versions 00 and 01, exactly six LF-terminated lines of
            UTF-8-encoded text follow the magic number.  The first and
@@ -190,7 +191,7 @@ class CaptureResult:
             compressed_content = zlib.compress(self.content.encode("utf-8"), 9)
             compressed_log = zlib.compress(self.log.encode("utf-8"), 9)
 
-            fp.write("\u007Fcap 00\n"
+            fp.write("\u007Fcap 01\n"
                      "{ourl}\n"
                      "{curl}\n"
                      "{stat}\n"
