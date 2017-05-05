@@ -207,7 +207,7 @@ tls_handshake(gnutls_session_t session, int sock)
            gnutls_alert_get_name(gnutls_alert_get(session)));
 
   } else if (ret == GNUTLS_E_CERTIFICATE_VERIFICATION_ERROR) {
-    int type;
+    gnutls_certificate_type_t type;
     unsigned status;
     gnutls_datum_t out;
 
@@ -316,8 +316,8 @@ main(int argc, char **argv)
 
   bool do_tls = tls_port_p(port);
 
-  gnutls_certificate_credentials_t xcred;
-  gnutls_session_t session;
+  gnutls_certificate_credentials_t xcred = 0;
+  gnutls_session_t session = 0;
   if (do_tls)
     setup_gnutls(&session, &xcred, host);
 
