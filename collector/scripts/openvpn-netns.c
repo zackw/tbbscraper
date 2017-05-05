@@ -781,24 +781,24 @@ close_unnecessary_fds(void)
   DIR *fdir = opendir("/proc/self/fd");
   if (fdir) {
     int dfd = dirfd(fdir);
-    struct dirent dent, *dent_out;
+    struct dirent *dent;
     int fd;
 
     for (;;) {
-      if ((errno = readdir_r(fdir, &dent, &dent_out)) != 0)
-        fatal_perror("readdir: /proc/self/fd");
-      if (!dent_out)
-        break;
-      if (!strcmp(dent.d_name, ".") || !strcmp(dent.d_name, ".."))
+      errno = 0;
+      dent = readdir(fdir);
+      if (!dent) break;
+      if (!strcmp(dent->d_name, ".") || !strcmp(dent->d_name, ".."))
         continue;
 
-      errno = 0;
-      fd = (int)xstrtonum(dent.d_name, 0, INT_MAX,
+      fd = (int)xstrtonum(dent->d_name, 0, INT_MAX,
                           "invalid /proc/self/fd entry");
-
       if (fd >= 3 && fd != dfd)
-        close(fd);
+        close((int)fd);
     }
+    if (errno)
+      fatal_perror("readdir: /proc/self/fd");
+    closedir(fdir);
 
   } else {
     /* Double blech. */
