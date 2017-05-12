@@ -2,6 +2,8 @@
 
 import re
 
+http_scheme_re = re.compile("(?i)^https?://")
+
 # The following regular expression was derived from three different
 # online lists of short-url services using emacs' regexp-opt utility:
 # (regexp-opt '("1link.in" "1url.com" "2big.at" "2pl.us" "2tu.us"
@@ -99,26 +101,32 @@ short_url_re = re.compile(
     "apurl\\.co\\.uk|i(?:f\\.red|pi\\.es)|p\\.me)|x(?:\\.(?:co|se)|addr\\.com|"
     "eeurl\\.com|r(?:\\.com|l\\.(?:in|us))|url\\.jp|zb\\.cc)|y(?:\\.ahoo\\.it|"
     "ep\\.it|frog\\.com|ou(?:rls\\.org|tu\\.be)|web\\.com)|z(?:i(?:\\.(?:ma|"
-    "pe)|pmyurl\\.com)|pag\\.es|z\\.gd))/")
+    "pe)|pmyurl\\.com)|pag\\.es|z\\.gd))"
+    "(?:$|[/?;#])")
 
 # The following regular expressions were all derived from Debian's
 # /etc/mime.types, again using regexp-opt.
-noext_re = re.compile("(?i)/[^/?.]*$")
+noext_re = re.compile("(?i)/[^/?;#.]*(?:$|[?#;])")
 
-# (regexp-opt '("atom" "htm" "html" "mml" "php" "php3" "php3p" "php4" "php5"
-#  "phps" "pht" "phtml" "rdf" "rhtml" "shtml" "xht" "xhtml"))
-html_re = re.compile("(?i)/[^/?]+?\\."
-                     "(?:atom|html?|mml|ph(?:p(?:3p|[345s])|tml|[pt])|"
-                     "r(?:df|html)|shtml|xht(?:ml)?)$")
+# (regexp-opt '("asp" "aspx" "atom" "cfm" "cgi" "do" "htm" "html"
+#  "jsp" "mml" "php" "php3" "php3p" "php4" "php5" "phps" "pht" "phtm"
+#  "phtml" "rdf" "rht" "rhtm" "rhtml" "sht" "shtm" "shtml" "xht"
+#  "xhtm" "xhtml"))
+html_re = re.compile("(?i)/[^/?;#]+?\\."
+                     "(?:a(?:spx?|tom)|c(?:fm|gi)|do|html?|jsp|mml|"
+                     "ph(?:p(?:3p|[345s])|tml?|[pt])|r(?:df|ht(?:ml?)?)|"
+                     "sht(?:ml?)?|xht(?:ml?)?)"
+                     "(?:$|[?;#])")
 
 
 # (regexp-opt '("asc" "bib" "brf" "latex" "ltx" "lyx" "man" "markdown" "md"
 #  "me" "ms" "pot" "roff" "rtx" "srt" "t" "tex" "texi" "texinfo" "text" "tm"
 #  "tr" "txt"))
-text_re = re.compile("(?i)/[^/?]+?\\."
+text_re = re.compile("(?i)/[^/?;#]+?\\."
                      "(?:asc|b(?:ib|rf)|l(?:(?:ate|[ty])x)|"
                      "m(?:a(?:(?:rkdow)?n)|[des])|pot|r(?:off|tx)|srt|"
-                     "t(?:ex(?:info|[it])?|xt|[mr])?)$")
+                     "t(?:ex(?:info|[it])?|xt|[mr])?)"
+                     "(?:$|[?;#])")
 
 # (regexp-opt '("abw" "ai" "book" "doc" "docm" "docx" "dot" "dotm" "dotx"
 #  "dvi" "eps" "eps2" "eps3" "epsf" "epsi" "fb" "fbdoc" "fm" "frame" "frm"
@@ -128,13 +136,14 @@ text_re = re.compile("(?i)/[^/?]+?\\."
 #  "rtf" "sda" "sdc" "sdd" "sds" "sdw" "sgl" "sldm" "sldx" "stc" "std" "sti"
 #  "stw" "sxc" "sxd" "sxg" "sxi" "sxm" "sxw" "wp5" "wpd" "xlam" "xlb" "xls"
 #  "xlsb" "xlsm" "xlsx" "xlt" "xltm" "xltx"))
-doc_re = re.compile("(?i)/[^/?]+?\\."
+doc_re = re.compile("(?i)/[^/?;#]+?\\."
                     "(?:a(?:bw|i)|book|d(?:o(?:c[mx]|t[mx]|[ct])|vi)|"
                     "eps[23fi]?|f(?:bdoc|r(?:ame|m)|[bm])|gnumeric|"
                     "k(?:p[rt]|sp|w[dt])|maker|nbp?|o(?:d[bcfgimpst]|t[ghpst])|"
                     "p(?:df|ot[mx]|p(?:am|s[mx]|t[mx]|[st])|s)|rtf|"
                     "s(?:d[acdsw]|gl|ld[mx]|t[cdiw]|x[cdgimw])|"
-                    "wp[5d]|xl(?:am|s[bmx]|t[mx]|[bst]))$")
+                    "wp[5d]|xl(?:am|s[bmx]|t[mx]|[bst]))"
+                    "(?:$|[?;#])")
 
 # (regexp-opt '("323" "3gp" "7z" "aif" "aifc" "aiff" "alc" "amr" "anx" "apk"
 #  "appcache" "application" "art" "asf" "asn" "asn" "aso" "asx" "atomcat"
@@ -175,7 +184,7 @@ doc_re = re.compile("(?i)/[^/?]+?\\."
 #  "xcf" "xcos" "xml" "xpi" "xpm" "xsd" "xsl" "xslt" "xspf" "xtel" "xul" "xwd"
 #  "xyz" "xz" "zip" "zmt"))
 data_re = re.compile(
-    "(?i)/[^/?]+?\\."
+    "(?i)/[^/?;#]+?\\."
     "(?:3(?:23|gp)|7z|a(?:if[cf]?|lc|mr|nx|p(?:k|p(?:cache|lication))|rt|"
     "s[fnox]|tom(?:cat|srv)|u|vi|wb|x[av])|b(?:at|cpio|in|mp|oo|sd)|"
     "c(?:\\+\\+|3d|a(?:che|scii|[bcpt])|b(?:in|[rz])|d[afrtxy]|e[fr]|"
@@ -198,9 +207,13 @@ data_re = re.compile(
     "u(?:deb|ls|star)|v(?:al|c(?:ard|[dfs])|m[ds]|rml?|s[dstw])|w(?:a[dvx]|"
     "b(?:mp|xml)|ebm|m(?:l(?:sc|[cs])|[adlvxz])|off|rl|sc|vx|[kmz])|"
     "x(?:3d[bv]?|bm|c(?:f|os)|ml|p[im]|s(?:lt|pf|[dl])|tel|ul|wd|y?z)|"
-    "z(?:ip|mt)|[bcdhop])$")
+    "z(?:ip|mt)|[bcdhop])"
+    "(?:$|[?;#])")
+
 
 def classify_url(url):
+    if not http_scheme_re.match(url):
+        return "non-http"
     if short_url_re.search(url):
         return "short"
     if noext_re.search(url):
@@ -215,3 +228,7 @@ def classify_url(url):
         return "data"
     return "unknown"
 
+if __name__ == '__main__':
+    import sys
+    for line in sys.stdin:
+        sys.stdout.write(classify_url(line.strip()) + "\n")
