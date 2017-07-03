@@ -107,7 +107,7 @@ def canon_url_syntax(url, *, want_splitresult=None):
 # codes not listed are mapped to "crawler failure" because they
 # shouldn't be possible.
 look_at_the_detail = object()
-network_errors_by_code = {
+qt_network_errors_by_code = {
     "N1":   "connection refused",
     "N2":   "connection interrupted",
     "N3":   "host not found",
@@ -134,16 +134,32 @@ network_errors_by_code = {
 
     "N99":  look_at_the_detail
 }
-network_errors_by_detail = {
+qt_network_errors_by_detail = {
     "N99 Connection to proxy refused": "proxy failure",
     "N99 Host unreachable":            "server unreachable",
     "N99 Network unreachable":         "server unreachable",
     "N99 Unknown error":               "other network error"
 }
-misc_errors_by_status = {
-    "hostname not found":   "host not found",
-    "timeout":              "timeout",
+
+# same as above, but for errors reported by neterr-details.c
+ned_network_errors_by_status = {
+    "dns-notfound":    "host not found",
+
+    "tcp-unreachable": "server unreachable",
+    "tcp-refused":     "connection refused",
+    "tcp-reset":       "connection interrupted",
+
+    "tls-selfsigned":  "TLS handshake failed",
+    "tls-untrusted":   "TLS handshake failed",
+    "tls-invalid":     "TLS handshake failed",
+
+    # If this happens, it means Firefox threw a network error but we
+    # didn't have any trouble connecting to it from this, which is an
+    # error condition.
+    "success":         "crawler failure",
 }
+
+# http statuses are the same for both phantom and openwpm
 http_statuses_by_code = {
     200: "ok",
 
@@ -179,9 +195,9 @@ def categorize_result_ph(status, detail):
     """Categorize a result produced by PhantomJS."""
     if not isinstance(status, int):
         if status.startswith("N"):
-            cat = network_errors_by_code.get(status, "crawler failure")
+            cat = qt_network_errors_by_code.get(status, "crawler failure")
             if cat is look_at_the_detail:
-                cat = network_errors_by_detail.get(detail, "crawler failure")
+                cat = qt_network_errors_by_detail.get(detail, "crawler failure")
 
             return cat
 
@@ -201,6 +217,13 @@ def categorize_result_ph(status, detail):
 
     return http_statuses_by_code.get(status, "other HTTP response")
 
-def categorize_result_ff(detail):
+def categorize_result_ff(status):
     """Categorize a result produced by Firefox/OpenWPM."""
-    raise NotImplemented
+    try:
+        status = int(status)
+    except ValueError:
+        pass
+    if isinstance(status, int):
+        return http_statuses_by_code.get(status, "other HTTP response")
+
+    return ned_network_errors_by_status.get(status, "other network error")

@@ -54,7 +54,7 @@ class CaptureResult:
         # failures; only cases where we got nothing useful back.
         return self.status == 'crawler failure' or not self.content
 
-    def set_result(self, detail, final_url, content, capture_log):
+    def set_result(self, final_url, status, detail, content, capture_log):
         self.detail = detail
         self.status = categorize_result_ff(detail)
         self.canon_url = canon_url_syntax(final_url, want_splitresult = False)
