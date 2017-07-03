@@ -1,4 +1,4 @@
-# Copyright © 2014–2017 Zack Weinberg
+# Copyright © 2014 Zack Weinberg
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -6,8 +6,7 @@
 # There is NO WARRANTY.
 
 """Capture the HTML content and a screenshot of each URL in a list,
-using Firefox (with OpenWPM automation), from many locations
-simultaneously.
+using PhantomJS, from many locations simultaneously.
 
 Locations are defined by the config file passed as an argument, which
 is line- oriented, each line having the general form
@@ -62,9 +61,11 @@ def setup_argp(ap):
                     action="store",
                     help="Directory in which to store output.")
     ap.add_argument("-w", "--workers-per-location",
-                    action="store", dest="workers_per_loc", type=int, default=1,
-                    help="Maximum number of concurrent Firefox processes "
-                    "per active proxy.")
+                    action="store", dest="workers_per_loc", type=int, default=8,
+                    help="Maximum number of concurrent workers per location.")
+    ap.add_argument("-W", "--total-workers",
+                    action="store", dest="total_workers", type=int, default=40,
+                    help="Total number of concurrent workers to use.")
     ap.add_argument("-p", "--max-simultaneous-proxies",
                     action="store", type=int, default=10,
                     help="Maximum number of proxies to use simultaneously.")
@@ -83,6 +84,6 @@ def run(args):
     loop = asyncio.get_event_loop()
     asyncio.get_child_watcher()
 
-    from url_sources.capture_openwpm import CaptureDispatcher
+    from url_sources.capture_phantom import CaptureDispatcher
     loop.run_until_complete(CaptureDispatcher(args).run())
     loop.close()
