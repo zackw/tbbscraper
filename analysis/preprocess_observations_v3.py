@@ -136,7 +136,8 @@ def insert_result(cur, result):
                 " WHERE id = %s",
                 (eid, docid))
 
-def preprocess_pages(db, cur, pool):
+# Added start and end times to narrow down the access time
+def preprocess_pages(db, cur, pool, start, end):
 
     # This is not in itertools, for no good reason.
     def chunked(iterable, n):
@@ -166,10 +167,10 @@ def preprocess_pages(db, cur, pool):
                 "  JOIN (SELECT DISTINCT ON (html_content)"
                 "              html_content, redir_url"
                 "         FROM collection.captured_pages"
-                "        WHERE access_time >= TIMESTAMP '2015-09-01'"
+                "        WHERE access_time >= %s and access_time <= %s"
                 "     ) c ON c.html_content = h.id"
                 "  JOIN collection.url_strings s ON c.redir_url = s.id"
-                " WHERE h.extracted IS NULL")
+                " WHERE h.extracted IS NULL", (start, end,))
     pages = cur.fetchall()
     total_pages = len(pages)
     if not total_pages:
@@ -204,9 +205,11 @@ def preprocess_pages(db, cur, pool):
 def main():
     with multiprocessing.Pool() as pool:
         db = psycopg2.connect("dbname="+sys.argv[1])
+        start_time = sys.argv[2]
+        end_time = sys.argv[3]
         cur = db.cursor()
         cur.execute("SET search_path TO analysis, public")
         cur.execute("SET standard_conforming_strings TO on")
-        preprocess_pages(db, cur, pool)
+        preprocess_pages(db, cur, pool, start_time, end_time)
 
 main()
