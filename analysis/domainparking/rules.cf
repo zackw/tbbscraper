@@ -66,6 +66,14 @@ newest_cartersons                     = copyright\s+.\s+201.\s+cartersons\s+ltd
 newest_dnbiz                          = dnbiz\.cn.{0,4}domain_parking\.htm
 domainsponsor_frameset                = \A\s*<!doctype\s+html\s+public\s*\"-//w3c//dtd\shtml\s4\.01\sframeset//en\"\s*(?:\"http://www\.w3\.org/tr/html4/frameset\.dtd\")?\s*>.*?<\s*meta\s+name\s*=\s*\"\s*keywords\s*\"\s+content\s*=\s*\"\s*([A-Za-z0-9_.-]+)\s*\"\s*>.*?(?:<|&lt;)\s*a\s+href\s*=\s*\"\s*https?://(?:[A-Za-z0-9_.-]+\.)?\1/?\?epl=[^\"\s]+\s*\"\s*(?:>|&gt;)\s*click\s+here\s+to\s+go\s+to\s+\1\s*(?:<|&lt;)\s*/\s*a\s*(?:>|&gt;)
 
+# Additional rules to detect Youtube removed content; these pages are
+# (improperly) served with a 200 OK.  We don't match on the "This
+# video is unavailable" message because that shows up for *everything*
+# due to PhantomJS not supporting <video> nor <embed>.  They only say
+# "Sorry about that." when it's their fault.
+youtube_removed_video = \bclass\s*=\s*\"submessage\"\s*(?:>|&gt;)\s*Sorry\s+about\s+that.\s*(?:<|&lt;)
+youtube_removed_chan  = \bclass\s*=\s*\"display-message\"\s*(?:>|&gt;)\s*This\s+channel\s+has\s+no\s+content.\s*(?:<|&lt;)
+
 [weak1]
 w_parkeddomain_noad   = parked.{0,20}domain
 w_domainparking_noad  = domain.{0,20}(parking|sale)

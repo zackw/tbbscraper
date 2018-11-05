@@ -1,4 +1,4 @@
-# Copyright © 2014 Zack Weinberg
+# Copyright © 2014–2017 Zack Weinberg
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -6,78 +6,7 @@
 # There is NO WARRANTY.
 
 """Capture the HTML content and a screenshot of each URL in a list,
-from many locations simultaneously.  Locations are defined by the
-config file passed as an argument, which is line- oriented, each line
-having the general form
-
-  locale method arguments ...
-
-'locale' is an arbitrary word (consisting entirely of lowercase ASCII
-letters) which names the location.
-
-'method' selects a general method for capturing pages from this
-location.  Subsequent 'arguments' are method-specific.  There are
-currently two supported methods:
-
-  direct: The controller machine will issue HTTP requests directly.
-          No arguments.
-
-  ovpn:   HTTP requests will be proxied via openvpn.
-          One or more arguments are passed to the 'openvpn-netns'
-          helper program (see scripts/openvpn-netns.c).  The initial
-          argument is treated as a glob pattern which should expand to
-          one or more OpenVPN config files; if there's more than one,
-          they are placed in a random order and then used round-robin
-          (i.e. if connection with one config file fails or drops, the
-          next one is tried).
-
-The second non-optional argument is the list of URLs to process, one per
-line.
-
-The third non-optional argument is the directory in which to store
-results.  Each result will be written to its own file in this
-directory; the directory hierarchy has the structure
-
-  ${OUTPUT_DIR}/${RUN}/AB/CDE/FGH.${LOCALE}
-
-where RUN starts at zero and is incremented by one each time the program is
-invoked, and AB,CDE,FGH is a 8-digit decimal number assigned to each URL.
-This number is not meaningful; you must look in each file to learn which
-URL goes with which result.
-
-The output files are binary; see CaptureResult.write_result for the format.
-"""
-
-def setup_argp(ap):
-    ap.add_argument("locations",
-                    action="store",
-                    help="List of location specifications.")
-    ap.add_argument("urls",
-                    action="store",
-                    help="List of URLs to process.")
-    ap.add_argument("output_dir",
-                    action="store",
-                    help="Directory in which to store output.")
-    ap.add_argument("-w", "--workers-per-location",
-                    action="store", dest="workers_per_loc", type=int, default=8,
-                    help="Maximum number of concurrent workers per location.")
-    ap.add_argument("-W", "--total-workers",
-                    action="store", dest="total_workers", type=int, default=40,
-                    help="Total number of concurrent workers to use.")
-    ap.add_argument("-p", "--max-simultaneous-proxies",
-                    action="store", type=int, default=10,
-                    help="Maximum number of proxies to use simultaneously.")
-
-def run(args):
-    if os.environ.get("PYTHONASYNCIODEBUG"):
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
-        import warnings
-        warnings.simplefilter('default')
-    loop = asyncio.get_event_loop()
-    asyncio.get_child_watcher()
-    loop.run_until_complete(CaptureDispatcher(args).run())
-    loop.close()
+using PhantomJS, from many locations simultaneously --- implementation."""
 
 import asyncio
 import json
@@ -89,9 +18,7 @@ import sys
 import time
 import zlib
 
-# Note: the functions imported from url_database do not actually make
-# use of the database.
-from shared.url_database import canon_url_syntax, categorize_result_nr
+from shared.util import canon_url_syntax, categorize_result_ph
 from shared.aioproxies import ProxySet
 from shared.strsignal import strsignal
 
@@ -152,7 +79,7 @@ class CaptureResult:
                 else:
                     self.detail = strsignal(-exitcode)
 
-        self.status = categorize_result_nr(self.status, self.detail)
+        self.status = categorize_result_ph(self.status, self.detail)
         self.elapsed = elapsed
 
     def parse_stdout(self, stdout):
@@ -383,7 +310,8 @@ class CaptureWorker:
     """Control the process of crunching through all the URLs for a given
        locale."""
     def __init__(self, output_dir, locale, urls,
-                 loop, max_workers, global_bound, output_queue):
+                 loop, max_workers, global_bound,
+                 output_queue, quiet):
         self.output_dir   = output_dir
         self.locale       = locale
         self.urls         = urls
@@ -391,12 +319,20 @@ class CaptureWorker:
         self.max_workers  = max_workers
         self.global_bound = global_bound
         self.output_queue = output_queue
+        self.quiet        = quiet
 
     def output_fname(self, serial):
         return "{}/{:02d}/{:03d}/{:03d}.{}".format(
             self.output_dir,
             serial // 1000000, (serial % 1000000) // 1000, serial % 1000,
             self.locale)
+
+    def progress(self, label, url, message):
+        if self.quiet: return
+        if message == "...":
+            sys.stderr.write(label + url + "...\n")
+        else:
+            sys.stderr.write(label + url + ": " + message + "\n")
 
     @asyncio.coroutine
     def run_worker(self, proxy, i):
@@ -409,12 +345,12 @@ class CaptureWorker:
                 if task is None: break
                 (serial, url) = task
 
-                sys.stderr.write(label + url + "...\n")
+                self.progress(label, url, "...")
                 try:
                     result = yield from do_capture(url, proxy, self.loop)
-                    sys.stderr.write(label + url + ": " + result.status + "\n")
+                    self.progress(label, url, result.status)
                 except:
-                    sys.stderr.write(label + url + ": fail\n")
+                    self.progress(label, url, "fail")
                     raise
 
             # The result is written out in an executor because neither
@@ -490,7 +426,8 @@ class CaptureDispatcher:
         self.workers = {
             loc: CaptureWorker(self.output_dir, loc, urls[:],
                                self.loop, self.args.workers_per_loc,
-                               self.global_bound, self.output_queue)
+                               self.global_bound, self.output_queue,
+                               self.args.quiet)
 
             for loc in self.proxies.locations.keys()
         }

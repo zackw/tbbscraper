@@ -375,6 +375,7 @@ class OpenVPNProxyManager(BaseProxyManager):
         self._ready_f      = None
         self._sp_t         = None
         self._sp_p         = None
+        self._start_to_h   = None
 
         openvpn_cfg = glob.glob(cfg)
         if not openvpn_cfg:
@@ -391,12 +392,17 @@ class OpenVPNProxyManager(BaseProxyManager):
 
     def _become_online(self, fut):
         self.starting = False
+
         # _become_offline could have fired already (in the
         # crash-during-startup case). The future is never
         # set to an exception.
         if fut.result() and self._ready_f is not None:
             sys.stderr.write(self.label() + ": online.\n")
             self.online = True
+
+        if self._start_to_h is not None:
+            self._start_to_h.cancel()
+            self._start_to_h = None
 
     def _become_offline(self, fut):
         self.starting = False
@@ -409,7 +415,19 @@ class OpenVPNProxyManager(BaseProxyManager):
         self._sp_p = None
         self._ready_f = None
         self._namespace = None
+
+        if self._start_to_h is not None:
+            self._start_to_h.cancel()
+            self._start_to_h = None
+
         # don't clear self._exit_f yet, wait() may not yet have been called
+
+    def _start_timeout(self):
+        if self.starting and self._sp_t is not None:
+            sys.stderr.write("{}: timeout during startup\n"
+                             .format(self.label()))
+            self._sp_t.terminate()
+        self._start_to_h = None
 
     @asyncio.coroutine
     def start(self, ns):
@@ -431,6 +449,9 @@ class OpenVPNProxyManager(BaseProxyManager):
         self._openvpn_cfgs.rotate(-1)
         command = [ "openvpn-netns", self._namespace, cfg ]
         command.extend(self._openvpn_args)
+
+        # If the proxy takes more than five minutes to come online, give up.
+        self._start_to_h = self._loop.call_later(300, self._start_timeout)
 
         self._sp_t, self._sp_p = yield from self._loop.subprocess_exec(
             lambda: self.OpenVPNProxyProtocol(self._ready_f,
@@ -579,6 +600,15 @@ class ProxySet:
                 continue
 
             proxy.cycle += 1
+            if proxy.cycle >= 12:
+                # Abandon this proxy, it doesn't work.
+                sys.stderr.write("{}: 12 failures, giving up\n"
+                                 .format(proxy.label()))
+                proxy.close()
+                try: del self.locations[proxy.loc]
+                except KeyError: pass
+                continue
+
             # Exponential backoff, starting at 15 seconds and going up to
             # one hour.
             if proxy.backoff == 0:

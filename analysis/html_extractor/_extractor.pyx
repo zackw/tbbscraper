@@ -46,6 +46,7 @@ cdef bytes convert_to_utf8(bytes page, str encoding):
     cdef str intermediate
 
     assert encoding != "replacement" and encoding != "x-user-defined"
+    assert encoding != "gb2312" # should be "gbk" at this point
 
     # Python knows these encodings only by other names.
     # https://bugs.python.org/issue25416
@@ -62,12 +63,12 @@ cdef bytes convert_to_utf8(bytes page, str encoding):
     elif encoding == "iso-8859-8-i":
         encoding = "iso-8859-8"
 
-    if encoding != "utf-8":
-        # This is a type hint.  Without the intermediate variable,
-        # Cython doesn't realize it can use PyUnicode_AsUTF8String
-        # for the second step.
-        intermediate = page.decode(encoding)
-        page = intermediate.encode("utf-8")
+    # Decode and reencode to get rid of any bogus characters, even if
+    # we think we've already got UTF-8.
+    # Without the intermediate variable, Cython doesn't realize it can
+    # use PyUnicode_AsUTF8String for the second step.
+    intermediate = page.decode(encoding, "replace")
+    page = intermediate.encode("utf-8")
     if page.startswith(b"\xef\xbb\xbf"):
         page = page[3:]
     return page
@@ -97,7 +98,7 @@ cdef inline bytes determine_encoding_and_convert(bytes page,
     if page.startswith(b"\xff\xfe"):
         return convert_to_utf8(page, "utf-16le")
     if page.startswith(b"\xef\xbb\xbf"):
-        return page[3:] # already UTF-8, just strip the BOM
+        return convert_to_utf8(page, "utf-8")
 
     # Step 4
     if ext_encoding:
@@ -462,8 +463,8 @@ cdef class ExtractedContent:
         self.url = url
         self.dom_stats = DomStatistics()
 
-        mimetype = external_ctype.casefold().encode("ascii")
-        charset  = external_charset.casefold().encode("ascii")
+        mimetype = (external_ctype or "").casefold().encode("ascii")
+        charset  = (external_charset or "").casefold().encode("ascii")
 
         if isinstance(page, str):
             # Without the cast, Cython doesn't realize it can use
@@ -492,9 +493,9 @@ cdef class ExtractedContent:
             elif mimetype.startswith("image/"):
                 bytestr = ("<html><body style=\"margin: 0px;\">"
                            "<img style=\"-webkit-user-select: none\" src=\"" +
-                           url.replace(b"&", b"&amp;")
-                              .replace(b"<", b"&lt;")
-                              .replace(b">", b"&gt;") +
+                           url.replace("&", "&amp;")
+                              .replace("<", "&lt;")
+                              .replace(">", "&gt;") +
                            "\"></body></html>").encode("utf-8")
 
             else:

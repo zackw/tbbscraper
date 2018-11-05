@@ -1,0 +1,3 @@
+[submodule "collector/lib/openwpm"]
+	path = collector/lib/openwpm
+	url = https://github.com/zackw/OpenWPM
