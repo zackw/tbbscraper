@@ -7,3 +7,4 @@
 *.pyo
 __pycache__/
 python-vars.mk
+extract-from-iclab-json
